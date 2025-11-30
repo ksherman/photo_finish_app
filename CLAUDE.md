@@ -8,7 +8,7 @@ PhotoFinish is a local-network photo management and sales system for live sporti
 
 ## Tech Stack
 
-- **Server:** Elixir/Phoenix 1.7+, PostgreSQL, Oban, libvips (via `vix`)
+- **Server:** Elixir/Phoenix 1.8+, PostgreSQL, Oban, libvips (via `vix`)
 - **Frontend:** Phoenix LiveView + Tailwind CSS
 - **Ingestion App:** Tauri (Rust + VueJS 3)
 - **Deployment:** Local network, Mac server, NAS storage
@@ -19,6 +19,7 @@ Reference these docs for detailed specs:
 
 | Doc                       | Use When                                                  |
 | ------------------------- | --------------------------------------------------------- |
+| `server/AGENTS.md`        | Documentation for elixir application                      |
 | `docs/01-architecture.md` | System overview, deployment, infrastructure decisions     |
 | `docs/02-data-model.md`   | Database schema, entities, migrations, key queries        |
 | `docs/03-ingestion.md`    | Tauri app, file watcher, image processing pipeline        |
