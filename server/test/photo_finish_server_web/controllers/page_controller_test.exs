@@ -1,5 +1,5 @@
-defmodule PhotoFinishServerWeb.PageControllerTest do
-  use PhotoFinishServerWeb.ConnCase
+defmodule PhotoFinishWeb.PageControllerTest do
+  use PhotoFinishWeb.ConnCase
 
   test "GET /", %{conn: conn} do
     conn = get(conn, ~p"/")

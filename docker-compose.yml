@@ -1,16 +1,22 @@
 services:
-  db:
+  postgres:
     image: postgres:18
     container_name: photofinish_db
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: photo_finish_dev
-    ports:
-      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: always
-
+      - pgdata:/usr/share/photofinish/postgres/data
+    ports:
+      - 8200:5432
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - PGPASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 volumes:
-  postgres_data:
+  pgdata:
+    driver: local

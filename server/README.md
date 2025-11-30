@@ -1,4 +1,4 @@
-# PhotoFinishServer
+# PhotoFinish
 
 To start your Phoenix server:
 

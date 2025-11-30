@@ -2,11 +2,12 @@ import Config
 config :ash, policies: [show_policy_breakdowns?: true]
 
 # Configure your database
-config :photo_finish_server, PhotoFinishServer.Repo,
+config :photo_finish, PhotoFinish.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "photo_finish_server_dev",
+  database: "photo_finish_dev",
+  port: 8200,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
@@ -17,7 +18,7 @@ config :photo_finish_server, PhotoFinishServer.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
+config :photo_finish, PhotoFinishWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
@@ -26,8 +27,8 @@ config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
   debug_errors: true,
   secret_key_base: "k5aF8OPDtQNRjNGvnUiFdDUiKISfPyUTA+aTnuK9PpYPdmc1mbXgKmMykhg7etZG",
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:photo_finish_server, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:photo_finish_server, ~w(--watch)]}
+    esbuild: {Esbuild, :install_and_run, [:photo_finish, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:photo_finish, ~w(--watch)]}
   ]
 
 # ## SSL Support
@@ -54,7 +55,7 @@ config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
 # different ports.
 
 # Reload browser tabs when matching files change.
-config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
+config :photo_finish, PhotoFinishWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
     patterns: [
@@ -69,7 +70,7 @@ config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
   ]
 
 # Enable dev routes for dashboard and mailbox
-config :photo_finish_server,
+config :photo_finish,
   dev_routes: true,
   token_signing_secret: "IS6M4wZD5k8NRmp3QODpknzhjGYBQvV0"
 

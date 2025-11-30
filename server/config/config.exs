@@ -7,14 +7,14 @@
 # General application configuration
 import Config
 
-config :ex_cldr, default_backend: PhotoFinishServer.Cldr
+config :ex_cldr, default_backend: PhotoFinish.Cldr
 config :ash_oban, pro?: false
 
-config :photo_finish_server, Oban,
+config :photo_finish, Oban,
   engine: Oban.Engines.Basic,
   notifier: Oban.Notifiers.Postgres,
   queues: [default: 10],
-  repo: PhotoFinishServer.Repo,
+  repo: PhotoFinish.Repo,
   plugins: [{Oban.Plugins.Cron, []}]
 
 config :ash,
@@ -62,20 +62,20 @@ config :spark,
     ]
   ]
 
-config :photo_finish_server,
-  ecto_repos: [PhotoFinishServer.Repo],
+config :photo_finish,
+  ecto_repos: [PhotoFinish.Repo],
   generators: [timestamp_type: :utc_datetime],
-  ash_domains: [PhotoFinishServer.Accounts]
+  ash_domains: [PhotoFinish.Photos, PhotoFinish.Events, PhotoFinish.Accounts]
 
 # Configure the endpoint
-config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
+config :photo_finish, PhotoFinishWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [html: PhotoFinishServerWeb.ErrorHTML, json: PhotoFinishServerWeb.ErrorJSON],
+    formats: [html: PhotoFinishWeb.ErrorHTML, json: PhotoFinishWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: PhotoFinishServer.PubSub,
+  pubsub_server: PhotoFinish.PubSub,
   live_view: [signing_salt: "HfcyhPkD"]
 
 # Configure the mailer
@@ -85,7 +85,7 @@ config :photo_finish_server, PhotoFinishServerWeb.Endpoint,
 #
 # For production it's recommended to configure a different adapter
 # at the `config/runtime.exs`.
-config :photo_finish_server, PhotoFinishServer.Mailer, adapter: Swoosh.Adapters.Local
+config :photo_finish, PhotoFinish.Mailer, adapter: Swoosh.Adapters.Local
 
 # Configure esbuild (the version is required)
 config :esbuild,

@@ -1,9 +1,9 @@
-defmodule PhotoFinishServer.MixProject do
+defmodule PhotoFinish.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :photo_finish_server,
+      app: :photo_finish,
       version: "0.1.0",
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -21,7 +21,7 @@ defmodule PhotoFinishServer.MixProject do
   # Type `mix help compile.app` for more information.
   def application do
     [
-      mod: {PhotoFinishServer.Application, []},
+      mod: {PhotoFinish.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end
