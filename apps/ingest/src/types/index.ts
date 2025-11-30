@@ -1,10 +1,6 @@
 export interface SessionConfig {
-  eventSlug: string;
+  destination: string;
   photographer: string;
-  gym: string;
-  sessionNumber: string;
-  destinationRoot: string;
-  cardReaderPath: string;
   currentOrder: number;
 }
 
@@ -26,6 +22,17 @@ export interface CopyProgressEvent {
   copied: number;
   current_file: string;
   percentage: number;
+}
+
+export interface CardReaderInfo {
+  reader_id: string;
+  display_name: string;
+  mount_point: string;
+  volume_name: string;
+  bus_protocol: string;
+  is_internal: boolean;
+  disk_id: string;
+  file_count: number;
 }
 
 export interface Competitor {

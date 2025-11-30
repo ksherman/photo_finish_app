@@ -1,6 +1,7 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use tauri::ipc::Channel;
 use walkdir::WalkDir;
 
@@ -9,6 +10,18 @@ pub struct VolumeInfo {
     pub name: String,
     pub path: String,
     pub is_removable: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CardReaderInfo {
+    pub reader_id: String,          // DeviceTreePath - unique identifier
+    pub display_name: String,       // Human-readable name
+    pub mount_point: String,        // /Volumes/xxx
+    pub volume_name: String,        // Name of mounted volume
+    pub bus_protocol: String,       // "USB", "Secure Digital", etc.
+    pub is_internal: bool,          // Built-in vs external
+    pub disk_id: String,            // disk4, disk5, etc.
+    pub file_count: u32,            // Number of JPEGs on card
 }
 
 #[derive(Serialize)]
@@ -106,11 +119,46 @@ fn count_jpeg_files(path: &Path) -> u32 {
         .count() as u32
 }
 
+fn apply_folder_rename(relative_path: &Path, prefix: &str) -> std::path::PathBuf {
+    let mut result = std::path::PathBuf::new();
+
+    for (index, component) in relative_path.components().enumerate() {
+        if index == 0 {
+            // Rename the first component (folder name)
+            if let Some(folder_name) = component.as_os_str().to_str() {
+                // Extract 2-3 digit number from folder name (e.g., "105MSDCF" → "05")
+                if let Some(captures) = regex::Regex::new(r"(\d{2,3})")
+                    .ok()
+                    .and_then(|re| re.captures(folder_name))
+                {
+                    if let Some(number) = captures.get(1) {
+                        let num_str = number.as_str();
+                        // Take last 2 digits
+                        let last_two = if num_str.len() >= 2 {
+                            &num_str[num_str.len() - 2..]
+                        } else {
+                            num_str
+                        };
+                        let new_name = format!("{} {}", prefix, last_two);
+                        result.push(new_name);
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push(component);
+    }
+
+    result
+}
+
 #[tauri::command]
 pub async fn copy_files_to_destination(
     source_path: String,
     destination_path: String,
     on_progress: Channel<CopyProgressEvent>,
+    rename_prefix: Option<String>,
+    auto_rename: bool,
 ) -> Result<u32, String> {
     let source = Path::new(&source_path);
     let dest = Path::new(&destination_path);
@@ -140,7 +188,15 @@ pub async fn copy_files_to_destination(
     for file_path in files {
         // Preserve relative path structure
         let relative = file_path.strip_prefix(source).unwrap_or(&file_path);
-        let dest_file = dest.join(relative);
+
+        // Apply folder renaming if enabled
+        let dest_file = if auto_rename && rename_prefix.is_some() {
+            let prefix = rename_prefix.as_ref().unwrap();
+            let renamed_path = apply_folder_rename(relative, prefix);
+            dest.join(renamed_path)
+        } else {
+            dest.join(relative)
+        };
 
         // Create parent directories
         if let Some(parent) = dest_file.parent() {
@@ -177,4 +233,143 @@ pub fn rename_folder(source_path: String, new_name: String) -> Result<String, St
     fs::rename(source, &new_path).map_err(|e| e.to_string())?;
 
     Ok(new_path.to_string_lossy().to_string())
+}
+
+#[derive(Deserialize)]
+struct DiskutilList {
+    #[serde(rename = "AllDisksAndPartitions")]
+    all_disks_and_partitions: Vec<DiskEntry>,
+}
+
+#[derive(Deserialize)]
+struct DiskEntry {
+    #[serde(rename = "DeviceIdentifier")]
+    device_identifier: String,
+    #[serde(rename = "Partitions", default)]
+    partitions: Vec<PartitionEntry>,
+}
+
+#[derive(Deserialize)]
+struct PartitionEntry {
+    #[serde(rename = "DeviceIdentifier")]
+    device_identifier: String,
+    #[serde(rename = "MountPoint")]
+    mount_point: Option<String>,
+    #[serde(rename = "VolumeName")]
+    volume_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct DiskutilInfo {
+    #[serde(rename = "DeviceTreePath")]
+    device_tree_path: Option<String>,
+    #[serde(rename = "BusProtocol")]
+    bus_protocol: Option<String>,
+    #[serde(rename = "Internal")]
+    internal: Option<bool>,
+    #[serde(rename = "Removable")]
+    removable: Option<bool>,
+    #[serde(rename = "RemovableMedia")]
+    removable_media: Option<bool>,
+    #[serde(rename = "VolumeName")]
+    volume_name: Option<String>,
+    #[serde(rename = "MountPoint")]
+    mount_point: Option<String>,
+    #[serde(rename = "MediaName")]
+    media_name: Option<String>,
+}
+
+#[tauri::command]
+pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
+    let mut readers = Vec::new();
+
+    // Get list of all disks
+    let output = Command::new("diskutil")
+        .args(["list", "-plist"])
+        .output()
+        .map_err(|e| format!("Failed to run diskutil list: {}", e))?;
+
+    let disk_list: DiskutilList = plist::from_bytes(&output.stdout)
+        .map_err(|e| format!("Failed to parse diskutil list: {}", e))?;
+
+    // Check each disk for removable media
+    for disk in disk_list.all_disks_and_partitions {
+        // Get detailed info for this disk
+        let info_output = Command::new("diskutil")
+            .args(["info", "-plist", &disk.device_identifier])
+            .output()
+            .map_err(|e| format!("Failed to run diskutil info: {}", e))?;
+
+        let disk_info: DiskutilInfo = match plist::from_bytes(&info_output.stdout) {
+            Ok(info) => info,
+            Err(_) => continue,
+        };
+
+        // Skip non-removable media (we want SD cards, USB drives, etc.)
+        let is_removable = disk_info.removable.unwrap_or(false)
+            || disk_info.removable_media.unwrap_or(false);
+
+        if !is_removable {
+            continue;
+        }
+
+        // Find mounted partitions for this disk
+        for partition in &disk.partitions {
+            if let Some(mount_point) = &partition.mount_point {
+                // Get detailed info for this partition
+                let part_output = Command::new("diskutil")
+                    .args(["info", "-plist", &partition.device_identifier])
+                    .output()
+                    .map_err(|e| format!("Failed to run diskutil info: {}", e))?;
+
+                let part_info: DiskutilInfo = match plist::from_bytes(&part_output.stdout) {
+                    Ok(info) => info,
+                    Err(_) => continue,
+                };
+
+                // Use the disk's DeviceTreePath as the reader identifier
+                let reader_id = disk_info
+                    .device_tree_path
+                    .clone()
+                    .unwrap_or_else(|| disk.device_identifier.clone());
+
+                let volume_name = partition
+                    .volume_name
+                    .clone()
+                    .or(part_info.volume_name.clone())
+                    .unwrap_or_else(|| "Untitled".to_string());
+
+                let bus_protocol = disk_info
+                    .bus_protocol
+                    .clone()
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                let is_internal = disk_info.internal.unwrap_or(false);
+
+                // Build a human-readable display name
+                let display_name = if is_internal {
+                    format!("Built-in {} Reader", bus_protocol)
+                } else {
+                    format!("External {} Reader", bus_protocol)
+                };
+
+                // Count JPEG files on this volume
+                let file_count = count_jpeg_files(Path::new(mount_point));
+
+                readers.push(CardReaderInfo {
+                    reader_id,
+                    display_name,
+                    mount_point: mount_point.clone(),
+                    volume_name,
+                    bus_protocol,
+                    is_internal,
+                    disk_id: disk.device_identifier.clone(),
+                    file_count,
+                });
+            }
+        }
+    }
+
+    Ok(readers)
 }

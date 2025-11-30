@@ -1707,6 +1707,8 @@ dependencies = [
 name = "ingest"
 version = "0.1.0"
 dependencies = [
+ "plist",
+ "regex",
  "serde",
  "serde_json",
  "tauri",

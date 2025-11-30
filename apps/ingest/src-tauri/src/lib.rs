@@ -12,6 +12,7 @@ pub fn run() {
             commands::get_file_count,
             commands::copy_files_to_destination,
             commands::rename_folder,
+            commands::discover_card_readers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

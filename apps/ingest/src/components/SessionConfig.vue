@@ -11,39 +11,28 @@ const emit = defineEmits<{
 const sessionStore = useSessionStore();
 
 const form = ref({
-  eventSlug: sessionStore.eventSlug || "",
+  destination: sessionStore.destination || "",
   photographer: sessionStore.photographer || "",
-  gym: sessionStore.gym || "",
-  sessionNumber: sessionStore.sessionNumber || "",
-  destinationRoot: sessionStore.destinationRoot || "",
 });
 
 async function selectDestination() {
   const selected = await open({
     directory: true,
     multiple: false,
-    title: "Select Destination Root",
+    title: "Select Session Destination",
   });
   if (selected) {
-    form.value.destinationRoot = selected as string;
+    form.value.destination = selected as string;
   }
 }
 
 function save() {
-  sessionStore.eventSlug = form.value.eventSlug;
+  sessionStore.setDestination(form.value.destination);
   sessionStore.photographer = form.value.photographer;
-  sessionStore.gym = form.value.gym;
-  sessionStore.sessionNumber = form.value.sessionNumber;
-  sessionStore.destinationRoot = form.value.destinationRoot;
   emit("configured");
 }
 
-const isValid = () =>
-  form.value.eventSlug &&
-  form.value.photographer &&
-  form.value.gym &&
-  form.value.sessionNumber &&
-  form.value.destinationRoot;
+const isValid = () => form.value.destination && form.value.photographer;
 </script>
 
 <template>
@@ -53,64 +42,19 @@ const isValid = () =>
     <div class="space-y-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1"
-          >Event Slug</label
+          >Destination Folder</label
         >
-        <input
-          v-model="form.eventSlug"
-          type="text"
-          placeholder="e.g., st-valentines-meet-2025"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-        />
-      </div>
-
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1"
-            >Photographer</label
-          >
-          <input
-            v-model="form.photographer"
-            type="text"
-            placeholder="e.g., kds"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1"
-            >Gym</label
-          >
-          <input
-            v-model="form.gym"
-            type="text"
-            placeholder="e.g., gym-a"
-            class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1"
-          >Session Number</label
-        >
-        <input
-          v-model="form.sessionNumber"
-          type="text"
-          placeholder="e.g., session-1"
-          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-        />
-      </div>
-
-      <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1"
-          >Destination Root</label
-        >
+        <p class="text-xs text-gray-500 mb-2">
+          Select the folder for this session (e.g.,
+          /NAS/originals/event/gym-a/session-1)
+        </p>
         <div class="flex gap-2">
           <input
-            v-model="form.destinationRoot"
+            v-model="form.destination"
             type="text"
             readonly
             placeholder="Click Browse to select..."
-            class="flex-1 border border-gray-300 rounded-lg px-3 py-2 bg-gray-50"
+            class="flex-1 border border-gray-300 rounded-lg px-3 py-2 bg-gray-50 text-sm"
           />
           <button
             @click="selectDestination"
@@ -119,6 +63,18 @@ const isValid = () =>
             Browse
           </button>
         </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1"
+          >Photographer Initials</label
+        >
+        <input
+          v-model="form.photographer"
+          type="text"
+          placeholder="e.g., KDS"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+        />
       </div>
     </div>
 
@@ -135,7 +91,7 @@ const isValid = () =>
         :disabled="!isValid()"
         class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
       >
-        Save Session
+        Save
       </button>
     </div>
   </div>

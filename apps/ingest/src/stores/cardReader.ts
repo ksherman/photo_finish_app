@@ -1,11 +1,18 @@
 import { defineStore } from "pinia";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import type { VolumeInfo, DirectoryEntry, CopyProgressEvent } from "@/types";
+import type {
+  VolumeInfo,
+  DirectoryEntry,
+  CopyProgressEvent,
+  CardReaderInfo,
+} from "@/types";
 
 export const useCardReaderStore = defineStore("cardReader", {
   state: () => ({
     volumes: [] as VolumeInfo[],
+    cardReaders: [] as CardReaderInfo[],
     selectedVolume: null as VolumeInfo | null,
+    selectedReader: null as CardReaderInfo | null,
     directories: [] as DirectoryEntry[],
     totalFileCount: 0,
     copyProgress: null as CopyProgressEvent | null,
@@ -14,7 +21,37 @@ export const useCardReaderStore = defineStore("cardReader", {
   }),
 
   actions: {
+    async discoverReaders() {
+      try {
+        this.cardReaders = await invoke<CardReaderInfo[]>(
+          "discover_card_readers"
+        );
+
+        // Auto-select if only one reader
+        if (this.cardReaders.length === 1 && !this.selectedReader) {
+          await this.selectReader(this.cardReaders[0]);
+        }
+
+        // Update file counts if reader is selected
+        if (this.selectedReader) {
+          const updated = this.cardReaders.find(
+            (r) => r.reader_id === this.selectedReader?.reader_id
+          );
+          if (updated) {
+            this.selectedReader = updated;
+            this.totalFileCount = updated.file_count;
+          } else {
+            // Reader was disconnected
+            this.clearSelection();
+          }
+        }
+      } catch (error) {
+        console.error("Failed to discover card readers:", error);
+      }
+    },
+
     async refreshVolumes() {
+      // Keep for backwards compatibility, but prefer discoverReaders
       try {
         this.volumes = await invoke<VolumeInfo[]>("list_volumes");
 
@@ -28,9 +65,36 @@ export const useCardReaderStore = defineStore("cardReader", {
       }
     },
 
+    async selectReader(reader: CardReaderInfo, cameraFolderPath?: string) {
+      this.selectedReader = reader;
+      this.totalFileCount = reader.file_count;
+      await this.loadDirectoriesFromReader(cameraFolderPath);
+    },
+
     async selectVolume(volume: VolumeInfo) {
       this.selectedVolume = volume;
       await this.loadDirectories();
+    },
+
+    async loadDirectoriesFromReader(cameraFolderPath?: string) {
+      if (!this.selectedReader) return;
+
+      try {
+        let basePath = this.selectedReader.mount_point;
+        // Append camera folder path if provided (e.g., "DCIM")
+        if (cameraFolderPath) {
+          basePath = `${basePath}/${cameraFolderPath}`;
+        }
+
+        const entries = await invoke<DirectoryEntry[]>("list_directory", {
+          path: basePath,
+        });
+
+        // Filter to only directories (camera folders)
+        this.directories = entries.filter((d) => d.is_directory);
+      } catch (error) {
+        console.error("Failed to load directories:", error);
+      }
     },
 
     async loadDirectories() {
@@ -54,8 +118,20 @@ export const useCardReaderStore = defineStore("cardReader", {
       }
     },
 
-    async copyFiles(destinationPath: string): Promise<number> {
-      if (!this.selectedVolume || this.isCopying) return 0;
+    async copyFiles(
+      destinationPath: string,
+      cameraFolderPath?: string,
+      renamePrefix?: string,
+      autoRename?: boolean
+    ): Promise<number> {
+      let sourcePath =
+        this.selectedReader?.mount_point || this.selectedVolume?.path;
+      if (!sourcePath || this.isCopying) return 0;
+
+      // Append camera folder path if provided (e.g., "DCIM")
+      if (cameraFolderPath) {
+        sourcePath = `${sourcePath}/${cameraFolderPath}`;
+      }
 
       this.isCopying = true;
       this.copyErrors = [];
@@ -73,9 +149,11 @@ export const useCardReaderStore = defineStore("cardReader", {
         };
 
         const copiedCount = await invoke<number>("copy_files_to_destination", {
-          sourcePath: this.selectedVolume.path,
+          sourcePath,
           destinationPath,
           onProgress: channel,
+          renamePrefix: renamePrefix || null,
+          autoRename: autoRename || false,
         });
 
         return copiedCount;
@@ -89,6 +167,7 @@ export const useCardReaderStore = defineStore("cardReader", {
 
     clearSelection() {
       this.selectedVolume = null;
+      this.selectedReader = null;
       this.directories = [];
       this.totalFileCount = 0;
       this.copyProgress = null;

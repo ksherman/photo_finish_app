@@ -1,58 +1,39 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from "vue";
+import { onMounted } from "vue";
 import { useCardReaderStore } from "@/stores/cardReader";
+import { useSessionStore } from "@/stores/session";
 
 const cardReaderStore = useCardReaderStore();
-const selectedPath = ref("");
-
-watch(
-  () => cardReaderStore.selectedVolume,
-  (vol) => {
-    selectedPath.value = vol?.path || "";
-  }
-);
+const sessionStore = useSessionStore();
 
 onMounted(() => {
-  cardReaderStore.refreshVolumes();
+  refreshWithCameraPath();
 });
 
-function onVolumeSelect() {
-  const volume = cardReaderStore.volumes.find(
-    (v) => v.path === selectedPath.value
-  );
-  if (volume) {
-    cardReaderStore.selectVolume(volume);
-  }
+async function refresh() {
+  await refreshWithCameraPath();
 }
 
-function refresh() {
-  cardReaderStore.refreshVolumes();
+async function refreshWithCameraPath() {
+  await cardReaderStore.discoverReaders();
+
+  // Reload directories with camera folder path if reader is selected
+  if (cardReaderStore.selectedReader && sessionStore.activeMapping) {
+    await cardReaderStore.loadDirectoriesFromReader(
+      sessionStore.activeMapping.cameraFolderPath
+    );
+  }
 }
 </script>
 
 <template>
   <div class="bg-white rounded-lg shadow p-4 mb-4">
-    <h2 class="font-semibold text-gray-700 mb-3">Card Reader</h2>
-
-    <div class="flex items-center gap-3 mb-3">
-      <select
-        v-model="selectedPath"
-        @change="onVolumeSelect"
-        class="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
-      >
-        <option value="">Select volume...</option>
-        <option
-          v-for="vol in cardReaderStore.volumes"
-          :key="vol.path"
-          :value="vol.path"
-        >
-          {{ vol.name }} ({{ vol.path }})
-        </option>
-      </select>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold text-gray-700">Card Reader</h2>
       <button
         @click="refresh"
         class="p-2 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg"
-        title="Refresh volumes"
+        title="Refresh readers"
       >
         <svg
           class="w-5 h-5"
@@ -70,22 +51,32 @@ function refresh() {
       </button>
     </div>
 
-    <div v-if="cardReaderStore.selectedVolume" class="flex items-center gap-2">
-      <span class="w-3 h-3 rounded-full bg-green-500"></span>
-      <span class="text-sm text-gray-600">
-        Card Ready - {{ cardReaderStore.totalFileCount }} photos in
+    <div v-if="cardReaderStore.selectedReader" class="space-y-2">
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-green-500"></span>
+        <span class="text-sm text-gray-600">
+          {{ cardReaderStore.selectedReader.display_name }}
+        </span>
+      </div>
+      <div class="text-sm text-gray-500">
+        <span class="font-medium">{{ cardReaderStore.selectedReader.volume_name }}</span>
+        - {{ cardReaderStore.totalFileCount }} photos in
         {{ cardReaderStore.directories.length }} folders
-      </span>
+      </div>
+      <div class="text-xs text-gray-400 font-mono truncate">
+        {{ cardReaderStore.selectedReader.mount_point }}
+      </div>
     </div>
+
     <div v-else class="flex items-center gap-2">
       <span class="w-3 h-3 rounded-full bg-gray-400"></span>
-      <span class="text-sm text-gray-500">No card selected</span>
+      <span class="text-sm text-gray-500">No card reader selected</span>
     </div>
 
     <!-- Folder list preview -->
     <div
       v-if="cardReaderStore.directories.length > 0"
-      class="mt-3 text-xs text-gray-500 space-y-1"
+      class="mt-3 text-xs text-gray-500 space-y-1 border-t pt-3"
     >
       <div
         v-for="dir in cardReaderStore.directories.slice(0, 5)"

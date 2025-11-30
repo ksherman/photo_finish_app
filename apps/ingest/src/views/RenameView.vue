@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useCardReaderStore } from "@/stores/cardReader";
 import { useRosterStore } from "@/stores/roster";
+import { useSessionStore } from "@/stores/session";
 import type { FolderRename, Competitor } from "@/types";
 
 const emit = defineEmits<{
@@ -11,6 +12,7 @@ const emit = defineEmits<{
 
 const cardReaderStore = useCardReaderStore();
 const rosterStore = useRosterStore();
+const sessionStore = useSessionStore();
 
 const folders = ref<FolderRename[]>([]);
 const isApplying = ref(false);
@@ -51,6 +53,27 @@ function clearAll() {
   folders.value.forEach((folder) => {
     folder.competitorId = undefined;
     folder.newName = "";
+  });
+}
+
+const renamePrefix = computed(() => {
+  return sessionStore.activeMapping?.renamePrefix || "";
+});
+
+function autoRenameWithPrefix() {
+  if (!renamePrefix.value) {
+    alert("No rename prefix configured for this reader");
+    return;
+  }
+
+  folders.value.forEach((folder) => {
+    // Extract number from folder name (e.g., "105MSDCF" → "05", "101CANON" → "01")
+    const match = folder.originalName.match(/(\d{2,3})/);
+    if (match) {
+      const number = match[1].slice(-2); // Take last 2 digits
+      folder.newName = `${renamePrefix.value} ${number}`;
+      folder.competitorId = undefined;
+    }
   });
 }
 
@@ -113,6 +136,13 @@ async function applyRenames() {
             {{ folders.length }} folders
           </span>
           <div class="space-x-2">
+            <button
+              v-if="renamePrefix"
+              @click="autoRenameWithPrefix"
+              class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg"
+            >
+              Auto-Rename ({{ renamePrefix }})
+            </button>
             <button
               @click="autoAssign"
               class="text-sm bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded-lg"
