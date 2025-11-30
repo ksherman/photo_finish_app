@@ -22,6 +22,7 @@ pub struct CardReaderInfo {
     pub is_internal: bool,          // Built-in vs external
     pub disk_id: String,            // disk4, disk5, etc.
     pub file_count: u32,            // Number of JPEGs on card
+    pub folder_count: u32,          // Number of folders on card
 }
 
 #[derive(Serialize)]
@@ -103,6 +104,25 @@ pub fn get_file_count(path: String) -> Result<u32, String> {
     Ok(count_jpeg_files(Path::new(&path)))
 }
 
+fn count_folders(path: &Path) -> u32 {
+    // Only counts direct children directories, skipping hidden ones
+    if let Ok(read_dir) = fs::read_dir(path) {
+        read_dir
+            .flatten()
+            .filter(|entry| {
+                if let Ok(metadata) = entry.metadata() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    metadata.is_dir() && !name.starts_with('.')
+                } else {
+                    false
+                }
+            })
+            .count() as u32
+    } else {
+        0
+    }
+}
+
 fn count_jpeg_files(path: &Path) -> u32 {
     WalkDir::new(path)
         .into_iter()
@@ -166,6 +186,7 @@ pub async fn copy_files_to_destination(
     on_progress: Channel<CopyProgressEvent>,
     rename_prefix: Option<String>,
     auto_rename: bool,
+    file_rename_prefix: Option<String>,
 ) -> Result<u32, String> {
     // Run blocking IO on a separate thread
     tauri::async_runtime::spawn_blocking(move || {
@@ -173,7 +194,8 @@ pub async fn copy_files_to_destination(
         let dest = Path::new(&destination_path);
 
         // Compile regex once
-        let re = regex::Regex::new(r"(\d{2,3})").map_err(|e| e.to_string())?;
+        let re_folder = regex::Regex::new(r"(\d{2,3})").map_err(|e| e.to_string())?;
+        let re_file = regex::Regex::new(r"(\d+)").map_err(|e| e.to_string())?;
 
         // Create destination directory
         fs::create_dir_all(dest).map_err(|e| e.to_string())?;
@@ -208,21 +230,43 @@ pub async fn copy_files_to_destination(
             let relative = file_path.strip_prefix(source).unwrap_or(&file_path);
 
             // Apply folder renaming if enabled
-            let dest_file = if auto_rename && rename_prefix.is_some() {
+            let mut dest_path_buf = if auto_rename && rename_prefix.is_some() {
                 let prefix = rename_prefix.as_ref().unwrap();
-                let renamed_path = apply_folder_rename(relative, prefix, &re);
+                let renamed_path = apply_folder_rename(relative, prefix, &re_folder);
                 dest.join(renamed_path)
             } else {
                 dest.join(relative)
             };
 
+            // Apply file renaming if enabled
+            if let Some(prefix) = &file_rename_prefix {
+                 if let Some(file_name) = dest_path_buf.file_name().and_then(|n| n.to_str()) {
+                     // Find last numeric sequence
+                     // We iterate over all matches and take the last one to be safe,
+                     // or just assume the main number is captured.
+                     // A simple approach: find regex matches, take the last match.
+                     if let Some(caps) = re_file.find_iter(file_name).last() {
+                         let number = caps.as_str();
+                         let ext = dest_path_buf.extension().and_then(|e| e.to_str()).unwrap_or("");
+                         
+                         let new_name = if ext.is_empty() {
+                             format!("{}_{}", prefix, number)
+                         } else {
+                             format!("{}_{}.{}", prefix, number, ext)
+                         };
+                         
+                         dest_path_buf.set_file_name(new_name);
+                     }
+                 }
+            }
+
             // Create parent directories
-            if let Some(parent) = dest_file.parent() {
+            if let Some(parent) = dest_path_buf.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
 
             // Copy file
-            fs::copy(&file_path, &dest_file).map_err(|e| e.to_string())?;
+            fs::copy(&file_path, &dest_path_buf).map_err(|e| e.to_string())?;
 
             copied += 1;
 
@@ -231,7 +275,7 @@ pub async fn copy_files_to_destination(
                 let _ = on_progress.send(CopyProgressEvent {
                     total,
                     copied,
-                    current_file: file_path
+                    current_file: dest_path_buf // Show new name in progress
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
@@ -379,7 +423,16 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
                 };
 
                 // Count JPEG files on this volume
-                let file_count = count_jpeg_files(Path::new(mount_point));
+                let mount_path = Path::new(mount_point);
+                let file_count = count_jpeg_files(mount_path);
+
+                // Count folders (try DCIM first, otherwise root)
+                let dcim_path = mount_path.join("DCIM");
+                let folder_count = if dcim_path.exists() && dcim_path.is_dir() {
+                    count_folders(&dcim_path)
+                } else {
+                    count_folders(mount_path)
+                };
 
                 readers.push(CardReaderInfo {
                     reader_id,
@@ -390,6 +443,7 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
                     is_internal,
                     disk_id: disk.device_identifier.clone(),
                     file_count,
+                    folder_count,
                 });
             }
         }

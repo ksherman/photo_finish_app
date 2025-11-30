@@ -27,6 +27,7 @@ const photographer = ref("");
 const cameraBrand = ref("");
 const renamePrefix = ref("");
 const autoRename = ref(false);
+const fileRenamePrefix = ref("");
 
 const cameraBrands = [
   { label: "Sony (DCIM)", value: "sony", folderPath: "DCIM" },
@@ -55,6 +56,7 @@ onMounted(() => {
     cameraBrand.value = existing.cameraBrand;
     renamePrefix.value = existing.renamePrefix || "";
     autoRename.value = existing.autoRename || false;
+    fileRenamePrefix.value = existing.fileRenamePrefix || "";
     loadPreview(reader.value, existing.cameraFolderPath);
   } else {
     destination.value = "";
@@ -62,6 +64,7 @@ onMounted(() => {
     cameraBrand.value = "";
     renamePrefix.value = "";
     autoRename.value = false;
+    fileRenamePrefix.value = "";
   }
 });
 
@@ -125,7 +128,8 @@ function save() {
     cameraBrand.value,
     selectedCameraBrand.value.folderPath,
     renamePrefix.value,
-    autoRename.value
+    autoRename.value,
+    fileRenamePrefix.value
   );
 
   emit("saved");
@@ -221,6 +225,21 @@ const isValid = computed(
         >
           <span class="font-medium">Found:</span>
           {{ previewFileCount }} photos in {{ previewFolderCount }} folders
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">
+            File Rename Prefix (Optional)
+          </label>
+          <p class="text-xs text-gray-500 mb-2">
+            Renames files like "IMG_1234.jpg" → "Prefix_1234.jpg"
+          </p>
+          <input
+            v-model="fileRenamePrefix"
+            type="text"
+            placeholder="e.g., Gymnast"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
         </div>
 
         <div>

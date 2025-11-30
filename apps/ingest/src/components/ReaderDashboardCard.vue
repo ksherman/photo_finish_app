@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { ref, computed } from "vue";
 import { useSessionStore } from "@/stores/session";
 import { useCardReaderStore } from "@/stores/cardReader";
 import type { CardReaderInfo } from "@/types";
@@ -14,6 +14,7 @@ const emit = defineEmits<{
 
 const sessionStore = useSessionStore();
 const cardReaderStore = useCardReaderStore();
+const customSubPath = ref("");
 
 const mapping = computed(() =>
   sessionStore.getReaderMapping(props.reader.reader_id)
@@ -34,27 +35,39 @@ const canCopy = computed(
 
 const destinationDisplay = computed(() => {
   if (!mapping.value) return "";
-  const orderPadded = String(mapping.value.currentOrder).padStart(4, "0");
-  // Show last part of path for brevity
-  const parts = mapping.value.destination.split("/");
-  const shortPath = parts.slice(-2).join("/");
-  return `.../${shortPath}/${orderPadded}`;
+  
+  let display = mapping.value.destination;
+  
+  if (customSubPath.value.trim()) {
+    display += `/${customSubPath.value.trim().replace(/^\/+|\/+$/g, '')}`;
+  }
+  
+  return display;
 });
 
 async function startCopy() {
   if (!canCopy.value || !mapping.value) return;
 
+  let fullPath = `${mapping.value.destination}`;
+
+  if (customSubPath.value.trim()) {
+    const cleanSubPath = customSubPath.value.trim().replace(/^\/+|\/+$/g, '');
+    fullPath = `${fullPath}/${cleanSubPath}`;
+  }
+
   try {
     await cardReaderStore.copyFiles(
       props.reader.reader_id,
-      mapping.value.destination, // Base destination
+      fullPath,
       mapping.value.cameraFolderPath,
       mapping.value.renamePrefix,
-      mapping.value.autoRename
+      mapping.value.autoRename,
+      mapping.value.fileRenamePrefix
     );
 
-    // Increment order on success
+    // Increment order on success (still tracking it in background in case needed later)
     sessionStore.incrementOrderForReader(props.reader.reader_id);
+    
   } catch (error) {
     console.error("Copy failed:", error);
   }
@@ -88,24 +101,39 @@ async function startCopy() {
             <span class="font-medium text-gray-900">{{ mapping.photographer }}</span>
           </div>
           <div>
-            <span class="text-gray-500 block text-xs">Camera</span>
-            <span class="font-medium text-gray-900">{{ mapping.cameraBrand }}</span>
+            <span class="text-gray-500 block text-xs">Files on Card</span>
+            <span class="font-medium text-gray-900">
+                {{ reader.file_count }} 
+                <span class="text-gray-400 font-normal ml-1 text-xs">in {{ reader.folder_count }} folders</span>
+            </span>
           </div>
-        </div>
-        
-        <div class="text-sm bg-gray-50 p-2 rounded border border-gray-100">
-          <span class="text-gray-500 block text-xs mb-1">Destination</span>
-          <code class="text-xs text-blue-600 break-all">{{ destinationDisplay }}</code>
-        </div>
-        
-        <div class="mt-3">
-             <span class="text-gray-500 text-xs">Files on card:</span>
-             <span class="font-bold text-gray-900 ml-1">{{ reader.file_count }}</span>
         </div>
       </div>
 
       <div v-else class="text-center py-6 text-gray-500 text-sm">
         <p>Configure this reader to start ingesting photos.</p>
+      </div>
+
+      <div v-if="isConfigured" class="mt-auto space-y-3">
+        <!-- Destination Preview -->
+        <div class="text-sm bg-gray-50 p-2 rounded border border-gray-100">
+          <span class="text-gray-500 block text-xs mb-1">Destination</span>
+          <code class="text-xs text-blue-600 break-all block leading-tight">{{ destinationDisplay }}</code>
+        </div>
+
+        <!-- Sub-Folder Input -->
+        <div class="pt-2 border-t border-dashed border-gray-200">
+          <label class="block text-xs font-medium text-gray-700 mb-1">
+            Optional Sub-folder
+          </label>
+          <input
+              v-model="customSubPath"
+              type="text"
+              placeholder="e.g. Group 8B/Floor"
+              class="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              :disabled="copyState.isCopying"
+          />
+        </div>
       </div>
 
       <!-- Progress / Status -->
@@ -126,7 +154,7 @@ async function startCopy() {
       </div>
 
       <div v-if="copyState.lastResult?.success" class="mt-4 bg-green-50 p-2 rounded text-xs text-green-700 border border-green-100">
-        ✅ Copied {{ copyState.lastResult.count }} files
+        ✅ Copied {{ copyState.lastResult.count }} files in {{ copyState.lastResult.durationSeconds.toFixed(1) }}s
       </div>
       
       <div v-if="copyState.error" class="mt-4 bg-red-50 p-2 rounded text-xs text-red-700 border border-red-100">

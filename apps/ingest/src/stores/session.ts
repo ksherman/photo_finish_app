@@ -10,6 +10,7 @@ export interface ReaderMapping {
   cameraFolderPath: string; // e.g., "DCIM" or "" for root
   renamePrefix: string; // e.g., "Gymnast" - used for auto-renaming folders
   autoRename: boolean; // Whether to auto-rename folders during copy
+  fileRenamePrefix?: string; // e.g., "Gymnast" - used for renaming individual files
 }
 
 export interface SessionState {
@@ -99,7 +100,8 @@ export const useSessionStore = defineStore("session", {
       cameraBrand: string,
       cameraFolderPath: string,
       renamePrefix: string,
-      autoRename: boolean
+      autoRename: boolean,
+      fileRenamePrefix?: string
     ) {
       const existing = this.readerMappings[readerId];
       this.readerMappings[readerId] = {
@@ -111,6 +113,7 @@ export const useSessionStore = defineStore("session", {
         cameraFolderPath,
         renamePrefix,
         autoRename,
+        fileRenamePrefix,
         // Reset order if destination changed, otherwise keep existing
         currentOrder:
           existing && existing.destination === destination

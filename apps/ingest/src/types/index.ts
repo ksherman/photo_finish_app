@@ -33,6 +33,7 @@ export interface CardReaderInfo {
   is_internal: boolean;
   disk_id: string;
   file_count: number;
+  folder_count: number;
 }
 
 export interface Competitor {

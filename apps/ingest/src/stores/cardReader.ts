@@ -11,7 +11,7 @@ interface CopyState {
   isCopying: boolean;
   progress: CopyProgressEvent | null;
   error: string | null;
-  lastResult: { count: number; success: boolean } | null;
+  lastResult: { count: number; success: boolean; durationSeconds: number } | null;
 }
 
 export const useCardReaderStore = defineStore("cardReader", {
@@ -105,7 +105,8 @@ export const useCardReaderStore = defineStore("cardReader", {
       destinationPath: string,
       cameraFolderPath?: string,
       renamePrefix?: string,
-      autoRename?: boolean
+      autoRename?: boolean,
+      fileRenamePrefix?: string
     ): Promise<number> {
       const reader = this.cardReaders.find(r => r.reader_id === readerId);
       if (!reader) throw new Error("Reader not found");
@@ -129,6 +130,7 @@ export const useCardReaderStore = defineStore("cardReader", {
       }
 
       try {
+        const startTime = performance.now();
         const channel = new Channel<CopyProgressEvent>();
         channel.onmessage = (progress) => {
           if (this.copyStates[readerId]) {
@@ -142,16 +144,18 @@ export const useCardReaderStore = defineStore("cardReader", {
           onProgress: channel,
           renamePrefix: renamePrefix || null,
           autoRename: autoRename || false,
+          fileRenamePrefix: fileRenamePrefix || null
         });
 
-        this.copyStates[readerId].lastResult = { count: copiedCount, success: true };
+        const durationSeconds = (performance.now() - startTime) / 1000;
+        this.copyStates[readerId].lastResult = { count: copiedCount, success: true, durationSeconds };
         return copiedCount;
 
       } catch (error) {
         const msg = String(error);
         if (this.copyStates[readerId]) {
             this.copyStates[readerId].error = msg;
-            this.copyStates[readerId].lastResult = { count: 0, success: false };
+            this.copyStates[readerId].lastResult = { count: 0, success: false, durationSeconds: 0 };
         }
         throw error;
       } finally {
