@@ -108,6 +108,11 @@ fn count_jpeg_files(path: &Path) -> u32 {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
+            // Ignore hidden files (starts with .)
+            if e.file_name().to_string_lossy().starts_with('.') {
+                return false;
+            }
+
             e.path()
                 .extension()
                 .map(|ext| {
@@ -119,7 +124,12 @@ fn count_jpeg_files(path: &Path) -> u32 {
         .count() as u32
 }
 
-fn apply_folder_rename(relative_path: &Path, prefix: &str) -> std::path::PathBuf {
+fn apply_folder_rename(relative_path: &Path, prefix: &str, re: &regex::Regex) -> std::path::PathBuf {
+    // If path is just a filename (no parent folder), don't rename
+    if relative_path.components().count() < 2 {
+        return relative_path.to_path_buf();
+    }
+
     let mut result = std::path::PathBuf::new();
 
     for (index, component) in relative_path.components().enumerate() {
@@ -127,10 +137,7 @@ fn apply_folder_rename(relative_path: &Path, prefix: &str) -> std::path::PathBuf
             // Rename the first component (folder name)
             if let Some(folder_name) = component.as_os_str().to_str() {
                 // Extract 2-3 digit number from folder name (e.g., "105MSDCF" → "05")
-                if let Some(captures) = regex::Regex::new(r"(\d{2,3})")
-                    .ok()
-                    .and_then(|re| re.captures(folder_name))
-                {
+                if let Some(captures) = re.captures(folder_name) {
                     if let Some(number) = captures.get(1) {
                         let num_str = number.as_str();
                         // Take last 2 digits
@@ -160,68 +167,85 @@ pub async fn copy_files_to_destination(
     rename_prefix: Option<String>,
     auto_rename: bool,
 ) -> Result<u32, String> {
-    let source = Path::new(&source_path);
-    let dest = Path::new(&destination_path);
+    // Run blocking IO on a separate thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = Path::new(&source_path);
+        let dest = Path::new(&destination_path);
 
-    // Create destination directory
-    fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+        // Compile regex once
+        let re = regex::Regex::new(r"(\d{2,3})").map_err(|e| e.to_string())?;
 
-    // Collect all JPEG files
-    let files: Vec<_> = WalkDir::new(source)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| {
-                    let ext_lower = ext.to_string_lossy().to_lowercase();
-                    ext_lower == "jpg" || ext_lower == "jpeg"
-                })
-                .unwrap_or(false)
-        })
-        .map(|e| e.path().to_path_buf())
-        .collect();
+        // Create destination directory
+        fs::create_dir_all(dest).map_err(|e| e.to_string())?;
 
-    let total = files.len() as u32;
-    let mut copied = 0u32;
+        // Collect all JPEG files
+        let files: Vec<_> = WalkDir::new(source)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                // Ignore hidden files
+                if e.file_name().to_string_lossy().starts_with('.') {
+                    return false;
+                }
 
-    for file_path in files {
-        // Preserve relative path structure
-        let relative = file_path.strip_prefix(source).unwrap_or(&file_path);
+                e.path()
+                    .extension()
+                    .map(|ext| {
+                        let ext_lower = ext.to_string_lossy().to_lowercase();
+                        ext_lower == "jpg" || ext_lower == "jpeg"
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|e| e.path().to_path_buf())
+            .collect();
 
-        // Apply folder renaming if enabled
-        let dest_file = if auto_rename && rename_prefix.is_some() {
-            let prefix = rename_prefix.as_ref().unwrap();
-            let renamed_path = apply_folder_rename(relative, prefix);
-            dest.join(renamed_path)
-        } else {
-            dest.join(relative)
-        };
+        let total = files.len() as u32;
+        let mut copied = 0u32;
+        let mut last_update = std::time::Instant::now();
 
-        // Create parent directories
-        if let Some(parent) = dest_file.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        for file_path in files {
+            // Preserve relative path structure
+            let relative = file_path.strip_prefix(source).unwrap_or(&file_path);
+
+            // Apply folder renaming if enabled
+            let dest_file = if auto_rename && rename_prefix.is_some() {
+                let prefix = rename_prefix.as_ref().unwrap();
+                let renamed_path = apply_folder_rename(relative, prefix, &re);
+                dest.join(renamed_path)
+            } else {
+                dest.join(relative)
+            };
+
+            // Create parent directories
+            if let Some(parent) = dest_file.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+
+            // Copy file
+            fs::copy(&file_path, &dest_file).map_err(|e| e.to_string())?;
+
+            copied += 1;
+
+            // Send progress update (throttle to every 100ms or completion)
+            if copied == total || last_update.elapsed().as_millis() > 100 {
+                let _ = on_progress.send(CopyProgressEvent {
+                    total,
+                    copied,
+                    current_file: file_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                    percentage: (copied as f32 / total as f32) * 100.0,
+                });
+                last_update = std::time::Instant::now();
+            }
         }
 
-        // Copy file
-        fs::copy(&file_path, &dest_file).map_err(|e| e.to_string())?;
-
-        copied += 1;
-
-        // Send progress update
-        let _ = on_progress.send(CopyProgressEvent {
-            total,
-            copied,
-            current_file: file_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            percentage: (copied as f32 / total as f32) * 100.0,
-        });
-    }
-
-    Ok(copied)
+        Ok(copied)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

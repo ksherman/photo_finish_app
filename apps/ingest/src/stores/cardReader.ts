@@ -7,39 +7,56 @@ import type {
   CardReaderInfo,
 } from "@/types";
 
+interface CopyState {
+  isCopying: boolean;
+  progress: CopyProgressEvent | null;
+  error: string | null;
+  lastResult: { count: number; success: boolean } | null;
+}
+
 export const useCardReaderStore = defineStore("cardReader", {
   state: () => ({
     volumes: [] as VolumeInfo[],
     cardReaders: [] as CardReaderInfo[],
+    
+    // Selection state for Setup UI
     selectedVolume: null as VolumeInfo | null,
     selectedReader: null as CardReaderInfo | null,
-    directories: [] as DirectoryEntry[],
-    totalFileCount: 0,
-    copyProgress: null as CopyProgressEvent | null,
-    isCopying: false,
-    copyErrors: [] as string[],
+    directories: [] as DirectoryEntry[], // For preview in Setup
+    
+    // Per-reader state
+    copyStates: {} as Record<string, CopyState>,
   }),
+
+  getters: {
+    getCopyState: (state) => (readerId: string) => {
+      return state.copyStates[readerId] || {
+        isCopying: false,
+        progress: null,
+        error: null,
+        lastResult: null
+      };
+    }
+  },
 
   actions: {
     async discoverReaders() {
       try {
-        this.cardReaders = await invoke<CardReaderInfo[]>(
+        const readers = await invoke<CardReaderInfo[]>(
           "discover_card_readers"
         );
+        
+        // Preserve existing readers' object references if possible or just replace
+        // But we need to update file counts.
+        this.cardReaders = readers;
 
-        // Auto-select if only one reader
-        if (this.cardReaders.length === 1 && !this.selectedReader) {
-          await this.selectReader(this.cardReaders[0]);
-        }
-
-        // Update file counts if reader is selected
+        // If we have a selected reader, update it
         if (this.selectedReader) {
           const updated = this.cardReaders.find(
             (r) => r.reader_id === this.selectedReader?.reader_id
           );
           if (updated) {
             this.selectedReader = updated;
-            this.totalFileCount = updated.file_count;
           } else {
             // Reader was disconnected
             this.clearSelection();
@@ -51,15 +68,8 @@ export const useCardReaderStore = defineStore("cardReader", {
     },
 
     async refreshVolumes() {
-      // Keep for backwards compatibility, but prefer discoverReaders
       try {
         this.volumes = await invoke<VolumeInfo[]>("list_volumes");
-
-        // Auto-select removable volume if only one
-        const removable = this.volumes.filter((v) => v.is_removable);
-        if (removable.length === 1 && !this.selectedVolume) {
-          await this.selectVolume(removable[0]);
-        }
       } catch (error) {
         console.error("Failed to list volumes:", error);
       }
@@ -67,13 +77,7 @@ export const useCardReaderStore = defineStore("cardReader", {
 
     async selectReader(reader: CardReaderInfo, cameraFolderPath?: string) {
       this.selectedReader = reader;
-      this.totalFileCount = reader.file_count;
       await this.loadDirectoriesFromReader(cameraFolderPath);
-    },
-
-    async selectVolume(volume: VolumeInfo) {
-      this.selectedVolume = volume;
-      await this.loadDirectories();
     },
 
     async loadDirectoriesFromReader(cameraFolderPath?: string) {
@@ -81,7 +85,6 @@ export const useCardReaderStore = defineStore("cardReader", {
 
       try {
         let basePath = this.selectedReader.mount_point;
-        // Append camera folder path if provided (e.g., "DCIM")
         if (cameraFolderPath) {
           basePath = `${basePath}/${cameraFolderPath}`;
         }
@@ -90,62 +93,47 @@ export const useCardReaderStore = defineStore("cardReader", {
           path: basePath,
         });
 
-        // Filter to only directories (camera folders)
         this.directories = entries.filter((d) => d.is_directory);
       } catch (error) {
         console.error("Failed to load directories:", error);
-      }
-    },
-
-    async loadDirectories() {
-      if (!this.selectedVolume) return;
-
-      try {
-        const entries = await invoke<DirectoryEntry[]>("list_directory", {
-          path: this.selectedVolume.path,
-        });
-
-        // Filter to only directories (camera folders)
-        this.directories = entries.filter((d) => d.is_directory);
-
-        // Calculate total file count
-        this.totalFileCount = this.directories.reduce(
-          (sum, dir) => sum + dir.file_count,
-          0
-        );
-      } catch (error) {
-        console.error("Failed to load directories:", error);
+        this.directories = [];
       }
     },
 
     async copyFiles(
+      readerId: string,
       destinationPath: string,
       cameraFolderPath?: string,
       renamePrefix?: string,
       autoRename?: boolean
     ): Promise<number> {
-      let sourcePath =
-        this.selectedReader?.mount_point || this.selectedVolume?.path;
-      if (!sourcePath || this.isCopying) return 0;
+      const reader = this.cardReaders.find(r => r.reader_id === readerId);
+      if (!reader) throw new Error("Reader not found");
 
-      // Append camera folder path if provided (e.g., "DCIM")
+      // Initialize state for this reader
+      this.copyStates[readerId] = {
+        isCopying: true,
+        progress: {
+          total: 0,
+          copied: 0,
+          current_file: "",
+          percentage: 0,
+        },
+        error: null,
+        lastResult: null
+      };
+
+      let sourcePath = reader.mount_point;
       if (cameraFolderPath) {
         sourcePath = `${sourcePath}/${cameraFolderPath}`;
       }
 
-      this.isCopying = true;
-      this.copyErrors = [];
-      this.copyProgress = {
-        total: 0,
-        copied: 0,
-        current_file: "",
-        percentage: 0,
-      };
-
       try {
         const channel = new Channel<CopyProgressEvent>();
         channel.onmessage = (progress) => {
-          this.copyProgress = progress;
+          if (this.copyStates[readerId]) {
+            this.copyStates[readerId].progress = progress;
+          }
         };
 
         const copiedCount = await invoke<number>("copy_files_to_destination", {
@@ -156,12 +144,20 @@ export const useCardReaderStore = defineStore("cardReader", {
           autoRename: autoRename || false,
         });
 
+        this.copyStates[readerId].lastResult = { count: copiedCount, success: true };
         return copiedCount;
+
       } catch (error) {
-        this.copyErrors.push(String(error));
+        const msg = String(error);
+        if (this.copyStates[readerId]) {
+            this.copyStates[readerId].error = msg;
+            this.copyStates[readerId].lastResult = { count: 0, success: false };
+        }
         throw error;
       } finally {
-        this.isCopying = false;
+        if (this.copyStates[readerId]) {
+            this.copyStates[readerId].isCopying = false;
+        }
       }
     },
 
@@ -169,8 +165,12 @@ export const useCardReaderStore = defineStore("cardReader", {
       this.selectedVolume = null;
       this.selectedReader = null;
       this.directories = [];
-      this.totalFileCount = 0;
-      this.copyProgress = null;
     },
+    
+    resetCopyState(readerId: string) {
+        if (this.copyStates[readerId]) {
+            delete this.copyStates[readerId];
+        }
+    }
   },
 });

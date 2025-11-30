@@ -1,67 +1,24 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
-import { useSessionStore } from "@/stores/session";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useCardReaderStore } from "@/stores/cardReader";
+import ReaderDashboardCard from "@/components/ReaderDashboardCard.vue";
 import ReaderSetup from "@/components/ReaderSetup.vue";
-import CardReaderStatus from "@/components/CardReaderStatus.vue";
-import DestinationPreview from "@/components/DestinationPreview.vue";
-import CopyProgress from "@/components/CopyProgress.vue";
 
-const emit = defineEmits<{
-  navigate: [view: string];
-}>();
-
-const sessionStore = useSessionStore();
 const cardReaderStore = useCardReaderStore();
 
-const showSetup = ref(false);
-const lastCopyResult = ref<{ count: number; success: boolean } | null>(null);
+const configuringReaderId = ref<string | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-const canCopy = computed(
-  () =>
-    sessionStore.isConfigured &&
-    cardReaderStore.selectedReader &&
-    cardReaderStore.totalFileCount > 0 &&
-    !cardReaderStore.isCopying
-);
-
-const cameraBrands = [
-  { label: "Sony (DCIM)", value: "sony" },
-  { label: "Canon (DCIM)", value: "canon" },
-  { label: "Nikon (DCIM)", value: "nikon" },
-  { label: "Fujifilm (DCIM)", value: "fujifilm" },
-  { label: "Panasonic (DCIM)", value: "panasonic" },
-  { label: "Olympus (DCIM)", value: "olympus" },
-];
-
-const cameraBrandLabel = computed(() => {
-  const brandValue = sessionStore.activeMapping?.cameraBrand;
-  return cameraBrands.find((b) => b.value === brandValue)?.label || "Unknown";
-});
 
 onMounted(() => {
   cardReaderStore.discoverReaders();
 
   // Poll for volume changes
   pollInterval = setInterval(() => {
-    if (!cardReaderStore.isCopying) {
-      cardReaderStore.discoverReaders();
-    }
+    // We can poll even during copy now, but maybe less frequently or just rely on OS events if we had them.
+    // For now, keep polling.
+    cardReaderStore.discoverReaders();
   }, 3000);
-
-  // Auto-activate reader from existing mapping
-  if (cardReaderStore.cardReaders.length > 0) {
-    for (const reader of cardReaderStore.cardReaders) {
-      const mapping = sessionStore.getReaderMapping(reader.reader_id);
-      if (mapping) {
-        sessionStore.setActiveReader(reader.reader_id);
-        cardReaderStore.selectReader(reader, mapping.cameraFolderPath);
-        break;
-      }
-    }
-  }
 });
 
 onUnmounted(() => {
@@ -70,134 +27,77 @@ onUnmounted(() => {
   }
 });
 
-function onReaderConfigured() {
-  showSetup.value = false;
+function onConfigureReader(readerId: string) {
+  configuringReaderId.value = readerId;
 }
 
-async function startCopy() {
-  if (!canCopy.value) return;
+function onSetupClose() {
+  configuringReaderId.value = null;
+}
 
-  lastCopyResult.value = null;
-
-  try {
-    const cameraFolderPath = sessionStore.activeMapping?.cameraFolderPath || "";
-    const renamePrefix = sessionStore.activeMapping?.renamePrefix || "";
-    const autoRename = sessionStore.activeMapping?.autoRename || false;
-
-    const copiedCount = await cardReaderStore.copyFiles(
-      sessionStore.destinationPath,
-      cameraFolderPath,
-      renamePrefix,
-      autoRename
-    );
-
-    lastCopyResult.value = { count: copiedCount, success: true };
-
-    // Increment order for next batch
-    sessionStore.incrementOrder();
-  } catch (error) {
-    lastCopyResult.value = { count: 0, success: false };
-    console.error("Copy failed:", error);
-  }
+function onSetupSaved() {
+  configuringReaderId.value = null;
 }
 </script>
 
 <template>
   <div class="min-h-screen bg-gray-100 p-6">
-    <div class="max-w-2xl mx-auto">
+    <div class="max-w-7xl mx-auto">
       <!-- Header -->
-      <div class="bg-white rounded-lg shadow p-4 mb-4">
-        <div class="flex justify-between items-center">
-          <div>
-            <h1 class="text-xl font-bold text-gray-800">PhotoFinish Ingest</h1>
-            <p class="text-sm text-gray-500">
-              Copy photos from memory card to server
-            </p>
-          </div>
+      <div class="bg-white rounded-lg shadow p-4 mb-6 flex justify-between items-center">
+        <div>
+          <h1 class="text-xl font-bold text-gray-800">PhotoFinish Ingest</h1>
+          <p class="text-sm text-gray-500">
+            Copy photos from memory cards to server
+          </p>
+        </div>
+        <div class="text-sm text-gray-500">
+          {{ cardReaderStore.cardReaders.length }} reader(s) detected
         </div>
       </div>
 
-      <!-- Reader Setup (if not configured or editing) -->
-      <ReaderSetup
-        v-if="!sessionStore.isConfigured || showSetup"
-        @configured="onReaderConfigured"
-      />
+      <!-- Reader Grid -->
+      <div 
+        v-if="cardReaderStore.cardReaders.length > 0"
+        class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+      >
+        <ReaderDashboardCard
+          v-for="reader in cardReaderStore.cardReaders"
+          :key="reader.reader_id"
+          :reader="reader"
+          @configure="onConfigureReader"
+        />
+      </div>
 
-      <template v-else>
-        <!-- Current Session Summary -->
-        <div class="bg-white rounded-lg shadow p-4 mb-4">
-          <div class="flex justify-between items-center mb-2">
-            <h2 class="font-semibold text-gray-700">Session</h2>
-            <button
-              @click="showSetup = true"
-              class="text-sm text-blue-600 hover:underline"
-            >
-              Change
-            </button>
-          </div>
-          <div class="text-sm space-y-1">
-            <div>
-              <span class="text-gray-500">Reader:</span>
-              {{ sessionStore.activeMapping?.displayName || "Unknown" }}
-            </div>
-            <div>
-              <span class="text-gray-500">Camera:</span>
-              {{ cameraBrandLabel }}
-            </div>
-            <div>
-              <span class="text-gray-500">Photographer:</span>
-              {{ sessionStore.currentPhotographer }}
-            </div>
-            <div class="text-xs text-gray-400 truncate">
-              {{ sessionStore.currentDestination }}
-            </div>
-          </div>
-        </div>
-
-        <!-- Card Reader Status -->
-        <CardReaderStatus />
-
-        <!-- Destination Preview -->
-        <DestinationPreview />
-
-        <!-- Copy Button -->
-        <div class="bg-white rounded-lg shadow p-4 mb-4">
-          <button
-            @click="startCopy"
-            :disabled="!canCopy"
-            class="w-full py-3 rounded-lg font-semibold text-white transition-colors"
-            :class="
-              canCopy
-                ? 'bg-blue-600 hover:bg-blue-700'
-                : 'bg-gray-400 cursor-not-allowed'
-            "
-          >
-            {{
-              cardReaderStore.isCopying
-                ? "Copying..."
-                : `Copy ${cardReaderStore.totalFileCount} Files to Server`
-            }}
-          </button>
-        </div>
-
-        <!-- Progress -->
-        <CopyProgress />
-
-        <!-- Success Message -->
-        <div
-          v-if="lastCopyResult?.success"
-          class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4"
+      <!-- Empty State -->
+      <div v-else class="text-center py-20 bg-white rounded-lg shadow">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 mx-auto text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+        </svg>
+        <h3 class="text-lg font-medium text-gray-900">No Card Readers Detected</h3>
+        <p class="text-gray-500 mt-2">Connect a card reader or insert a memory card to begin.</p>
+        <button
+          @click="cardReaderStore.discoverReaders()"
+          class="mt-4 px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 font-medium"
         >
-          <p class="text-green-800 font-medium">
-            Successfully copied {{ lastCopyResult.count }} files!
-          </p>
-          <p class="text-sm text-green-600 mt-1">
-            Order incremented to #{{
-              String(sessionStore.currentOrderNumber).padStart(4, "0")
-            }}
-          </p>
+          Refresh Now
+        </button>
+      </div>
+
+      <!-- Setup Modal -->
+      <div 
+        v-if="configuringReaderId"
+        class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 backdrop-blur-sm"
+      >
+        <div class="w-full max-w-lg bg-white rounded-lg shadow-xl" @click.stop>
+          <ReaderSetup
+            :reader-id="configuringReaderId"
+            @close="onSetupClose"
+            @saved="onSetupSaved"
+          />
         </div>
-      </template>
+      </div>
+
     </div>
   </div>
 </template>

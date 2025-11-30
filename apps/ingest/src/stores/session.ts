@@ -138,6 +138,12 @@ export const useSessionStore = defineStore("session", {
       }
     },
 
+    incrementOrderForReader(readerId: string) {
+      if (this.readerMappings[readerId]) {
+        this.readerMappings[readerId].currentOrder++;
+      }
+    },
+
     resetOrder() {
       if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
         this.readerMappings[this.activeReaderId].currentOrder = 1;

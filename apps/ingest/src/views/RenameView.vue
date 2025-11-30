@@ -98,7 +98,7 @@ async function applyRenames() {
     }
 
     // Refresh directories
-    await cardReaderStore.loadDirectories();
+    // await cardReaderStore.loadDirectories();
 
     emit("back");
   } catch (error) {

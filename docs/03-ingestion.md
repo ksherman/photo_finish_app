@@ -1,23 +1,23 @@
 # PhotoFinish - Ingestion System
 
-**Version:** 1.0  
+**Version:** 1.1
 **Date:** November 29, 2025
 
 ---
 
 ## Overview
 
-Photos are ingested via direct file copy to NAS, not HTTP upload. The Tauri desktop app handles memory card reading and file copying. Phoenix discovers files via file watcher and processes them.
+Photos are ingested via direct file copy from memory cards to NAS using a Tauri desktop application. The app identifies card readers, maps them to session destinations, and copies files with optional folder renaming.
 
 ---
 
 ## Workflow Summary
 
 ```
-Photographer → Memory Card → Tauri App → NAS → File Watcher → Processing → Viewer
-     │              │            │         │          │            │
-   capture      folder per    barcode    copy     detect      thumbnail
-               competitor     scan                            + preview
+Photographer → Memory Card → Card Reader → Tauri App → NAS
+     │              │             │            │         │
+  capture      folder per     USB/SD      configure   copy with
+             apparatus      (persists)    & rename   progress
 ```
 
 ---
@@ -26,280 +26,463 @@ Photographer → Memory Card → Tauri App → NAS → File Watcher → Processi
 
 ### Purpose
 
-Desktop app for copying photos from memory cards. Required because browsers cannot access USB drives or local filesystems.
+Desktop app for copying photos from memory cards to NAS. Required because browsers cannot access USB drives or local filesystems.
 
 ### Technology Stack
 
-- **Backend:** Rust (Tauri framework)
-- **Frontend:** VueJS 3 + Tailwind CSS
+- **Backend:** Rust (Tauri 2.x framework)
+- **Frontend:** Vue 3 (Composition API) + TypeScript
+- **State Management:** Pinia with persistence
+- **Styling:** Tailwind CSS v4
 - **Platform:** macOS (Apple Silicon primary)
 
 ### Core Features
 
-1. **Session Configuration**
-   - Set destination root path
-   - Select card reader drive
-   - Load photographer profile
-   - Load roster from Phoenix API or file
+#### 1. Card Reader Discovery & Mapping
 
-2. **Memory Card Workflow**
-   - Insert card
-   - Scan envelope barcode → auto-fills rotation/apparatus
-   - Click "Copy Files" → copies to NAS
-   - Rename folders (camera names → competitor names)
-   - Notify Phoenix via API
+- **Automatic detection** of removable media using macOS `diskutil`
+- **Unique identification** via DeviceTreePath (persists across card swaps)
+- **Reader mapping**: Each reader can be permanently mapped to a destination
+- **Multi-reader support**: Built-in SD slot and external USB readers tracked separately
 
-3. **Folder Renaming**
-   - Camera creates folders: `EOS100`, `EOS101`, `EOS102`
-   - Staff renames using roster: `EOS100` → `1022 Kevin S`
-   - Dropdown with roster entries for quick selection
+**Reader Information Collected:**
+```rust
+struct CardReaderInfo {
+    reader_id: String,          // DeviceTreePath (unique per physical slot)
+    display_name: String,       // "Built-in SD Reader", "External USB Reader"
+    mount_point: String,        // /Volumes/EOS_DIGITAL
+    volume_name: String,        // Name of mounted card
+    bus_protocol: String,       // "Secure Digital", "USB", etc.
+    is_internal: bool,          // Built-in vs external
+    disk_id: String,            // disk4, disk5, etc.
+    file_count: u32,            // Number of JPEGs on card
+}
+```
+
+**Implementation:**
+```rust
+#[tauri::command]
+pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
+    // Uses `diskutil list -plist` and `diskutil info -plist`
+    // Filters for removable media only
+    // Counts JPEG files recursively
+}
+```
+
+#### 2. Session Configuration
+
+Each reader is configured once with:
+- **Destination path**: Session folder on NAS (e.g., `/NAS/originals/event/gym-a/session-1`)
+- **Photographer initials**: e.g., "KDS"
+- **Camera brand**: Sony, Canon, Nikon, Fujifilm, Panasonic, Olympus
+- **Rename settings**: Optional auto-rename with custom prefix
+
+**Persistence:** Configuration stored in Pinia with `pinia-plugin-persistedstate`, survives app restarts.
+
+**Reader Mapping Interface:**
+```typescript
+interface ReaderMapping {
+  readerId: string;           // DeviceTreePath
+  displayName: string;        // Human-readable reader name
+  destination: string;        // Full path to session folder
+  photographer: string;       // Photographer initials
+  currentOrder: number;       // Batch counter (increments after copy)
+  cameraBrand: string;        // "sony", "canon", "nikon", etc.
+  cameraFolderPath: string;   // "DCIM" (where camera stores files)
+  renamePrefix: string;       // e.g., "Gymnast" for auto-rename
+  autoRename: boolean;        // Toggle for auto-rename during copy
+}
+```
+
+#### 3. Camera Brand Support
+
+Different cameras organize files differently. The app supports:
+
+| Brand | Folder Structure |
+|-------|-----------------|
+| Sony | `/DCIM/100MSDCF/` |
+| Canon | `/DCIM/100CANON/` |
+| Nikon | `/DCIM/100NIKON/` |
+| Fujifilm | `/DCIM/100_FUJI/` |
+| Panasonic | `/DCIM/100_PANA/` |
+| Olympus | `/DCIM/100OLYMP/` |
+
+When a camera brand is selected during setup:
+- Live preview shows folder and file counts from the correct path
+- Copy operation automatically uses the correct source path
+- DCIM folder itself is not copied, only its contents
+
+#### 4. Auto-Rename Feature
+
+Automatically renames camera-generated folders to human-readable names during copy.
+
+**Pattern:**
+- Camera folder: `105MSDCF`, `101CANON`, `999_FUJI`
+- Extracts last 2 digits of embedded number
+- Applies custom prefix
+- Result: `Gymnast 05`, `Gymnast 01`, `Gymnast 99`
+
+**Implementation:**
+```rust
+fn apply_folder_rename(relative_path: &Path, prefix: &str) -> PathBuf {
+    // Regex: r"(\d{2,3})" extracts 2-3 digit number
+    // Takes last 2 digits
+    // Formats as "{prefix} {number}"
+    // Example: "105MSDCF" → "Gymnast 05"
+}
+```
+
+**UI Control:**
+- Text input for rename prefix in Reader Setup
+- Checkbox toggle to enable/disable (disabled if no prefix entered)
+- Renaming happens during copy, not as separate step
+
+#### 5. File Copy Operation
+
+**Source Path Construction:**
+```
+{mount_point}/{camera_folder_path}/{folders}
+/Volumes/EOS_DIGITAL/DCIM/105MSDCF/IMG001.JPG
+```
+
+**Destination Path Construction:**
+```
+{destination}/{order}/{folder}/{files}
+/NAS/originals/event/gym-a/session-1/0001/Gymnast 05/IMG001.JPG
+                                      ^^^^  ^^^^^^^^^^
+                                      auto  auto-renamed
+                                      increment
+```
+
+**Features:**
+- Recursive JPEG-only copy (`.jpg`, `.jpeg`)
+- Preserves folder structure relative to source
+- Real-time progress updates via Tauri Channel API
+- Order number auto-increments after successful copy
+- Skips hidden files (starting with `.`)
+
+**Implementation:**
+```rust
+#[tauri::command]
+pub async fn copy_files_to_destination(
+    source_path: String,
+    destination_path: String,
+    on_progress: Channel<CopyProgressEvent>,
+    rename_prefix: Option<String>,
+    auto_rename: bool,
+) -> Result<u32, String> {
+    // Collects all JPEG files using WalkDir
+    // Applies folder renaming if enabled
+    // Copies files with progress updates
+    // Returns count of copied files
+}
+```
+
+**Progress Events:**
+```rust
+struct CopyProgressEvent {
+    total: u32,
+    copied: u32,
+    current_file: String,
+    percentage: f32,
+}
+```
 
 ### UI Screens
 
-**Main Screen:**
+#### Reader Setup (Step 1)
+
+Configuration screen shown when:
+- No reader is configured yet
+- User clicks "Change" on session summary
+
+**Features:**
+- List of detected card readers with "Configured" badge
+- Shows reader name, volume name, photo count, mount point
+- Destination folder picker (browse button)
+- Photographer initials text input
+- Camera brand dropdown
+- Live preview: "Found: 1,234 photos in 12 folders"
+- Rename prefix input with auto-rename checkbox
+- Save button creates/updates reader mapping
+
 ```
 ┌────────────────────────────────────────┐
-│ Session: Gym A / Session 3             │
+│ Reader Setup                           │
+├────────────────────────────────────────┤
+│ Select Card Reader                     │
+│                                        │
+│ ┌──────────────────────────────────┐  │
+│ │ Built-in SD Reader         [✓]   │  │
+│ │ EOS_DIGITAL - 1,234 photos       │  │
+│ │ /Volumes/EOS_DIGITAL             │  │
+│ └──────────────────────────────────┘  │
+│                                        │
+│ Destination Folder                     │
+│ /NAS/.../gym-a/session-1  [Browse]     │
+│                                        │
+│ Photographer Initials                  │
+│ KDS                                    │
+│                                        │
+│ Camera Brand                           │
+│ Sony (DCIM) ▼                          │
+│ Found: 1,234 photos in 12 folders      │
+│                                        │
+│ Folder Rename Prefix (Optional)        │
+│ Gymnast                                │
+│ ☑ Auto-rename folders during copy      │
+│                                        │
+│                      [Save & Start]    │
+└────────────────────────────────────────┘
+```
+
+#### Main View (Step 2)
+
+Active session screen after configuration.
+
+```
+┌────────────────────────────────────────┐
+│ PhotoFinish Ingest                     │
+│ Copy photos from memory card to server │
+├────────────────────────────────────────┤
+│ Session                      [Change]  │
+│ Reader: Built-in SD Reader             │
+│ Camera: Sony (DCIM)                    │
 │ Photographer: KDS                      │
+│ /NAS/.../gym-a/session-1               │
 ├────────────────────────────────────────┤
-│ Card Reader: /Volumes/EOS_DIGITAL      │
-│ Status: ● Card Ready (1,234 files)     │
+│ Card Reader Status                     │
+│ ● Card Ready                           │
+│ Volume: EOS_DIGITAL                    │
+│ 1,234 photos ready to copy             │
 │                                        │
-│ Envelope Code: [Group 1A/Beam_____]    │
-│                                        │
-│ Destination:                           │
-│ /nas/.../Gym A/Session 3/              │
-│ Group 1A/Beam/0001/                    │
-│                                        │
-│ [Copy Files to Server]                 │
-│                                        │
-│ Progress: ██████░░░░ 756/1234          │
+│ Folders on card:                       │
+│ 105MSDCF     124 photos                │
+│ 106MSDCF      98 photos                │
+│ 107MSDCF     156 photos                │
+├────────────────────────────────────────┤
+│ Destination Preview                    │
+│ Next Order: #0001                      │
+│ Destination: .../session-1/0001/       │
+│ (will create: Gymnast 05, etc.)        │
+├────────────────────────────────────────┤
+│ [Copy 1,234 Files to Server]           │
+├────────────────────────────────────────┤
+│ Progress: ██████████ 1,234 / 1,234     │
+│ IMG_8234.JPG                           │
+├────────────────────────────────────────┤
+│ ✓ Successfully copied 1,234 files!     │
+│ Order incremented to #0002             │
 └────────────────────────────────────────┘
 ```
 
-**Folder Renaming:**
-```
-┌────────────────────────────────────────┐
-│ Rename Folders                         │
-├────────────────────────────────────────┤
-│ EOS100 → [1022 Kevin S ▼]    12 photos │
-│ EOS101 → [1023 Sarah J ▼]    15 photos │
-│ EOS102 → [1024 Emma W  ▼]    18 photos │
-│ EOS103 → [Skip (empty)]       0 photos │
-├────────────────────────────────────────┤
-│ [Auto-Assign] [Apply All] [Cancel]     │
-└────────────────────────────────────────┘
+**States:**
+- No card: Disabled copy button
+- Card ready: Shows file count, enabled copy button
+- Copying: Progress bar, current file name, "Copying..." button
+- Complete: Success message with file count and next order number
+
+### Stores
+
+#### Session Store (`src/stores/session.ts`)
+
+**State:**
+```typescript
+{
+  readerMappings: Map<readerId, ReaderMapping>,
+  activeReaderId: string | null
+}
 ```
 
-### Phoenix API Integration
+**Actions:**
+- `setReaderMapping()` - Save/update reader configuration
+- `getReaderMapping(readerId)` - Retrieve configuration
+- `removeReaderMapping(readerId)` - Delete configuration
+- `setActiveReader(readerId)` - Set current reader
+- `incrementOrder()` - Bump order counter after copy
 
+**Computed:**
+- `activeMapping` - Current reader's configuration
+- `isConfigured` - Has active reader with mapping
+- `destinationPath` - Full path including order number
+- `currentOrderNumber` - Zero-padded order (0001, 0002)
+- `currentDestination` - Human-readable destination
+- `currentPhotographer` - Active photographer initials
+
+#### Card Reader Store (`src/stores/cardReader.ts`)
+
+**State:**
+```typescript
+{
+  cardReaders: CardReaderInfo[],
+  selectedReader: CardReaderInfo | null,
+  directories: DirectoryEntry[],
+  totalFileCount: number,
+  copyProgress: CopyProgressEvent | null,
+  isCopying: boolean,
+  copyErrors: string[]
+}
 ```
-GET  /api/events/:event_id/roster
-     → Returns competitor list
 
-POST /api/ingestion/notify
-     Body: {
-       event_id,
-       photographer,
-       envelope_code,
-       order_number,
-       destination_path,
-       file_count
-     }
-     → Triggers Phoenix processing
+**Actions:**
+- `discoverReaders()` - Query system for removable media
+- `selectReader(reader, cameraFolderPath)` - Set active reader
+- `loadDirectoriesFromReader(cameraFolderPath)` - Load folder list
+- `copyFiles(destination, cameraPath, prefix, autoRename)` - Execute copy
+- `clearSelection()` - Reset state
 
-POST /api/ingestion/rename
-     Body: {
-       renames: [{original, new, photo_count}]
-     }
-     → Reports folder renames
-```
+**Auto-refresh:**
+- Polls `discoverReaders()` every 3 seconds when not copying
+- Updates file counts for selected reader
+- Detects reader disconnection and clears selection
 
 ---
 
 ## File Organization
 
-### Two-Phase Approach
+### Current Implementation (MVP)
 
-**Phase 1: Ingestion Path** (preserves source structure)
+Files are copied directly to session destination with order tracking:
+
 ```
-/originals/{EVENT}/{PHOTOGRAPHER}/{GYM}/{SESSION}/{ORDER}/{SOURCE}/
-  └── IMG_001.jpg
+{destination}/{order}/{folder}/{files}
 
 Example:
-/originals/st-valentines-meet/kds/gym-a/session-3/0001/EOS100/IMG_8234.jpg
+/NAS/originals/event/gym-a/session-1/0001/Gymnast 05/IMG_8234.jpg
+/NAS/originals/event/gym-a/session-1/0001/Gymnast 06/IMG_8235.jpg
+/NAS/originals/event/gym-a/session-1/0002/Gymnast 05/IMG_8300.jpg
+                                     ^^^^
+                                     increments with each card
 ```
 
-Components:
-- `{EVENT}` — Event slug
-- `{PHOTOGRAPHER}` — Photographer initials (e.g., "KDS")
-- `{GYM}` — Gym identifier
-- `{SESSION}` — Session number
-- `{ORDER}` — Memory card sequence (0001, 0002, ...)
-- `{SOURCE}` — Original folder from card
+**Components:**
+- `{destination}` - Session folder chosen in setup
+- `{order}` - Auto-incrementing batch number (0001, 0002, ...)
+- `{folder}` - Camera folder, optionally renamed (e.g., "Gymnast 05")
+- `{files}` - Original JPEG files from card
 
-**Phase 2: Finalization** (clean archival structure, optional)
-```
-/originals/{EVENT}/{COMPETITOR_NUMBER}/{APPARATUS}/
-  └── IMG_001.jpg
+### Why Track Order
 
-Example:
-/originals/st-valentines-meet/1022-kevin-s/floor/IMG_8234.jpg
-```
-
-### Why Two Phases
-
-- **Traceability:** Can always trace back to source card
-- **Order matters:** Card sequence helps troubleshooting
-- **Flexible:** Doesn't force immediate categorization
-- **Safe:** Preserves photographer's original organization
+- **Traceability:** Can identify which memory card batch a photo came from
+- **Chronology:** Card sequence helps determine shooting order
+- **Troubleshooting:** Easy to identify problematic batches
+- **Photographer workflow:** Matches physical card handling sequence
 
 ---
 
-## Phoenix File Watcher
+## Phoenix Integration (Future)
 
-### Implementation
+The following features are planned but not yet implemented:
 
-```elixir
-defmodule PhotoFinish.PhotoWatcher do
-  use GenServer
-  
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-  
-  def init(_opts) do
-    photo_root = Application.get_env(:photofinish, :photo_root)
-    {:ok, watcher} = FileSystem.start_link(dirs: [photo_root])
-    FileSystem.subscribe(watcher)
-    {:ok, %{watcher: watcher}}
-  end
-  
-  def handle_info({:file_event, _pid, {path, events}}, state) do
-    if should_process?(path, events) do
-      PhotoFinish.Ingestion.enqueue_photo(path)
-    end
-    {:noreply, state}
-  end
-  
-  defp should_process?(path, events) do
-    is_jpeg?(path) and
-    (:created in events or :modified in events) and
-    not temp_file?(path)
-  end
-  
-  defp is_jpeg?(path) do
-    ext = path |> Path.extname() |> String.downcase()
-    ext in [".jpg", ".jpeg"]
-  end
-  
-  defp temp_file?(path), do: String.starts_with?(Path.basename(path), ".")
-end
+### File Watcher
+
+Phoenix will monitor the NAS destination folders and automatically:
+- Detect new JPEG files
+- Extract EXIF metadata
+- Generate preview (1280px) and thumbnail (320px)
+- Broadcast real-time updates to viewing stations
+
+### API Endpoints (Stubbed)
+
+```
+GET  /api/events/:event_id/roster
+     → Returns competitor list (for future roster integration)
+
+POST /api/ingestion/notify
+     Body: {
+       event_id,
+       photographer,
+       order_number,
+       destination_path,
+       file_count
+     }
+     → Triggers Phoenix processing (optional manual trigger)
 ```
 
-### Manual Scan (Backup)
-
-```elixir
-defmodule PhotoFinish.ManualScanner do
-  def scan_directory(path, event_id) do
-    path
-    |> File.ls!()
-    |> Enum.filter(&is_jpeg?/1)
-    |> Enum.reject(&already_imported?(&1, event_id))
-    |> Enum.each(&PhotoFinish.Ingestion.enqueue_photo/1)
-  end
-end
-```
-
----
-
-## Processing Pipeline
-
-### Oban Job
-
-```elixir
-defmodule PhotoFinish.Workers.ProcessPhoto do
-  use Oban.Worker, queue: :photos, max_attempts: 3
-  
-  @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"path" => path, "event_id" => event_id}}) do
-    with {:ok, photo} <- create_record(path, event_id),
-         {:ok, photo} <- extract_exif(photo),
-         {:ok, photo} <- generate_preview(photo),
-         {:ok, photo} <- generate_thumbnail(photo),
-         {:ok, photo} <- mark_ready(photo) do
-      broadcast_new_photo(photo)
-      :ok
-    end
-  end
-end
-```
-
-### Image Processing
+### Processing Pipeline
 
 Three versions per photo:
 
-| Version | Size | Quality | Watermark | Purpose |
-|---------|------|---------|-----------|---------|
-| Original | As-is | N/A | No | Orders/printing |
-| Preview | 1280px long edge | 90% | TBD | Viewing |
-| Thumbnail | 320px long edge | 85% | TBD | Grid display |
-
-```elixir
-defmodule PhotoFinish.ImageProcessor do
-  def process(original_path, photo_id, event_slug) do
-    {:ok, img} = Vix.Vips.Image.new_from_file(original_path)
-    
-    # Generate preview (1280px)
-    preview_path = preview_path(photo_id, event_slug)
-    {:ok, preview} = Vix.Vips.Operation.thumbnail_image(img, 1280)
-    # preview = apply_watermark(preview)  # TODO: implement
-    :ok = Vix.Vips.Image.write_to_file(preview, preview_path, Q: 90)
-    
-    # Generate thumbnail from preview (320px)
-    thumbnail_path = thumbnail_path(photo_id, event_slug)
-    {:ok, thumb} = Vix.Vips.Operation.thumbnail_image(preview, 320)
-    :ok = Vix.Vips.Image.write_to_file(thumb, thumbnail_path, Q: 85)
-    
-    {:ok, %{preview_path: preview_path, thumbnail_path: thumbnail_path}}
-  end
-end
-```
-
-### Parallel Processing
-
-```elixir
-# In Oban config
-config :photofinish, Oban,
-  queues: [photos: 4]  # 4 concurrent workers
-```
-
-At 4 workers × 2 sec/photo = ~7,200 photos/hour.
+| Version | Size | Quality | Purpose |
+|---------|------|---------|---------|
+| Original | As-is | N/A | Orders/printing (untouched on NAS) |
+| Preview | 1280px long edge | 90% | Viewing at kiosks |
+| Thumbnail | 320px long edge | 85% | Grid display |
 
 ---
 
-## Path Parsing
+## Technical Implementation Details
 
-```elixir
-defmodule PhotoFinish.PathParser do
-  @doc """
-  Parse ingestion path to extract metadata.
-  Path format: /originals/{event}/{photographer}/{gym}/{session}/{order}/{source}/file.jpg
-  """
-  def parse(path) do
-    parts = path |> Path.split() |> Enum.drop(1)  # drop root
-    
-    %{
-      event_slug: Enum.at(parts, 1),
-      photographer: Enum.at(parts, 2),
-      gym_slug: Enum.at(parts, 3),
-      session_slug: Enum.at(parts, 4),
-      order_number: Enum.at(parts, 5),
-      source_folder: Enum.at(parts, 6),
-      filename: List.last(parts)
-    }
-  end
-end
+### macOS Card Reader Discovery
+
+**Using `diskutil` command-line tool:**
+
+1. `diskutil list -plist` - Get all disks and partitions
+2. `diskutil info -plist {disk}` - Get disk details
+3. Filter for `Removable: true` or `RemovableMedia: true`
+4. Extract `DeviceTreePath` as unique identifier
+5. Find mounted partitions with `MountPoint`
+6. Count JPEG files using `walkdir`
+
+**Why DeviceTreePath?**
+- Unique per physical card reader slot
+- Persists across different cards
+- Built-in SD: `IODeviceTree:/pcie@0/pcie-sdreader@0`
+- USB reader: `IODeviceTree:/arm-io@.../{unique-path}`
+
+### File Counting
+
+```rust
+fn count_jpeg_files(path: &Path) -> u32 {
+    WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| {
+                    let ext_lower = ext.to_string_lossy().to_lowercase();
+                    ext_lower == "jpg" || ext_lower == "jpeg"
+                })
+                .unwrap_or(false)
+        })
+        .count() as u32
+}
+```
+
+### Copy Progress Tracking
+
+```rust
+// Tauri backend sends progress events
+let channel = new Channel<CopyProgressEvent>();
+channel.onmessage = (progress) => {
+  this.copyProgress = progress;
+};
+
+await invoke("copy_files_to_destination", {
+  sourcePath,
+  destinationPath,
+  onProgress: channel,
+  renamePrefix,
+  autoRename
+});
+```
+
+### State Persistence
+
+```typescript
+// In src/main.ts
+import { createPinia } from 'pinia'
+import piniaPluginPersistedstate from 'pinia-plugin-persistedstate'
+
+const pinia = createPinia()
+pinia.use(piniaPluginPersistedstate)
+
+// In session store
+export const useSessionStore = defineStore('session', {
+  state: () => ({ /* ... */ }),
+  persist: true  // Auto-persists to localStorage
+})
 ```
 
 ---
@@ -308,67 +491,48 @@ end
 
 | Problem | Solution |
 |---------|----------|
-| File locked/being written | Retry with backoff (max 3 attempts) |
-| Corrupt image | Mark as error, admin review |
-| Duplicate file | Mark as duplicate, skip processing |
-| Missing directory | Auto-create if `auto_create_nodes: true` |
-| File moved/deleted | Mark as error, clean up record |
-| Large file (>50MB) | Reject with warning |
-
-### Duplicate Detection
-
-```elixir
-def is_duplicate?(path, event_id) do
-  filename = Path.basename(path)
-  file_size = File.stat!(path).size
-  
-  from(p in Photo,
-    where: p.event_id == ^event_id,
-    where: p.filename == ^filename,
-    where: p.file_size_bytes == ^file_size
-  )
-  |> Repo.exists?()
-end
-```
+| No card readers detected | Show message with manual refresh button |
+| Card removed during copy | Copy operation fails, show error |
+| Destination path doesn't exist | Rust creates all parent directories |
+| File copy fails | Error added to `copyErrors[]`, operation continues |
+| Same card copied twice | Order increments, files copied to new folder |
 
 ---
 
-## Real-Time Updates
+## Future Enhancements
 
-```elixir
-defp broadcast_new_photo(photo) do
-  Phoenix.PubSub.broadcast(
-    PhotoFinish.PubSub,
-    "photos:node:#{photo.node_id}",
-    {:new_photo, photo}
-  )
-  
-  # Also broadcast to competitor topic if assigned
-  if photo.competitor_id do
-    Phoenix.PubSub.broadcast(
-      PhotoFinish.PubSub,
-      "photos:competitor:#{photo.competitor_id}",
-      {:new_photo, photo}
-    )
-  end
-end
-```
+**Not yet implemented:**
+
+1. **Barcode scanning** - Envelope codes for auto-categorization
+2. **Roster integration** - Load competitor list from Phoenix API
+3. **Phoenix API notifications** - Notify server when copy completes
+4. **Manual folder renaming** - Dropdown with roster entries
+5. **Duplicate detection** - Skip files already copied
+6. **RAW file support** - Currently JPEG-only
+7. **Multi-card batch copy** - Copy from multiple readers sequentially
+8. **Copy verification** - Checksum validation after copy
 
 ---
 
-## Admin Monitoring
+## Development
 
-Dashboard displays:
-- Total photos discovered
-- Photos ready
-- Photos processing
-- Errors (with review link)
-- Last scan time
-- Auto-watch status
-- [Scan Now] button
+**Location:** `/apps/ingest`
 
-Error log shows:
-- File path
-- Error message
-- Timestamp
-- Actions: [Retry] [Delete] [Ignore]
+**Commands:**
+```bash
+pnpm install              # Install dependencies
+pnpm tauri dev            # Run dev server with hot reload
+pnpm tauri build          # Build production app
+```
+
+**Key Files:**
+- `src-tauri/src/commands.rs` - Rust backend commands
+- `src/stores/session.ts` - Session & reader mapping state
+- `src/stores/cardReader.ts` - Card reader discovery & copy state
+- `src/components/ReaderSetup.vue` - Reader configuration UI
+- `src/components/CardReaderStatus.vue` - Card status display
+- `src/views/MainView.vue` - Main application view
+
+**Dependencies:**
+- Rust: `tauri@2`, `walkdir`, `plist`, `regex`, `serde`, `tokio`
+- Vue: `pinia`, `pinia-plugin-persistedstate`, `@tauri-apps/api`, `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-dialog`
