@@ -1,22 +1,54 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useCardReaderStore } from "@/stores/cardReader";
+import { useSessionStore } from "@/stores/session";
 import ReaderDashboardCard from "@/components/ReaderDashboardCard.vue";
 import ReaderSetup from "@/components/ReaderSetup.vue";
+import type { CardReaderInfo } from "@/types";
+import { ask } from "@tauri-apps/plugin-dialog";
 
 const cardReaderStore = useCardReaderStore();
+const sessionStore = useSessionStore();
 
 const configuringReaderId = ref<string | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+// Combine detected readers with persisted configurations that are currently offline
+const displayedReaders = computed<CardReaderInfo[]>(() => {
+  const readers = [...cardReaderStore.cardReaders];
+  
+  // Find configured readers that aren't in the detected list
+  for (const [readerId, mapping] of Object.entries(sessionStore.readerMappings)) {
+    if (!readers.some(r => r.reader_id === readerId)) {
+      readers.push({
+        reader_id: readerId,
+        display_name: mapping.displayName,
+        mount_point: "Not Connected",
+        volume_name: "Offline",
+        bus_protocol: "Unknown",
+        is_internal: false,
+        disk_id: "",
+        file_count: 0,
+        folder_count: 0
+      });
+    }
+  }
+  
+  // Sort: Connected first, then by name
+  return readers.sort((a, b) => {
+    const aConnected = a.volume_name !== "Offline";
+    const bConnected = b.volume_name !== "Offline";
+    if (aConnected !== bConnected) return aConnected ? -1 : 1;
+    return a.display_name.localeCompare(b.display_name);
+  });
+});
 
 onMounted(() => {
   cardReaderStore.discoverReaders();
 
   // Poll for volume changes
   pollInterval = setInterval(() => {
-    // We can poll even during copy now, but maybe less frequently or just rely on OS events if we had them.
-    // For now, keep polling.
     cardReaderStore.discoverReaders();
   }, 3000);
 });
@@ -38,6 +70,17 @@ function onSetupClose() {
 function onSetupSaved() {
   configuringReaderId.value = null;
 }
+
+async function confirmReset() {
+  const confirmed = await ask("Are you sure you want to clear all reader configurations?", {
+    title: "Reset Configuration",
+    kind: "warning"
+  });
+  
+  if (confirmed) {
+    sessionStore.clearAllMappings();
+  }
+}
 </script>
 
 <template>
@@ -51,18 +94,27 @@ function onSetupSaved() {
             Copy photos from memory cards to server
           </p>
         </div>
-        <div class="text-sm text-gray-500">
-          {{ cardReaderStore.cardReaders.length }} reader(s) detected
+        <div class="flex items-center gap-4">
+          <div class="text-sm text-gray-500">
+            {{ displayedReaders.length }} reader(s) known
+          </div>
+          <button
+            @click="confirmReset"
+            class="text-sm text-red-600 hover:text-red-800 hover:underline px-3 py-1 rounded"
+            v-if="Object.keys(sessionStore.readerMappings).length > 0"
+          >
+            Reset All Configs
+          </button>
         </div>
       </div>
 
       <!-- Reader Grid -->
       <div 
-        v-if="cardReaderStore.cardReaders.length > 0"
+        v-if="displayedReaders.length > 0"
         class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
       >
         <ReaderDashboardCard
-          v-for="reader in cardReaderStore.cardReaders"
+          v-for="reader in displayedReaders"
           :key="reader.reader_id"
           :reader="reader"
           @configure="onConfigureReader"

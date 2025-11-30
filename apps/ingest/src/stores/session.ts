@@ -129,6 +129,11 @@ export const useSessionStore = defineStore("session", {
       }
     },
 
+    clearAllMappings() {
+      this.readerMappings = {};
+      this.activeReaderId = null;
+    },
+
     getReaderMapping(readerId: string): ReaderMapping | null {
       return this.readerMappings[readerId] || null;
     },

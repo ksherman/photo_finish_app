@@ -25,9 +25,11 @@ const copyState = computed(() =>
 );
 
 const isConfigured = computed(() => !!mapping.value);
+const isOffline = computed(() => props.reader.volume_name === "Offline");
 
 const canCopy = computed(
   () =>
+    !isOffline.value &&
     isConfigured.value &&
     !copyState.value.isCopying &&
     props.reader.file_count > 0
@@ -80,14 +82,22 @@ async function startCopy() {
     <div class="p-4 border-b border-gray-100 bg-gray-50 rounded-t-lg">
       <div class="flex justify-between items-start">
         <div>
-          <h3 class="font-semibold text-gray-800">{{ reader.display_name }}</h3>
-          <p class="text-xs text-gray-500 font-mono mt-1">{{ reader.volume_name }}</p>
+          <h3 class="font-semibold text-gray-800" :class="{ 'text-gray-500': isOffline }">{{ reader.display_name }}</h3>
+          <p class="text-xs text-gray-500 font-mono mt-1" v-if="!isOffline">{{ reader.volume_name }}</p>
+          <p class="text-xs text-red-500 font-medium mt-1" v-else>Reader Disconnected</p>
         </div>
         <span
+          v-if="!isOffline"
           class="px-2 py-1 text-xs font-medium rounded-full"
           :class="isConfigured ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'"
         >
           {{ isConfigured ? 'Ready' : 'Setup Needed' }}
+        </span>
+        <span
+           v-else
+           class="px-2 py-1 text-xs font-medium rounded-full bg-gray-200 text-gray-600"
+        >
+          Offline
         </span>
       </div>
     </div>
@@ -100,7 +110,7 @@ async function startCopy() {
             <span class="text-gray-500 block text-xs">Photographer</span>
             <span class="font-medium text-gray-900">{{ mapping.photographer }}</span>
           </div>
-          <div>
+          <div v-if="!isOffline">
             <span class="text-gray-500 block text-xs">Files on Card</span>
             <span class="font-medium text-gray-900">
                 {{ reader.file_count }} 
@@ -111,7 +121,8 @@ async function startCopy() {
       </div>
 
       <div v-else class="text-center py-6 text-gray-500 text-sm">
-        <p>Configure this reader to start ingesting photos.</p>
+        <p v-if="!isOffline">Configure this reader to start ingesting photos.</p>
+        <p v-else>Reader is offline but can be configured.</p>
       </div>
 
       <div v-if="isConfigured" class="mt-auto space-y-3">
