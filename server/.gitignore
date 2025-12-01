@@ -23,7 +23,7 @@ erl_crash.dump
 /tmp/
 
 # Ignore package tarball (built via "mix hex.build").
-photo_finish_server-*.tar
+photo_finish-*.tar
 
 # Ignore assets that are produced by build tools.
 /priv/static/assets/

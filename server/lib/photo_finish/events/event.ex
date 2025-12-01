@@ -21,7 +21,8 @@ defmodule PhotoFinish.Events.Event do
         :ends_at,
         :status,
         :order_code,
-        :tax_rate_basis_points
+        :tax_rate_basis_points,
+        :storage_directory
       ],
       update: [
         :name,
@@ -31,7 +32,8 @@ defmodule PhotoFinish.Events.Event do
         :ends_at,
         :status,
         :order_code,
-        :tax_rate_basis_points
+        :tax_rate_basis_points,
+        :storage_directory
       ]
     ]
   end
@@ -74,6 +76,10 @@ defmodule PhotoFinish.Events.Event do
     attribute :tax_rate_basis_points, :integer do
       public? true
       default 850
+    end
+
+    attribute :storage_directory, :string do
+      public? true
     end
 
     timestamps()

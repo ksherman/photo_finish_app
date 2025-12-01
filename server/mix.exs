@@ -102,10 +102,10 @@ defmodule PhotoFinish.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ash.setup --quiet", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind photo_finish_server", "esbuild photo_finish_server"],
+      "assets.build": ["compile", "tailwind photo_finish", "esbuild photo_finish"],
       "assets.deploy": [
-        "tailwind photo_finish_server --minify",
-        "esbuild photo_finish_server --minify",
+        "tailwind photo_finish --minify",
+        "esbuild photo_finish --minify",
         "phx.digest"
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]

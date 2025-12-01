@@ -13,8 +13,8 @@ defmodule PhotoFinish.Events.HierarchyNode do
     defaults [
       :read,
       :destroy,
-      create: [:level_number, :name, :slug, :display_order, :metadata],
-      update: [:level_number, :name, :slug, :display_order, :metadata]
+      create: [:level_number, :name, :slug, :display_order, :metadata, :event_id, :parent_id],
+      update: [:level_number, :name, :slug, :display_order, :metadata, :event_id, :parent_id]
     ]
   end
 

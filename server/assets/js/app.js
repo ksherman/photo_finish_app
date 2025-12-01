@@ -20,12 +20,20 @@ import "phoenix_html";
 // Establish Phoenix Socket and LiveView configuration.
 import { Socket } from "phoenix";
 import { LiveSocket } from "phoenix_live_view";
-import { hooks as colocatedHooks } from "phoenix-colocated/photo_finish_server";
+import { hooks as colocatedHooks } from "phoenix-colocated/photo_finish";
 import topbar from "../vendor/topbar";
 import MishkaComponents from "../vendor/mishka_components.js";
 const csrfToken = document
   .querySelector("meta[name='csrf-token']")
   .getAttribute("content");
+// Flash message hook to keep them visible longer
+const FlashHook = {
+  mounted() {
+    // Prevent DaisyUI auto-hide by stopping any existing timers
+    this.el.style.animation = "none";
+  },
+};
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {
@@ -34,6 +42,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
   hooks: {
     ...colocatedHooks,
     ...MishkaComponents,
+    FlashHook,
   },
 });
 // Show progress bar on live navigation and form submits

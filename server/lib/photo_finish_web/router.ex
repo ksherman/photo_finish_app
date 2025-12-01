@@ -28,6 +28,10 @@ defmodule PhotoFinishWeb.Router do
     plug :set_actor, :user
   end
 
+  pipeline :admin_auth do
+    plug :basic_auth
+  end
+
   scope "/", PhotoFinishWeb do
     pipe_through :browser
 
@@ -87,6 +91,16 @@ defmodule PhotoFinishWeb.Router do
     )
   end
 
+  scope "/admin", PhotoFinishWeb.Admin do
+    pipe_through [:browser, :admin_auth]
+
+    live "/events", EventLive.Index, :index
+    live "/events/new", EventLive.Form, :new
+    live "/events/:id/edit", EventLive.Form, :edit
+    live "/events/:id", EventLive.Show, :show
+    live "/events/:id/show/edit", EventLive.Show, :edit
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", PhotoFinishWeb do
   #   pipe_through :api
@@ -118,10 +132,16 @@ defmodule PhotoFinishWeb.Router do
   if Application.compile_env(:photo_finish, :dev_routes) do
     import AshAdmin.Router
 
-    scope "/admin" do
+    scope "/ash_admin" do
       pipe_through :browser
 
       ash_admin "/"
     end
+  end
+
+  defp basic_auth(conn, _opts) do
+    username = System.get_env("ADMIN_USERNAME") || "admin"
+    password = System.get_env("ADMIN_PASSWORD") || "secret"
+    Plug.BasicAuth.basic_auth(conn, username: username, password: password)
   end
 end

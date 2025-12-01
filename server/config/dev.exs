@@ -64,8 +64,8 @@ config :photo_finish, PhotoFinishWeb.Endpoint,
       # Gettext translations
       ~r"priv/gettext/.*\.po$"E,
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/photo_finish_server_web/router\.ex$"E,
-      ~r"lib/photo_finish_server_web/(controllers|live|components)/.*\.(ex|heex)$"E
+      ~r"lib/photo_finish_web/router\.ex$"E,
+      ~r"lib/photo_finish_web/(controllers|live|components)/.*\.(ex|heex)$"E
     ]
   ]
 

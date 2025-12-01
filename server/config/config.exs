@@ -90,7 +90,7 @@ config :photo_finish, PhotoFinish.Mailer, adapter: Swoosh.Adapters.Local
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",
-  photo_finish_server: [
+  photo_finish: [
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
     cd: Path.expand("../assets", __DIR__),
@@ -100,7 +100,7 @@ config :esbuild,
 # Configure tailwind (the version is required)
 config :tailwind,
   version: "4.1.12",
-  photo_finish_server: [
+  photo_finish: [
     args: ~w(
       --input=assets/css/app.css
       --output=priv/static/assets/css/app.css

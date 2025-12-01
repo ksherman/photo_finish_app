@@ -73,6 +73,37 @@ defmodule PhotoFinishWeb.Layouts do
   end
 
   @doc """
+  Renders the admin layout - full-width, no constraints.
+
+  This layout is designed for admin interfaces that need full control
+  of the viewport (like file browsers, dashboards, etc.)
+
+  ## Examples
+
+      <Layouts.admin flash={@flash}>
+        <h1>Admin Content</h1>
+      </Layouts.admin>
+
+  """
+  attr :flash, :map, required: true, doc: "the map of flash messages"
+
+  attr :current_scope, :map,
+    default: nil,
+    doc: "the current [scope](https://hexdocs.pm/phoenix/scopes.html)"
+
+  slot :inner_block, required: true
+
+  def admin(assigns) do
+    ~H"""
+    <div class="min-h-screen bg-gray-50">
+      {render_slot(@inner_block)}
+    </div>
+
+    <.flash_group flash={@flash} />
+    """
+  end
+
+  @doc """
   Shows the flash group with standard titles and content.
 
   ## Examples
