@@ -52,6 +52,7 @@ defmodule PhotoFinish.Photos.Photo do
         :photographer,
         :source_folder,
         :captured_at,
+        :processed_at,
         :status,
         :error_message,
         :exif_data,
