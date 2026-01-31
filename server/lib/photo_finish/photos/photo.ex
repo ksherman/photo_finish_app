@@ -149,6 +149,7 @@ defmodule PhotoFinish.Photos.Photo do
   relationships do
     belongs_to :event, PhotoFinish.Events.Event do
       public? true
+      attribute_type :string
     end
 
     belongs_to :competitor, PhotoFinish.Events.Competitor do

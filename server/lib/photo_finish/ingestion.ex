@@ -24,7 +24,7 @@ defmodule PhotoFinish.Ingestion do
   @spec scan_event(String.t()) :: {:ok, scan_result()} | {:error, term()}
   def scan_event(event_id) do
     with {:ok, event} <- load_event(event_id),
-         {:ok, files} <- Scanner.scan_directory(event.storage_directory) do
+         {:ok, files} <- Scanner.scan_directory(event.storage_root) do
       competitors = load_competitors(event_id)
 
       result =

@@ -143,13 +143,13 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                   </div>
                 <% end %>
 
-                <%= if @event.storage_directory do %>
+                <%= if @event.storage_root do %>
                   <div>
                     <dt class="text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Storage Directory
+                      Storage Root
                     </dt>
                     <dd class="mt-1 text-xs text-gray-900 font-mono break-all">
-                      {@event.storage_directory}
+                      {@event.storage_root}
                     </dd>
                   </div>
                 <% end %>
@@ -226,7 +226,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
           <div class="flex justify-between items-center">
             <span class="text-gray-500">Storage Path</span>
             <code class="text-xs bg-gray-100 px-2 py-1 rounded font-mono">
-              {@event.storage_directory || "Not configured"}
+              {@event.storage_root || "Not configured"}
             </code>
           </div>
 
@@ -243,16 +243,16 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
         <div class="mt-4 pt-4 border-t border-gray-100">
           <.button
             phx-click="scan_now"
-            disabled={is_nil(@event.storage_directory)}
+            disabled={is_nil(@event.storage_root)}
             size="small"
             variant="primary"
           >
             <.icon name="hero-magnifying-glass" class="w-4 h-4 mr-1" />
             Scan Now
           </.button>
-          <%= if is_nil(@event.storage_directory) do %>
+          <%= if is_nil(@event.storage_root) do %>
             <p class="text-xs text-gray-500 mt-2">
-              Set a storage directory in the event settings to enable scanning.
+              Set a storage root in the event settings to enable scanning.
             </p>
           <% end %>
         </div>

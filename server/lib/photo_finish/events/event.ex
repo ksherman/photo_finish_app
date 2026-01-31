@@ -22,7 +22,9 @@ defmodule PhotoFinish.Events.Event do
         :status,
         :order_code,
         :tax_rate_basis_points,
-        :storage_directory
+        :storage_root,
+        :num_gyms,
+        :sessions_per_gym
       ],
       update: [
         :name,
@@ -33,13 +35,20 @@ defmodule PhotoFinish.Events.Event do
         :status,
         :order_code,
         :tax_rate_basis_points,
-        :storage_directory
+        :storage_root,
+        :num_gyms,
+        :sessions_per_gym
       ]
     ]
   end
 
   attributes do
-    uuid_primary_key :id
+    attribute :id, :string do
+      primary_key? true
+      allow_nil? false
+      default &PhotoFinish.Id.event_id/0
+      writable? false
+    end
 
     attribute :name, :string do
       allow_nil? false
@@ -78,7 +87,20 @@ defmodule PhotoFinish.Events.Event do
       default 850
     end
 
-    attribute :storage_directory, :string do
+    attribute :storage_root, :string do
+      allow_nil? false
+      public? true
+    end
+
+    attribute :num_gyms, :integer do
+      allow_nil? false
+      default 1
+      public? true
+    end
+
+    attribute :sessions_per_gym, :integer do
+      allow_nil? false
+      default 1
       public? true
     end
 

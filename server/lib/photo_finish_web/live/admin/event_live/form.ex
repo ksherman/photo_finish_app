@@ -128,9 +128,9 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                   <div class="p-6 space-y-6">
                     <div>
                       <.input
-                        field={@form[:storage_directory]}
+                        field={@form[:storage_root]}
                         type="text"
-                        label="Storage Directory"
+                        label="Storage Root"
                         placeholder="/mnt/nas/photos/events/svgm-2025"
                       />
                       <p class="mt-2 text-xs text-gray-500 flex items-start">

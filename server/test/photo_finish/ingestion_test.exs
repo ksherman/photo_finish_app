@@ -18,7 +18,7 @@ defmodule PhotoFinish.IngestionTest do
         Ash.create(PhotoFinish.Events.Event, %{
           name: "Test Event",
           slug: "test-event",
-          storage_directory: tmp_dir
+          storage_root: tmp_dir
         })
 
       on_exit(fn -> File.rm_rf!(tmp_dir) end)
@@ -53,7 +53,7 @@ defmodule PhotoFinish.IngestionTest do
         Ash.create(PhotoFinish.Events.Event, %{
           name: "No Storage",
           slug: "no-storage",
-          storage_directory: "/non/existent/path"
+          storage_root: "/non/existent/path"
         })
 
       result = Ingestion.scan_event(event.id)

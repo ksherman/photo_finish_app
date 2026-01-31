@@ -21,7 +21,7 @@ defmodule PhotoFinish.IngestionIntegrationTest do
         Ash.create(PhotoFinish.Events.Event, %{
           name: "Integration Test",
           slug: "integration-test",
-          storage_directory: tmp_dir
+          storage_root: tmp_dir
         })
 
       {:ok, _competitor} =
