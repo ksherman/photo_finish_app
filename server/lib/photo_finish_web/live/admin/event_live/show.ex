@@ -3,6 +3,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
 
   alias PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder
   alias PhotoFinish.Events.HierarchyLevel
+  alias PhotoFinish.Photos.Photo
 
   @impl true
   def render(assigns) do
@@ -27,19 +28,20 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             <div class="flex items-center gap-2">
               <%= if @show_builder do %>
                 <.button phx-click="close_builder_modal" size="small" variant="outline">
-                  <.icon name="hero-x-mark" class="w-4 h-4 mr-1" />
-                  Close Builder
+                  <.icon name="hero-x-mark" class="w-4 h-4 mr-1" /> Close Builder
                 </.button>
               <% else %>
                 <%= if @event.hierarchy_levels != [] do %>
                   <.button phx-click="start_builder" size="small" variant="primary">
-                    <.icon name="hero-plus" class="w-4 h-4 mr-1" />
-                    Build Structure
+                    <.icon name="hero-plus" class="w-4 h-4 mr-1" /> Build Structure
                   </.button>
                 <% end %>
-                <.button_link navigate={~p"/admin/events/#{@event}/edit"} size="small" variant="outline">
-                  <.icon name="hero-pencil" class="w-4 h-4 mr-1" />
-                  Edit Event
+                <.button_link
+                  navigate={~p"/admin/events/#{@event}/edit"}
+                  size="small"
+                  variant="outline"
+                >
+                  <.icon name="hero-pencil" class="w-4 h-4 mr-1" /> Edit Event
                 </.button_link>
               <% end %>
             </div>
@@ -79,8 +81,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                         "text-gray-700 hover:bg-gray-50"
                     ]}
                   >
-                    <.icon name="hero-information-circle" class="w-4 h-4 mr-2" />
-                    Overview
+                    <.icon name="hero-information-circle" class="w-4 h-4 mr-2" /> Overview
                   </button>
                   <button
                     phx-click="select_view"
@@ -93,8 +94,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                         "text-gray-700 hover:bg-gray-50"
                     ]}
                   >
-                    <.icon name="hero-rectangle-stack" class="w-4 h-4 mr-2" />
-                    Hierarchy Levels
+                    <.icon name="hero-rectangle-stack" class="w-4 h-4 mr-2" /> Hierarchy Levels
                   </button>
                   <button
                     phx-click="select_view"
@@ -107,8 +107,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                         "text-gray-700 hover:bg-gray-50"
                     ]}
                   >
-                    <.icon name="hero-folder" class="w-4 h-4 mr-2" />
-                    Hierarchy Nodes
+                    <.icon name="hero-folder" class="w-4 h-4 mr-2" /> Hierarchy Nodes
                   </button>
                   <button
                     phx-click="select_view"
@@ -121,8 +120,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                         "text-gray-700 hover:bg-gray-50"
                     ]}
                   >
-                    <.icon name="hero-users" class="w-4 h-4 mr-2" />
-                    Competitors
+                    <.icon name="hero-users" class="w-4 h-4 mr-2" /> Competitors
                   </button>
                 </nav>
               </div>
@@ -133,13 +131,13 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
               <div class="flex-1 overflow-y-auto p-6">
                 <%= case @current_view do %>
                   <% "overview" -> %>
-                    <%= render_overview(assigns) %>
+                    {render_overview(assigns)}
                   <% "structure" -> %>
-                    <%= render_structure(assigns) %>
+                    {render_structure(assigns)}
                   <% "nodes" -> %>
-                    <%= render_nodes(assigns) %>
+                    {render_nodes(assigns)}
                   <% "competitors" -> %>
-                    <%= render_competitors(assigns) %>
+                    {render_competitors(assigns)}
                 <% end %>
               </div>
             </div>
@@ -223,7 +221,10 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
           class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
           phx-click="cancel_edit_level"
         >
-          <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4" phx-click="stop_propagation">
+          <div
+            class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4"
+            phx-click="stop_propagation"
+          >
             <div class="px-6 py-4 border-b border-gray-200">
               <h3 class="text-lg font-semibold text-gray-900">
                 {if @editing_level[:id], do: "Edit Hierarchy Level", else: "Add Hierarchy Level"}
@@ -359,6 +360,46 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
           <p class="text-gray-700">{@event.description}</p>
         </div>
       <% end %>
+
+      <%!-- Ingestion Section --%>
+      <div class="bg-white rounded-lg border border-gray-200 p-6">
+        <h3 class="text-lg font-semibold text-gray-900 mb-4">Ingestion</h3>
+
+        <div class="space-y-3 text-sm">
+          <div class="flex justify-between items-center">
+            <span class="text-gray-500">Storage Path</span>
+            <code class="text-xs bg-gray-100 px-2 py-1 rounded font-mono">
+              {@event.storage_directory || "Not configured"}
+            </code>
+          </div>
+
+          <div class="flex justify-between items-center">
+            <span class="text-gray-500">Photos</span>
+            <span>
+              <span class="text-green-600 font-medium">{@photo_counts.ready}</span> ready,
+              <span class="text-blue-600">{@photo_counts.processing}</span> processing,
+              <span class="text-red-600">{@photo_counts.error}</span> errors
+            </span>
+          </div>
+        </div>
+
+        <div class="mt-4 pt-4 border-t border-gray-100">
+          <.button
+            phx-click="scan_now"
+            disabled={is_nil(@event.storage_directory)}
+            size="small"
+            variant="primary"
+          >
+            <.icon name="hero-magnifying-glass" class="w-4 h-4 mr-1" />
+            Scan Now
+          </.button>
+          <%= if is_nil(@event.storage_directory) do %>
+            <p class="text-xs text-gray-500 mt-2">
+              Set a storage directory in the event settings to enable scanning.
+            </p>
+          <% end %>
+        </div>
+      </div>
     </div>
     """
   end
@@ -376,13 +417,11 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
         <div class="flex items-center gap-2">
           <%= if @event.hierarchy_levels == [] do %>
             <.button phx-click="generate_standard_hierarchy" variant="primary">
-              <.icon name="hero-sparkles" class="w-4 h-4 mr-2" />
-              Generate Standard
+              <.icon name="hero-sparkles" class="w-4 h-4 mr-2" /> Generate Standard
             </.button>
           <% else %>
             <.button phx-click="add_hierarchy_level" variant="outline" size="small">
-              <.icon name="hero-plus" class="w-4 h-4 mr-1" />
-              Add Level
+              <.icon name="hero-plus" class="w-4 h-4 mr-1" /> Add Level
             </.button>
             <.button
               phx-click="clear_hierarchy_levels"
@@ -390,8 +429,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
               size="small"
               data-confirm="Are you sure you want to delete all hierarchy levels?"
             >
-              <.icon name="hero-trash" class="w-4 h-4 mr-1" />
-              Clear All
+              <.icon name="hero-trash" class="w-4 h-4 mr-1" /> Clear All
             </.button>
           <% end %>
         </div>
@@ -410,8 +448,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
               Use the standard gymnastics hierarchy structure with 5 levels: Gym, Session, Group, Apparatus, and Competitor.
             </p>
             <.button phx-click="generate_standard_hierarchy" variant="primary" class="w-full">
-              <.icon name="hero-sparkles" class="w-4 h-4 mr-2" />
-              Generate Standard Hierarchy
+              <.icon name="hero-sparkles" class="w-4 h-4 mr-2" /> Generate Standard Hierarchy
             </.button>
           </div>
 
@@ -425,8 +462,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
               Create a custom hierarchy structure tailored to your specific event needs.
             </p>
             <.button phx-click="add_hierarchy_level" variant="outline" class="w-full">
-              <.icon name="hero-plus" class="w-4 h-4 mr-2" />
-              Start Custom Build
+              <.icon name="hero-plus" class="w-4 h-4 mr-2" /> Start Custom Build
             </.button>
           </div>
         </div>
@@ -513,11 +549,15 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
         <%!-- Info Box --%>
         <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
           <div class="flex items-start">
-            <.icon name="hero-information-circle" class="w-5 h-5 text-blue-600 mr-3 mt-0.5 flex-shrink-0" />
+            <.icon
+              name="hero-information-circle"
+              class="w-5 h-5 text-blue-600 mr-3 mt-0.5 flex-shrink-0"
+            />
             <div>
               <h4 class="text-sm font-semibold text-blue-900 mb-1">Next Step</h4>
               <p class="text-sm text-blue-800">
-                Once you've configured your hierarchy levels, go to the <strong>Hierarchy Nodes</strong>
+                Once you've configured your hierarchy levels, go to the
+                <strong>Hierarchy Nodes</strong>
                 tab to use the Structure Builder and generate your folder structure.
               </p>
             </div>
@@ -540,8 +580,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
         </div>
         <%= if @event.hierarchy_levels != [] do %>
           <.button phx-click="start_builder" variant="primary">
-            <.icon name="hero-plus" class="w-4 h-4 mr-2" />
-            Build Structure
+            <.icon name="hero-plus" class="w-4 h-4 mr-2" /> Build Structure
           </.button>
         <% end %>
       </div>
@@ -556,8 +595,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             Please define your hierarchy levels in the "Hierarchy Levels" tab before generating nodes
           </p>
           <.button phx-click="select_view" phx-value-view="structure" variant="outline">
-            <.icon name="hero-arrow-right" class="w-4 h-4 mr-2" />
-            Go to Hierarchy Levels
+            <.icon name="hero-arrow-right" class="w-4 h-4 mr-2" /> Go to Hierarchy Levels
           </.button>
         </div>
       <% else %>
@@ -570,8 +608,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             Use the Structure Builder wizard to automatically generate your complete folder hierarchy
           </p>
           <.button phx-click="start_builder" variant="primary" size="large">
-            <.icon name="hero-rocket-launch" class="w-5 h-5 mr-2" />
-            Start Structure Builder
+            <.icon name="hero-rocket-launch" class="w-5 h-5 mr-2" /> Start Structure Builder
           </.button>
         </div>
       <% end %>
@@ -608,12 +645,47 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
      |> assign(:current_view, "overview")
      |> assign(:editing_level, nil)
      |> assign(:level_form, nil)
+     |> assign(:photo_counts, load_photo_counts(id))
      |> assign(:event, event)}
+  end
+
+  defp load_photo_counts(event_id) do
+    photos =
+      Ash.read!(Photo)
+      |> Enum.filter(&(&1.event_id == event_id))
+
+    %{
+      ready: Enum.count(photos, &(&1.status == :ready)),
+      processing: Enum.count(photos, &(&1.status in [:discovered, :processing])),
+      error: Enum.count(photos, &(&1.status == :error))
+    }
   end
 
   @impl true
   def handle_event("select_view", %{"view" => view}, socket) do
     {:noreply, assign(socket, :current_view, view)}
+  end
+
+  @impl true
+  def handle_event("scan_now", _params, socket) do
+    case PhotoFinish.Ingestion.scan_event(socket.assigns.event.id) do
+      {:ok, result} ->
+        socket =
+          socket
+          |> put_flash(
+            :info,
+            "Scan complete. Found #{result.photos_new} new photos, #{result.photos_skipped} skipped."
+          )
+          |> assign(:photo_counts, load_photo_counts(socket.assigns.event.id))
+
+        {:noreply, socket}
+
+      {:error, :directory_not_found} ->
+        {:noreply, put_flash(socket, :error, "Storage directory not found.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Scan failed: #{inspect(reason)}")}
+    end
   end
 
   @impl true
@@ -746,7 +818,11 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
   end
 
   @impl true
-  def handle_event("save_hierarchy_level", %{"level_name" => level_name, "level_name_plural" => level_name_plural} = params, socket) do
+  def handle_event(
+        "save_hierarchy_level",
+        %{"level_name" => level_name, "level_name_plural" => level_name_plural} = params,
+        socket
+      ) do
     is_required = Map.get(params, "is_required") == "true"
     allow_photos = Map.get(params, "allow_photos") == "true"
 
@@ -833,9 +909,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
     else
       case PhotoFinish.Events.HierarchyGenerator.generate_hierarchy(event, level_configs, true) do
         {:ok, stats} ->
-          Logger.info(
-            "Successfully generated hierarchy for event #{event.id}: #{inspect(stats)}"
-          )
+          Logger.info("Successfully generated hierarchy for event #{event.id}: #{inspect(stats)}")
 
           # Reload event with updated data
           event =
