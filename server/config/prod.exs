@@ -10,8 +10,7 @@ config :photo_finish, PhotoFinishWeb.Endpoint,
 
 # Force using SSL in production. This also sets the "strict-security-transport" header,
 # also known as HSTS. `:force_ssl` is required to be set at compile-time.
-config :photo_finish, PhotoFinishWeb.Endpoint,
-  force_ssl: [rewrite_on: [:x_forwarded_proto]]
+config :photo_finish, PhotoFinishWeb.Endpoint, force_ssl: [rewrite_on: [:x_forwarded_proto]]
 
 # Configure Swoosh API Client
 config :swoosh, api_client: Swoosh.ApiClient.Req

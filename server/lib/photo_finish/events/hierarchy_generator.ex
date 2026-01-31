@@ -26,7 +26,11 @@ defmodule PhotoFinish.Events.HierarchyGenerator do
     event = Ash.load!(event, [:hierarchy_levels])
 
     Logger.info("Generating hierarchy for event #{event.id}")
-    Logger.info("Create folders? #{create_folders?}, Storage dir: #{inspect(event.storage_directory)}")
+
+    Logger.info(
+      "Create folders? #{create_folders?}, Storage dir: #{inspect(event.storage_directory)}"
+    )
+
     Logger.info("Level configs received: #{inspect(level_configs)}")
     Logger.info("Existing hierarchy levels: #{length(event.hierarchy_levels)}")
 
@@ -53,7 +57,10 @@ defmodule PhotoFinish.Events.HierarchyGenerator do
         Logger.info("Created #{count} folders")
         count
       else
-        Logger.warning("Skipping folder creation - create_folders?: #{create_folders?}, storage_directory: #{inspect(event.storage_directory)}")
+        Logger.warning(
+          "Skipping folder creation - create_folders?: #{create_folders?}, storage_directory: #{inspect(event.storage_directory)}"
+        )
+
         0
       end
 

@@ -22,9 +22,14 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
               <.button_link navigate={return_path(@return_to, @event)} size="small" variant="outline">
                 Cancel
               </.button_link>
-              <.button form="event-form" type="submit" phx-disable-with="Saving..." variant="primary" size="small">
-                <.icon name="hero-check" class="w-4 h-4 mr-1" />
-                Save Event
+              <.button
+                form="event-form"
+                type="submit"
+                phx-disable-with="Saving..."
+                variant="primary"
+                size="small"
+              >
+                <.icon name="hero-check" class="w-4 h-4 mr-1" /> Save Event
               </.button>
             </div>
           </div>
@@ -82,8 +87,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                 <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
                   <div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
                     <h3 class="text-lg font-semibold text-gray-900 flex items-center">
-                      <.icon name="hero-calendar" class="w-5 h-5 mr-2 text-gray-400" />
-                      Event Schedule
+                      <.icon name="hero-calendar" class="w-5 h-5 mr-2 text-gray-400" /> Event Schedule
                     </h3>
                   </div>
                   <div class="p-6">
@@ -130,7 +134,10 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                         placeholder="/mnt/nas/photos/events/svgm-2025"
                       />
                       <p class="mt-2 text-xs text-gray-500 flex items-start">
-                        <.icon name="hero-information-circle" class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0" />
+                        <.icon
+                          name="hero-information-circle"
+                          class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0"
+                        />
                         <span>Absolute path where photo files will be stored on the server</span>
                       </p>
                     </div>
@@ -169,7 +176,10 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                           maxlength="3"
                         />
                         <p class="mt-2 text-xs text-gray-500 flex items-start">
-                          <.icon name="hero-information-circle" class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0" />
+                          <.icon
+                            name="hero-information-circle"
+                            class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0"
+                          />
                           <span>3-letter code for order numbers (e.g., STV-0123)</span>
                         </p>
                       </div>
@@ -182,7 +192,10 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                           placeholder="850"
                         />
                         <p class="mt-2 text-xs text-gray-500 flex items-start">
-                          <.icon name="hero-information-circle" class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0" />
+                          <.icon
+                            name="hero-information-circle"
+                            class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0"
+                          />
                           <span>Enter 850 for 8.5% tax rate</span>
                         </p>
                       </div>
@@ -264,8 +277,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
               <%!-- Tips --%>
               <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
                 <h4 class="text-xs font-semibold text-blue-900 mb-2 flex items-center">
-                  <.icon name="hero-light-bulb" class="w-4 h-4 mr-1" />
-                  Tips
+                  <.icon name="hero-light-bulb" class="w-4 h-4 mr-1" /> Tips
                 </h4>
                 <ul class="text-xs text-blue-800 space-y-1">
                   <li>• Use a descriptive event name</li>

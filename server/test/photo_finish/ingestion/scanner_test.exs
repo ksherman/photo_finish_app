@@ -44,7 +44,8 @@ defmodule PhotoFinish.Ingestion.ScannerTest do
         {:ok, sig} = Scanner.file_signature(tmp_file)
 
         assert sig.filename == Path.basename(tmp_file)
-        assert sig.size == 12  # "test content" is 12 bytes
+        # "test content" is 12 bytes
+        assert sig.size == 12
         assert is_integer(sig.mtime)
       after
         File.rm!(tmp_file)

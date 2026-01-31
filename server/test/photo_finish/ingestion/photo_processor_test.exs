@@ -14,11 +14,12 @@ defmodule PhotoFinish.Ingestion.PhotoProcessorTest do
 
   describe "build_output_path/3" do
     test "builds thumbnail path" do
-      result = PhotoProcessor.build_output_path(
-        "/NAS/thumbnails",
-        "valentines-2025",
-        "photo-uuid-123"
-      )
+      result =
+        PhotoProcessor.build_output_path(
+          "/NAS/thumbnails",
+          "valentines-2025",
+          "photo-uuid-123"
+        )
 
       assert result == "/NAS/thumbnails/valentines-2025/photo-uuid-123.jpg"
     end

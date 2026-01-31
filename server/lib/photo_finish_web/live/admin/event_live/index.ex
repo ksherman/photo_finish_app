@@ -14,8 +14,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Index do
           </div>
           <div class="flex items-center gap-3">
             <.button_link navigate={~p"/admin/events/new"} variant="primary" size="large">
-              <.icon name="hero-plus" class="w-5 h-5 mr-2" />
-              New Event
+              <.icon name="hero-plus" class="w-5 h-5 mr-2" /> New Event
             </.button_link>
           </div>
         </div>
@@ -32,13 +31,16 @@ defmodule PhotoFinishWeb.Admin.EventLive.Index do
             <h3 class="text-lg font-semibold text-gray-900 mb-2">No events yet</h3>
             <p class="text-gray-500 mb-6">Get started by creating your first event</p>
             <.button_link navigate={~p"/admin/events/new"} variant="primary">
-              <.icon name="hero-plus" class="w-4 h-4 mr-2" />
-              Create Your First Event
+              <.icon name="hero-plus" class="w-4 h-4 mr-2" /> Create Your First Event
             </.button_link>
           </div>
         <% else %>
           <%!-- Events Grid --%>
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="events" phx-update="stream">
+          <div
+            class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+            id="events"
+            phx-update="stream"
+          >
             <div
               :for={{id, event} <- @streams.events}
               id={id}
@@ -96,8 +98,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Index do
                   variant="outline"
                   phx-click={JS.navigate(~p"/admin/events/#{event}/edit")}
                 >
-                  <.icon name="hero-pencil" class="w-4 h-4 mr-1" />
-                  Edit
+                  <.icon name="hero-pencil" class="w-4 h-4 mr-1" /> Edit
                 </.button>
                 <.button
                   type="button"
@@ -106,8 +107,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Index do
                   phx-click={JS.push("delete", value: %{id: event.id}) |> hide("##{id}")}
                   data-confirm="Are you sure you want to delete this event?"
                 >
-                  <.icon name="hero-trash" class="w-4 h-4 mr-1" />
-                  Delete
+                  <.icon name="hero-trash" class="w-4 h-4 mr-1" /> Delete
                 </.button>
               </div>
             </div>

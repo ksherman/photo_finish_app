@@ -13,8 +13,22 @@ defmodule PhotoFinish.Events.HierarchyLevel do
     defaults [
       :read,
       :destroy,
-      create: [:level_number, :level_name, :level_name_plural, :is_required, :allow_photos, :event_id],
-      update: [:level_number, :level_name, :level_name_plural, :is_required, :allow_photos, :event_id]
+      create: [
+        :level_number,
+        :level_name,
+        :level_name_plural,
+        :is_required,
+        :allow_photos,
+        :event_id
+      ],
+      update: [
+        :level_number,
+        :level_name,
+        :level_name_plural,
+        :is_required,
+        :allow_photos,
+        :event_id
+      ]
     ]
   end
 

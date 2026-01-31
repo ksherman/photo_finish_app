@@ -33,10 +33,10 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
 
       <%= if @show_review do %>
         <%!-- Review Screen --%>
-        <%= render_review_screen(assigns) %>
+        {render_review_screen(assigns)}
       <% else %>
         <%!-- Level Configuration Form --%>
-        <%= render_level_form(assigns) %>
+        {render_level_form(assigns)}
       <% end %>
     </div>
     """
@@ -46,7 +46,13 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
     ~H"""
     <.card>
       <.card_content>
-        <.form for={@form} phx-change="validate" phx-submit="save_level" phx-target={@myself} class="space-y-6">
+        <.form
+          for={@form}
+          phx-change="validate"
+          phx-submit="save_level"
+          phx-target={@myself}
+          class="space-y-6"
+        >
           <div>
             <h4 class="font-semibold text-lg mb-2">
               Configure: {current_level_name(assigns)}
@@ -119,7 +125,9 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
                 <div class="text-xs font-mono text-blue-700">
                   {preview_names_from_form(assigns) |> Enum.take(5) |> Enum.join(", ")}
                   <%= if length(preview_names_from_form(assigns)) > 5 do %>
-                    <span class="text-blue-500">... and {length(preview_names_from_form(assigns)) - 5} more</span>
+                    <span class="text-blue-500">
+                      ... and {length(preview_names_from_form(assigns)) - 5} more
+                    </span>
                   <% end %>
                 </div>
               </div>
@@ -137,7 +145,8 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
                 class="w-full"
               >
                 <.icon name="hero-eye" class="w-4 h-4 mr-2" />
-                Review & Generate ({length(@configured_levels)} Level{if length(@configured_levels) > 1, do: "s"} Configured)
+                Review & Generate ({length(@configured_levels)} Level{if length(@configured_levels) >
+                                                                           1, do: "s"} Configured)
               </.button>
             <% end %>
 
@@ -150,14 +159,12 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
                   variant="outline"
                   class="flex-1"
                 >
-                  <.icon name="hero-arrow-left" class="w-4 h-4 mr-1" />
-                  Previous
+                  <.icon name="hero-arrow-left" class="w-4 h-4 mr-1" /> Previous
                 </.button>
               <% end %>
 
               <.button type="submit" variant="primary" class="flex-1">
-                Save & Continue
-                <.icon name="hero-arrow-right" class="w-4 h-4 ml-1" />
+                Save & Continue <.icon name="hero-arrow-right" class="w-4 h-4 ml-1" />
               </.button>
             </div>
           </div>
@@ -200,7 +207,9 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
                     </div>
                     <div>
                       <span class="text-gray-500">Pattern:</span>
-                      <span class="ml-2 font-medium text-gray-900 capitalize">{config.naming_pattern}</span>
+                      <span class="ml-2 font-medium text-gray-900 capitalize">
+                        {config.naming_pattern}
+                      </span>
                     </div>
                     <%= if config.add_rotations do %>
                       <div class="col-span-2">
@@ -236,7 +245,15 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
           <%= if @current_level_idx <= length(@hierarchy_levels) do %>
             <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center">
               <p class="text-sm text-gray-600 mb-3">
-                You can configure {length(@hierarchy_levels) - length(@configured_levels)} more level{if length(@hierarchy_levels) - length(@configured_levels) > 1, do: "s"}
+                You can configure {length(@hierarchy_levels) - length(@configured_levels)} more level{if length(
+                                                                                                           @hierarchy_levels
+                                                                                                         ) -
+                                                                                                           length(
+                                                                                                             @configured_levels
+                                                                                                           ) >
+                                                                                                           1,
+                                                                                                         do:
+                                                                                                           "s"}
               </p>
               <.button
                 type="button"
@@ -275,8 +292,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
               variant="outline"
               class="flex-1"
             >
-              <.icon name="hero-arrow-left" class="w-4 h-4 mr-1" />
-              Back to Configuration
+              <.icon name="hero-arrow-left" class="w-4 h-4 mr-1" /> Back to Configuration
             </.button>
 
             <.button
@@ -287,8 +303,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
               size="large"
               class="flex-1"
             >
-              <.icon name="hero-rocket-launch" class="w-5 h-5 mr-2" />
-              Generate Nodes & Folders
+              <.icon name="hero-rocket-launch" class="w-5 h-5 mr-2" /> Generate Nodes & Folders
             </.button>
           </div>
         </div>
@@ -329,7 +344,8 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
       case Enum.at(socket.assigns.configured_levels, socket.assigns.current_level_idx - 1) do
         nil ->
           # New level - use defaults
-          current_level = Enum.at(socket.assigns.hierarchy_levels, socket.assigns.current_level_idx - 1)
+          current_level =
+            Enum.at(socket.assigns.hierarchy_levels, socket.assigns.current_level_idx - 1)
 
           %{
             "level_name" => current_level[:level_name],
@@ -449,7 +465,12 @@ defmodule PhotoFinishWeb.Admin.EventLive.Components.StructureBuilder do
   end
 
   defp preview_names(config) do
-    generate_names(config.count, config.naming_pattern, config.custom_prefix, config.add_rotations)
+    generate_names(
+      config.count,
+      config.naming_pattern,
+      config.custom_prefix,
+      config.add_rotations
+    )
   end
 
   defp preview_names_from_form(assigns) do

@@ -66,7 +66,7 @@ defmodule PhotoFinish.Events.Event do
     attribute :status, :atom do
       public? true
       default :active
-      constraints [one_of: [:active, :archived]]
+      constraints one_of: [:active, :archived]
     end
 
     attribute :order_code, :string do

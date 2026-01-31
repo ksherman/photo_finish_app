@@ -10,8 +10,7 @@ defmodule PhotoFinish.Application do
     children = [
       PhotoFinishWeb.Telemetry,
       PhotoFinish.Repo,
-      {DNSCluster,
-       query: Application.get_env(:photo_finish, :dns_cluster_query) || :ignore},
+      {DNSCluster, query: Application.get_env(:photo_finish, :dns_cluster_query) || :ignore},
       {Oban,
        AshOban.config(
          Application.fetch_env!(:photo_finish, :ash_domains),
