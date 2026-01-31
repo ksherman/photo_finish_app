@@ -1,6 +1,8 @@
 defmodule PhotoFinishWeb.Admin.EventLive.Form do
   use PhotoFinishWeb, :live_view
 
+  alias PhotoFinish.Events.FolderGenerator
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -132,17 +134,39 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                         type="text"
                         label="Storage Root"
                         placeholder="/mnt/nas/photos/events/svgm-2025"
+                        required
+                        readonly={@is_edit}
                       />
                       <p class="mt-2 text-xs text-gray-500 flex items-start">
                         <.icon
                           name="hero-information-circle"
                           class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0"
                         />
-                        <span>Absolute path where photo files will be stored on the server</span>
+                        <span>
+                          Absolute path where photo files will be stored on the server
+                          <%= if @is_edit do %>
+                            (read-only after creation)
+                          <% end %>
+                        </span>
                       </p>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <.input
+                        field={@form[:num_gyms]}
+                        type="number"
+                        label="Number of Gyms"
+                        min="1"
+                        max="26"
+                        required
+                      />
+                      <.input
+                        field={@form[:sessions_per_gym]}
+                        type="number"
+                        label="Sessions per Gym"
+                        min="1"
+                        required
+                      />
                       <.input
                         field={@form[:status]}
                         type="select"
@@ -154,6 +178,28 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                         }
                       />
                     </div>
+
+                    <%!-- Folder Structure Preview --%>
+                    <%= if not @is_edit do %>
+                      <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <div class="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                          <h4 class="text-sm font-medium text-gray-900 flex items-center">
+                            <.icon name="hero-folder" class="w-4 h-4 mr-2 text-gray-400" />
+                            Folder Structure Preview
+                          </h4>
+                          <p class="text-xs text-gray-500 mt-1">
+                            These folders will be created when you save the event
+                          </p>
+                        </div>
+                        <div class="p-4 bg-gray-900 text-gray-100 font-mono text-xs max-h-48 overflow-y-auto">
+                          <.folder_preview
+                            storage_root={Phoenix.HTML.Form.input_value(@form, :storage_root)}
+                            num_gyms={parse_int(Phoenix.HTML.Form.input_value(@form, :num_gyms), 1)}
+                            sessions_per_gym={parse_int(Phoenix.HTML.Form.input_value(@form, :sessions_per_gym), 1)}
+                          />
+                        </div>
+                      </div>
+                    <% end %>
                   </div>
                 </div>
 
@@ -264,6 +310,28 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                   </span>
                 </div>
 
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-gray-500">Gyms</span>
+                  <span class="font-medium">
+                    {parse_int(Phoenix.HTML.Form.input_value(@form, :num_gyms), 1)}
+                  </span>
+                </div>
+
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-gray-500">Sessions/Gym</span>
+                  <span class="font-medium">
+                    {parse_int(Phoenix.HTML.Form.input_value(@form, :sessions_per_gym), 1)}
+                  </span>
+                </div>
+
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-gray-500">Total Sessions</span>
+                  <span class="font-medium">
+                    {parse_int(Phoenix.HTML.Form.input_value(@form, :num_gyms), 1) *
+                      parse_int(Phoenix.HTML.Form.input_value(@form, :sessions_per_gym), 1)}
+                  </span>
+                </div>
+
                 <%= if Phoenix.HTML.Form.input_value(@form, :tax_rate_basis_points) do %>
                   <div class="flex items-center justify-between text-xs">
                     <span class="text-gray-500">Tax Rate</span>
@@ -294,6 +362,51 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
     """
   end
 
+  # Folder preview component
+  attr :storage_root, :string, default: nil
+  attr :num_gyms, :integer, default: 1
+  attr :sessions_per_gym, :integer, default: 1
+
+  defp folder_preview(assigns) do
+    num_gyms = min(max(assigns.num_gyms || 1, 1), 26)
+    sessions = max(assigns.sessions_per_gym || 1, 1)
+    storage_root = assigns.storage_root || "/path/to/storage"
+
+    # Generate folder structure
+    folders =
+      for gym_num <- 1..num_gyms do
+        letter = FolderGenerator.gym_letter(gym_num)
+        gym_name = "Gym #{letter}"
+
+        sessions_list =
+          for session_num <- 1..sessions do
+            "Session #{session_num}#{letter}"
+          end
+
+        {gym_name, sessions_list}
+      end
+
+    assigns = assign(assigns, folders: folders, storage_root: storage_root)
+
+    ~H"""
+    <div class="space-y-1">
+      <div class="text-yellow-400">{@storage_root}/</div>
+      <%= for {gym_name, sessions} <- @folders do %>
+        <div class="pl-4">
+          <span class="text-blue-400">
+            <.icon name="hero-folder" class="w-3 h-3 inline" /> {gym_name}/
+          </span>
+          <%= for session <- sessions do %>
+            <div class="pl-4 text-green-400">
+              <.icon name="hero-folder" class="w-3 h-3 inline" /> {session}/
+            </div>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
   defp format_datetime(nil), do: "Not set"
 
   defp format_datetime(datetime) when is_binary(datetime) do
@@ -309,6 +422,19 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
 
   defp format_datetime(_), do: "Not set"
 
+  defp parse_int(nil, default), do: default
+  defp parse_int("", default), do: default
+
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+
+  defp parse_int(value, _default) when is_integer(value), do: value
+  defp parse_int(_, default), do: default
+
   @impl true
   def mount(params, _session, socket) do
     event =
@@ -317,13 +443,15 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
         id -> Ash.get!(PhotoFinish.Events.Event, id)
       end
 
-    action = if is_nil(event), do: "New", else: "Edit"
+    is_edit = not is_nil(event)
+    action = if is_edit, do: "Edit", else: "New"
     page_title = action <> " " <> "Event"
 
     {:ok,
      socket
      |> assign(:return_to, return_to(params["return_to"]))
      |> assign(event: event)
+     |> assign(:is_edit, is_edit)
      |> assign(:page_title, page_title)
      |> assign_form()}
   end
@@ -341,16 +469,37 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
       {:ok, event} ->
         notify_parent({:saved, event})
 
+        # Create folders on disk for new events
         socket =
-          socket
-          |> put_flash(:info, "Event #{socket.assigns.form.source.type}d successfully")
-          |> push_navigate(to: return_path(socket.assigns.return_to, event))
+          if socket.assigns.is_edit do
+            socket
+            |> put_flash(:info, "Event updated successfully")
+          else
+            case create_folders_for_event(event) do
+              {:ok, _paths} ->
+                socket
+                |> put_flash(:info, "Event created successfully with folder structure")
 
-        {:noreply, socket}
+              {:error, reason} ->
+                socket
+                |> put_flash(:info, "Event created successfully")
+                |> put_flash(:warning, "Could not create folders: #{inspect(reason)}")
+            end
+          end
+
+        {:noreply, push_navigate(socket, to: return_path(socket.assigns.return_to, event))}
 
       {:error, form} ->
         {:noreply, assign(socket, form: form)}
     end
+  end
+
+  defp create_folders_for_event(event) do
+    FolderGenerator.create_event_folders(
+      event.storage_root,
+      event.num_gyms,
+      event.sessions_per_gym
+    )
   end
 
   defp notify_parent(msg), do: send(self(), {__MODULE__, msg})
