@@ -5,7 +5,7 @@ defmodule PhotoFinish.Ingestion do
 
   require Logger
 
-  alias PhotoFinish.Ingestion.{Scanner, CompetitorMatcher, PhotoProcessor}
+  alias PhotoFinish.Ingestion.{Scanner, CompetitorMatcher, PhotoProcessor, PathParser}
   alias PhotoFinish.Events.{Event, Competitor}
   alias PhotoFinish.Photos.Photo
 
@@ -69,11 +69,23 @@ defmodule PhotoFinish.Ingestion do
     if photo_exists?(event.id, file) do
       {:ok, :skipped}
     else
+      # Parse path to extract location info
+      location_info = parse_location(file.path, event.storage_root)
+
       # Extract folder name for competitor matching
-      folder_name = Path.basename(Path.dirname(file.path))
+      folder_name =
+        case location_info do
+          {:ok, info} -> info.competitor_folder
+          _ -> Path.basename(Path.dirname(file.path))
+        end
+
       competitor = match_competitor(folder_name, competitors)
-      create_photo(event, competitor, file)
+      create_photo(event, competitor, file, location_info)
     end
+  end
+
+  defp parse_location(path, storage_root) do
+    PathParser.parse(path, storage_root)
   end
 
   defp photo_exists?(event_id, file) do
@@ -95,22 +107,40 @@ defmodule PhotoFinish.Ingestion do
     end
   end
 
-  defp create_photo(event, competitor, file) do
+  defp create_photo(event, competitor, file, location_info) do
     competitor_id =
       case competitor do
         {:ok, c} -> c.id
         :no_match -> nil
       end
 
-    case Ash.create(Photo, %{
-           event_id: event.id,
-           competitor_id: competitor_id,
-           ingestion_path: file.path,
-           filename: file.filename,
-           original_filename: file.filename,
-           file_size_bytes: file.size,
-           status: :discovered
-         }) do
+    # Build base attributes
+    base_attrs = %{
+      event_id: event.id,
+      competitor_id: competitor_id,
+      ingestion_path: file.path,
+      filename: file.filename,
+      original_filename: file.filename,
+      file_size_bytes: file.size,
+      status: :discovered
+    }
+
+    # Add location fields if path was parsed successfully
+    attrs =
+      case location_info do
+        {:ok, info} ->
+          Map.merge(base_attrs, %{
+            gym: info.gym,
+            session: info.session,
+            group_name: info.group_name,
+            apparatus: info.apparatus
+          })
+
+        _ ->
+          base_attrs
+      end
+
+    case Ash.create(Photo, attrs) do
       {:ok, photo} ->
         queue_processing(photo)
         {:ok, :created}

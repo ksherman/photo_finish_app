@@ -7,9 +7,10 @@ defmodule PhotoFinish.IngestionIntegrationTest do
 
   describe "full ingestion flow" do
     setup do
-      # Create temp directory with test structure
+      # Create temp directory with full test structure:
+      # Gym A/Session 1A/Group 2B/Beam/1022 Kevin S/IMG_001.jpg
       tmp_dir = System.tmp_dir!() |> Path.join("integration_#{:rand.uniform(100_000)}")
-      competitor_folder = Path.join([tmp_dir, "Gym A", "Session 1", "1022 Kevin S"])
+      competitor_folder = Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S"])
       File.mkdir_p!(competitor_folder)
 
       # Create minimal valid JPEG
@@ -46,7 +47,7 @@ defmodule PhotoFinish.IngestionIntegrationTest do
       assert_enqueued(worker: PhotoProcessor)
     end
 
-    test "links photos to matching competitors", %{event: event} do
+    test "links photos to matching competitors and populates location fields", %{event: event} do
       {:ok, _result} = Ingestion.scan_event(event.id)
 
       photos =
@@ -64,6 +65,12 @@ defmodule PhotoFinish.IngestionIntegrationTest do
 
       competitor = Ash.get!(PhotoFinish.Events.Competitor, photo.competitor_id)
       assert competitor.competitor_number == "1022"
+
+      # Location fields should be populated
+      assert photo.gym == "A"
+      assert photo.session == "1A"
+      assert photo.group_name == "Group 2B"
+      assert photo.apparatus == "Beam"
     end
 
     # Minimal valid JPEG (1x1 white pixel)

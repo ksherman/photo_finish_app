@@ -5,12 +5,13 @@ defmodule PhotoFinish.IngestionTest do
 
   describe "scan_event/1" do
     setup do
-      # Create a temp directory structure
+      # Create a temp directory structure with full path format:
+      # Gym A/Session 1A/Group 2B/Beam/1022 Kevin S/IMG_001.jpg
       tmp_dir = System.tmp_dir!() |> Path.join("ingestion_test_#{:rand.uniform(100_000)}")
-      File.mkdir_p!(Path.join([tmp_dir, "Gym A", "Session 1", "1022 Kevin S"]))
+      File.mkdir_p!(Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S"]))
 
       # Create test JPEG
-      jpeg_path = Path.join([tmp_dir, "Gym A", "Session 1", "1022 Kevin S", "IMG_001.jpg"])
+      jpeg_path = Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S", "IMG_001.jpg"])
       File.write!(jpeg_path, "fake jpeg content for testing")
 
       # Create an event with storage_directory pointing to tmp_dir
@@ -26,7 +27,7 @@ defmodule PhotoFinish.IngestionTest do
       %{event: event, tmp_dir: tmp_dir}
     end
 
-    test "creates photo records", %{event: event} do
+    test "creates photo records with location fields", %{event: event} do
       {:ok, _result} = Ingestion.scan_event(event.id)
 
       photos =
@@ -37,6 +38,12 @@ defmodule PhotoFinish.IngestionTest do
       photo = hd(photos)
       assert photo.filename == "IMG_001.jpg"
       assert photo.status == :discovered
+
+      # Verify location fields are populated from path
+      assert photo.gym == "A"
+      assert photo.session == "1A"
+      assert photo.group_name == "Group 2B"
+      assert photo.apparatus == "Beam"
     end
 
     test "is idempotent - skips existing photos", %{event: event} do
