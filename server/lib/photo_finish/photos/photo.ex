@@ -32,7 +32,11 @@ defmodule PhotoFinish.Photos.Photo do
         :status,
         :error_message,
         :exif_data,
-        :metadata
+        :metadata,
+        :gym,
+        :session,
+        :group_name,
+        :apparatus
       ],
       update: [
         :event_id,
@@ -54,13 +58,22 @@ defmodule PhotoFinish.Photos.Photo do
         :status,
         :error_message,
         :exif_data,
-        :metadata
+        :metadata,
+        :gym,
+        :session,
+        :group_name,
+        :apparatus
       ]
     ]
   end
 
   attributes do
-    uuid_primary_key :id
+    attribute :id, :string do
+      primary_key? true
+      allow_nil? false
+      default &PhotoFinish.Id.photo_id/0
+      writable? false
+    end
 
     attribute :ingestion_path, :string do
       allow_nil? false
@@ -140,6 +153,23 @@ defmodule PhotoFinish.Photos.Photo do
     end
 
     attribute :metadata, :map do
+      public? true
+    end
+
+    # Location fields (flat, parsed from folder structure)
+    attribute :gym, :string do
+      public? true
+    end
+
+    attribute :session, :string do
+      public? true
+    end
+
+    attribute :group_name, :string do
+      public? true
+    end
+
+    attribute :apparatus, :string do
       public? true
     end
 
