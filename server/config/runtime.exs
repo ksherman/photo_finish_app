@@ -23,6 +23,14 @@ end
 config :photo_finish, PhotoFinishWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# Photo storage paths for ingestion pipeline
+config :photo_finish,
+  photo_root: System.get_env("PHOTO_ROOT") || "/tmp/photos/originals",
+  preview_root: System.get_env("PREVIEW_ROOT") || "/tmp/photos/previews",
+  thumbnail_root: System.get_env("THUMBNAIL_ROOT") || "/tmp/photos/thumbnails",
+  thumbnail_size: String.to_integer(System.get_env("THUMBNAIL_SIZE") || "320"),
+  preview_size: String.to_integer(System.get_env("PREVIEW_SIZE") || "1280")
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
