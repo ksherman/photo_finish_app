@@ -26,28 +26,6 @@ defmodule PhotoFinish.IngestionTest do
       %{event: event, tmp_dir: tmp_dir}
     end
 
-    test "creates hierarchy nodes from folder structure", %{event: event} do
-      {:ok, result} = Ingestion.scan_event(event.id)
-
-      assert result.photos_found == 1
-      assert result.photos_new == 1
-
-      # Verify hierarchy nodes were created
-      nodes =
-        Ash.read!(PhotoFinish.Events.HierarchyNode)
-        |> Enum.filter(&(&1.event_id == event.id))
-
-      # Gym A, Session 1, 1022 Kevin S
-      assert length(nodes) == 3
-
-      gym_node = Enum.find(nodes, &(&1.name == "Gym A"))
-      assert gym_node.level_number == 1
-
-      session_node = Enum.find(nodes, &(&1.name == "Session 1"))
-      assert session_node.level_number == 2
-      assert session_node.parent_id == gym_node.id
-    end
-
     test "creates photo records", %{event: event} do
       {:ok, _result} = Ingestion.scan_event(event.id)
 

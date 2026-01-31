@@ -86,14 +86,6 @@ defmodule PhotoFinish.Events.Event do
   end
 
   relationships do
-    has_many :hierarchy_levels, PhotoFinish.Events.HierarchyLevel do
-      public? true
-    end
-
-    has_many :hierarchy_nodes, PhotoFinish.Events.HierarchyNode do
-      public? true
-    end
-
     has_many :competitors, PhotoFinish.Events.Competitor do
       public? true
     end

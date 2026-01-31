@@ -46,28 +46,6 @@ defmodule PhotoFinish.IngestionIntegrationTest do
       assert_enqueued(worker: PhotoProcessor)
     end
 
-    test "creates hierarchy nodes from folder structure", %{event: event} do
-      {:ok, _result} = Ingestion.scan_event(event.id)
-
-      nodes =
-        Ash.read!(PhotoFinish.Events.HierarchyNode)
-        |> Enum.filter(&(&1.event_id == event.id))
-
-      # Gym A, Session 1, 1022 Kevin S = 3 nodes
-      assert length(nodes) == 3
-
-      gym_node = Enum.find(nodes, &(&1.name == "Gym A"))
-      assert gym_node.level_number == 1
-
-      session_node = Enum.find(nodes, &(&1.name == "Session 1"))
-      assert session_node.level_number == 2
-      assert session_node.parent_id == gym_node.id
-
-      competitor_node = Enum.find(nodes, &(&1.name == "1022 Kevin S"))
-      assert competitor_node.level_number == 3
-      assert competitor_node.parent_id == session_node.id
-    end
-
     test "links photos to matching competitors", %{event: event} do
       {:ok, _result} = Ingestion.scan_event(event.id)
 

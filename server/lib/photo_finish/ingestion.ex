@@ -5,8 +5,8 @@ defmodule PhotoFinish.Ingestion do
 
   require Logger
 
-  alias PhotoFinish.Ingestion.{Scanner, FolderParser, CompetitorMatcher, PhotoProcessor}
-  alias PhotoFinish.Events.{Event, HierarchyNode, Competitor}
+  alias PhotoFinish.Ingestion.{Scanner, CompetitorMatcher, PhotoProcessor}
+  alias PhotoFinish.Events.{Event, Competitor}
   alias PhotoFinish.Photos.Photo
 
   @type scan_result :: %{
@@ -19,8 +19,7 @@ defmodule PhotoFinish.Ingestion do
   @doc """
   Scans an event's storage directory for photos.
 
-  Creates hierarchy nodes to mirror folder structure,
-  creates photo records, and queues processing jobs.
+  Creates photo records and queues processing jobs.
   """
   @spec scan_event(String.t()) :: {:ok, scan_result()} | {:error, term()}
   def scan_event(event_id) do
@@ -53,7 +52,7 @@ defmodule PhotoFinish.Ingestion do
   end
 
   defp load_event(event_id) do
-    case Ash.get(Event, event_id, load: [:hierarchy_levels]) do
+    case Ash.get(Event, event_id) do
       {:ok, nil} -> {:error, :event_not_found}
       {:ok, event} -> {:ok, event}
       error -> error
@@ -70,12 +69,10 @@ defmodule PhotoFinish.Ingestion do
     if photo_exists?(event.id, file) do
       {:ok, :skipped}
     else
-      with {:ok, node} <- ensure_hierarchy_nodes(event, file.path),
-           competitor <- match_competitor(node.name, competitors),
-           {:ok, photo} <- create_photo(event, node, competitor, file) do
-        queue_processing(photo)
-        {:ok, :created}
-      end
+      # Extract folder name for competitor matching
+      folder_name = Path.basename(Path.dirname(file.path))
+      competitor = match_competitor(folder_name, competitors)
+      create_photo(event, competitor, file)
     end
   end
 
@@ -88,54 +85,6 @@ defmodule PhotoFinish.Ingestion do
     end)
   end
 
-  defp ensure_hierarchy_nodes(event, file_path) do
-    folder_path = Path.dirname(file_path)
-
-    case FolderParser.parse_path(folder_path, event.storage_directory) do
-      {:error, reason} ->
-        {:error, reason}
-
-      levels ->
-        # Create or find nodes for each level
-        {_parent, leaf_node} =
-          Enum.reduce(levels, {nil, nil}, fn {level_num, name}, {parent_id, _} ->
-            node = find_or_create_node(event.id, parent_id, level_num, name)
-            {node.id, node}
-          end)
-
-        {:ok, leaf_node}
-    end
-  end
-
-  defp find_or_create_node(event_id, parent_id, level_number, name) do
-    slug = FolderParser.slugify(name)
-
-    existing =
-      Ash.read!(HierarchyNode)
-      |> Enum.find(fn n ->
-        n.event_id == event_id &&
-          n.parent_id == parent_id &&
-          n.name == name
-      end)
-
-    case existing do
-      nil ->
-        {:ok, node} =
-          Ash.create(HierarchyNode, %{
-            event_id: event_id,
-            parent_id: parent_id,
-            level_number: level_number,
-            name: name,
-            slug: slug
-          })
-
-        node
-
-      node ->
-        node
-    end
-  end
-
   defp match_competitor(folder_name, competitors) do
     case CompetitorMatcher.extract_competitor_number(folder_name) do
       {:ok, number} ->
@@ -146,23 +95,29 @@ defmodule PhotoFinish.Ingestion do
     end
   end
 
-  defp create_photo(event, node, competitor, file) do
+  defp create_photo(event, competitor, file) do
     competitor_id =
       case competitor do
         {:ok, c} -> c.id
         :no_match -> nil
       end
 
-    Ash.create(Photo, %{
-      event_id: event.id,
-      node_id: node.id,
-      competitor_id: competitor_id,
-      ingestion_path: file.path,
-      filename: file.filename,
-      original_filename: file.filename,
-      file_size_bytes: file.size,
-      status: :discovered
-    })
+    case Ash.create(Photo, %{
+           event_id: event.id,
+           competitor_id: competitor_id,
+           ingestion_path: file.path,
+           filename: file.filename,
+           original_filename: file.filename,
+           file_size_bytes: file.size,
+           status: :discovered
+         }) do
+      {:ok, photo} ->
+        queue_processing(photo)
+        {:ok, :created}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp queue_processing(photo) do

@@ -15,7 +15,6 @@ defmodule PhotoFinish.Events.Competitor do
       :destroy,
       create: [
         :event_id,
-        :node_id,
         :competitor_number,
         :first_name,
         :last_name,
@@ -30,7 +29,6 @@ defmodule PhotoFinish.Events.Competitor do
       ],
       update: [
         :event_id,
-        :node_id,
         :competitor_number,
         :first_name,
         :last_name,
@@ -101,10 +99,6 @@ defmodule PhotoFinish.Events.Competitor do
 
   relationships do
     belongs_to :event, PhotoFinish.Events.Event do
-      public? true
-    end
-
-    belongs_to :node, PhotoFinish.Events.HierarchyNode do
       public? true
     end
 

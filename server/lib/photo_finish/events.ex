@@ -4,8 +4,6 @@ defmodule PhotoFinish.Events do
 
   resources do
     resource PhotoFinish.Events.Event
-    resource PhotoFinish.Events.HierarchyLevel
-    resource PhotoFinish.Events.HierarchyNode
     resource PhotoFinish.Events.Competitor
   end
 end

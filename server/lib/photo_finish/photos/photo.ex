@@ -15,7 +15,6 @@ defmodule PhotoFinish.Photos.Photo do
       :destroy,
       create: [
         :event_id,
-        :node_id,
         :competitor_id,
         :ingestion_path,
         :current_path,
@@ -37,7 +36,6 @@ defmodule PhotoFinish.Photos.Photo do
       ],
       update: [
         :event_id,
-        :node_id,
         :competitor_id,
         :ingestion_path,
         :current_path,
@@ -150,10 +148,6 @@ defmodule PhotoFinish.Photos.Photo do
 
   relationships do
     belongs_to :event, PhotoFinish.Events.Event do
-      public? true
-    end
-
-    belongs_to :node, PhotoFinish.Events.HierarchyNode do
       public? true
     end
 
