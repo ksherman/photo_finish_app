@@ -14,7 +14,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
         <div class="bg-white border-b border-gray-200 px-6 py-3 flex-shrink-0">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-4">
-              <.button_link navigate={~p"/admin/events"} variant="outline" size="small">
+              <.button_link navigate={~p"/admin/events"} variant="outline" color="natural" size="small">
                 <.icon name="hero-arrow-left" class="w-4 h-4" />
               </.button_link>
               <div>
@@ -27,7 +27,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             </div>
             <div class="flex items-center gap-2">
               <%= if @show_builder do %>
-                <.button phx-click="close_builder_modal" size="small" variant="outline">
+                <.button phx-click="close_builder_modal" size="small" variant="outline" color="natural">
                   <.icon name="hero-x-mark" class="w-4 h-4 mr-1" /> Close Builder
                 </.button>
               <% else %>
@@ -40,6 +40,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                   navigate={~p"/admin/events/#{@event}/edit"}
                   size="small"
                   variant="outline"
+                  color="natural"
                 >
                   <.icon name="hero-pencil" class="w-4 h-4 mr-1" /> Edit Event
                 </.button_link>
@@ -289,7 +290,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
               </div>
 
               <div class="flex items-center justify-end gap-3 pt-4 border-t">
-                <.button type="button" phx-click="cancel_edit_level" variant="outline">
+                <.button type="button" phx-click="cancel_edit_level" variant="outline" color="natural">
                   Cancel
                 </.button>
                 <.button type="submit" variant="primary">
@@ -420,12 +421,13 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
               <.icon name="hero-sparkles" class="w-4 h-4 mr-2" /> Generate Standard
             </.button>
           <% else %>
-            <.button phx-click="add_hierarchy_level" variant="outline" size="small">
+            <.button phx-click="add_hierarchy_level" variant="outline" color="natural" size="small">
               <.icon name="hero-plus" class="w-4 h-4 mr-1" /> Add Level
             </.button>
             <.button
               phx-click="clear_hierarchy_levels"
               variant="outline"
+              color="natural"
               size="small"
               data-confirm="Are you sure you want to delete all hierarchy levels?"
             >
@@ -461,7 +463,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             <p class="text-sm text-gray-600 mb-4">
               Create a custom hierarchy structure tailored to your specific event needs.
             </p>
-            <.button phx-click="add_hierarchy_level" variant="outline" class="w-full">
+            <.button phx-click="add_hierarchy_level" variant="outline" color="natural" class="w-full">
               <.icon name="hero-plus" class="w-4 h-4 mr-2" /> Start Custom Build
             </.button>
           </div>
@@ -526,6 +528,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                       phx-click="edit_hierarchy_level"
                       phx-value-id={level.id}
                       variant="outline"
+                      color="natural"
                       size="small"
                     >
                       <.icon name="hero-pencil" class="w-3 h-3" />
@@ -534,6 +537,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                       phx-click="delete_hierarchy_level"
                       phx-value-id={level.id}
                       variant="outline"
+                      color="natural"
                       size="small"
                       data-confirm="Are you sure you want to delete this level?"
                     >
@@ -594,7 +598,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
           <p class="text-gray-500 mb-6 max-w-md mx-auto">
             Please define your hierarchy levels in the "Hierarchy Levels" tab before generating nodes
           </p>
-          <.button phx-click="select_view" phx-value-view="structure" variant="outline">
+          <.button phx-click="select_view" phx-value-view="structure" variant="outline" color="natural">
             <.icon name="hero-arrow-right" class="w-4 h-4 mr-2" /> Go to Hierarchy Levels
           </.button>
         </div>
