@@ -45,7 +45,12 @@ defmodule PhotoFinish.Events.Competitor do
   end
 
   attributes do
-    uuid_primary_key :id
+    attribute :id, :string do
+      primary_key? true
+      allow_nil? false
+      default &PhotoFinish.Id.competitor_id/0
+      writable? false
+    end
 
     attribute :competitor_number, :string do
       allow_nil? false

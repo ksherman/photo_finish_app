@@ -184,6 +184,7 @@ defmodule PhotoFinish.Photos.Photo do
 
     belongs_to :competitor, PhotoFinish.Events.Competitor do
       public? true
+      attribute_type :string
     end
   end
 end
