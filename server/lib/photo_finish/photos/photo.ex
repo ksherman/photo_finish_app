@@ -14,6 +14,9 @@ defmodule PhotoFinish.Photos.Photo do
       :read,
       :destroy,
       create: [
+        :event_id,
+        :node_id,
+        :competitor_id,
         :ingestion_path,
         :current_path,
         :preview_path,
@@ -33,6 +36,9 @@ defmodule PhotoFinish.Photos.Photo do
         :metadata
       ],
       update: [
+        :event_id,
+        :node_id,
+        :competitor_id,
         :ingestion_path,
         :current_path,
         :preview_path,
@@ -123,7 +129,7 @@ defmodule PhotoFinish.Photos.Photo do
     attribute :status, :atom do
       public? true
       default :discovered
-      constraints [one_of: [:discovered, :processing, :ready, :finalized, :error, :duplicate]]
+      constraints one_of: [:discovered, :processing, :ready, :finalized, :error, :duplicate]
     end
 
     attribute :error_message, :string do
