@@ -3,11 +3,10 @@ import { ref, computed, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSessionStore } from "@/stores/session";
-import { useCardReaderStore } from "@/stores/cardReader";
 import type { CardReaderInfo, DirectoryEntry } from "@/types";
 
 const props = defineProps<{
-  readerId: string;
+  reader: CardReaderInfo;
 }>();
 
 const emit = defineEmits<{
@@ -16,11 +15,6 @@ const emit = defineEmits<{
 }>();
 
 const sessionStore = useSessionStore();
-const cardReaderStore = useCardReaderStore();
-
-const reader = computed(() => 
-  cardReaderStore.cardReaders.find(r => r.reader_id === props.readerId)
-);
 
 const destination = ref("");
 const photographer = ref("");
@@ -47,9 +41,9 @@ const previewFolderCount = ref(0);
 
 // Initialize form data
 onMounted(() => {
-  if (!reader.value) return;
+  if (!props.reader) return;
   
-  const existing = sessionStore.getReaderMapping(props.readerId);
+  const existing = sessionStore.getReaderMapping(props.reader.reader_id);
   if (existing) {
     destination.value = existing.destination;
     photographer.value = existing.photographer;
@@ -57,7 +51,7 @@ onMounted(() => {
     renamePrefix.value = existing.renamePrefix || "";
     autoRename.value = existing.autoRename || false;
     fileRenamePrefix.value = existing.fileRenamePrefix || "";
-    loadPreview(reader.value, existing.cameraFolderPath);
+    loadPreview(props.reader, existing.cameraFolderPath);
   } else {
     destination.value = "";
     photographer.value = "";
@@ -91,10 +85,10 @@ async function loadPreview(readerInfo: CardReaderInfo, folderPath: string) {
 
 // Watch for camera brand changes and reload preview
 watch(cameraBrand, (newBrand) => {
-  if (reader.value && newBrand) {
+  if (props.reader && newBrand) {
     const brand = cameraBrands.find((b) => b.value === newBrand);
     if (brand) {
-      loadPreview(reader.value, brand.folderPath);
+      loadPreview(props.reader, brand.folderPath);
     }
   }
 });
@@ -112,7 +106,7 @@ async function selectDestination() {
 
 function save() {
   if (
-    !reader.value ||
+    !props.reader ||
     !destination.value ||
     !photographer.value ||
     !cameraBrand.value ||
@@ -121,8 +115,8 @@ function save() {
     return;
 
   sessionStore.setReaderMapping(
-    props.readerId,
-    reader.value.display_name,
+    props.reader.reader_id,
+    props.reader.display_name,
     destination.value,
     photographer.value,
     cameraBrand.value,
@@ -137,7 +131,7 @@ function save() {
 
 const isValid = computed(
   () =>
-    reader.value &&
+    props.reader &&
     destination.value &&
     photographer.value &&
     cameraBrand.value
@@ -145,7 +139,7 @@ const isValid = computed(
 </script>
 
 <template>
-  <div v-if="reader" class="bg-white rounded-lg shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
+  <div class="bg-white rounded-lg shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
     <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
       <h2 class="text-lg font-semibold text-gray-800">
         Configure {{ reader.display_name }}

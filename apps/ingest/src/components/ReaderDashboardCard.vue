@@ -9,7 +9,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  configure: [readerId: string];
+  configure: [reader: CardReaderInfo];
 }>();
 
 const sessionStore = useSessionStore();
@@ -176,7 +176,7 @@ async function startCopy() {
     <!-- Footer Actions -->
     <div class="p-4 border-t border-gray-100 bg-gray-50 rounded-b-lg flex gap-2">
       <button
-        @click="emit('configure', reader.reader_id)"
+        @click="emit('configure', reader)"
         class="flex-1 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
       >
         {{ isConfigured ? 'Edit Config' : 'Configure' }}

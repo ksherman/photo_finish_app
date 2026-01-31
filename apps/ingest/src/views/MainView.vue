@@ -10,7 +10,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 const cardReaderStore = useCardReaderStore();
 const sessionStore = useSessionStore();
 
-const configuringReaderId = ref<string | null>(null);
+const configuringReader = ref<CardReaderInfo | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -59,16 +59,16 @@ onUnmounted(() => {
   }
 });
 
-function onConfigureReader(readerId: string) {
-  configuringReaderId.value = readerId;
+function onConfigureReader(reader: CardReaderInfo) {
+  configuringReader.value = reader;
 }
 
 function onSetupClose() {
-  configuringReaderId.value = null;
+  configuringReader.value = null;
 }
 
 function onSetupSaved() {
-  configuringReaderId.value = null;
+  configuringReader.value = null;
 }
 
 async function confirmReset() {
@@ -137,13 +137,13 @@ async function confirmReset() {
       </div>
 
       <!-- Setup Modal -->
-      <div 
-        v-if="configuringReaderId"
+      <div
+        v-if="configuringReader"
         class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 backdrop-blur-sm"
       >
         <div class="w-full max-w-lg bg-white rounded-lg shadow-xl" @click.stop>
           <ReaderSetup
-            :reader-id="configuringReaderId"
+            :reader="configuringReader"
             @close="onSetupClose"
             @saved="onSetupSaved"
           />
