@@ -14,6 +14,8 @@ defmodule PhotoFinish.Events.Competitor do
       :read,
       :destroy,
       create: [
+        :event_id,
+        :node_id,
         :competitor_number,
         :first_name,
         :last_name,
@@ -27,6 +29,8 @@ defmodule PhotoFinish.Events.Competitor do
         :metadata
       ],
       update: [
+        :event_id,
+        :node_id,
         :competitor_number,
         :first_name,
         :last_name,
