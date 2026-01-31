@@ -86,7 +86,8 @@ defmodule PhotoFinish.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:vix, "~> 0.23"}
+      {:vix, "~> 0.23"},
+      {:nanoid, "~> 2.1"}
     ]
   end
 
