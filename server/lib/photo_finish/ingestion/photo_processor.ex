@@ -18,16 +18,41 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
   def perform(%Oban.Job{args: %{"photo_id" => photo_id}}) do
     with {:ok, photo} <- load_photo(photo_id),
          {:ok, photo} <- mark_processing(photo),
+         :ok <- broadcast_progress(photo, :processing),
          {:ok, photo} <- generate_thumbnail(photo),
          {:ok, photo} <- generate_preview(photo),
-         {:ok, _photo} <- mark_ready(photo) do
+         {:ok, photo} <- mark_ready(photo) do
       Logger.info("Successfully processed photo #{photo_id}")
+      broadcast_progress(photo, :ready)
       :ok
     else
       {:error, reason} ->
         Logger.error("Failed to process photo #{photo_id}: #{inspect(reason)}")
         mark_error(photo_id, inspect(reason))
+        broadcast_error(photo_id)
         {:error, reason}
+    end
+  end
+
+  defp broadcast_progress(photo, status) do
+    Phoenix.PubSub.broadcast(
+      PhotoFinish.PubSub,
+      "photos:event:#{photo.event_id}",
+      {:photo_status_changed, %{photo_id: photo.id, status: status}}
+    )
+    :ok
+  end
+
+  defp broadcast_error(photo_id) do
+    case Ash.get(Photo, photo_id) do
+      {:ok, photo} when not is_nil(photo) ->
+        Phoenix.PubSub.broadcast(
+          PhotoFinish.PubSub,
+          "photos:event:#{photo.event_id}",
+          {:photo_status_changed, %{photo_id: photo.id, status: :error}}
+        )
+      _ ->
+        :ok
     end
   end
 
@@ -61,12 +86,7 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
   end
 
   defp generate_thumbnail(photo) do
-    output_path =
-      build_output_path(
-        thumbnail_root(),
-        photo.event.slug,
-        photo.id
-      )
+    output_path = thumbnail_path(photo.event.storage_root, photo.id)
 
     case resize_image(photo.ingestion_path, output_path, @thumbnail_size) do
       {:ok, _} ->
@@ -78,12 +98,7 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
   end
 
   defp generate_preview(photo) do
-    output_path =
-      build_output_path(
-        preview_root(),
-        photo.event.slug,
-        photo.id
-      )
+    output_path = preview_path(photo.event.storage_root, photo.id)
 
     case resize_image(photo.ingestion_path, output_path, @preview_size) do
       {:ok, _} ->
@@ -106,19 +121,19 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
   end
 
   @doc """
-  Builds the output path for a processed image.
+  Builds the thumbnail path for a photo within the event's storage root.
   """
-  @spec build_output_path(String.t(), String.t(), String.t()) :: String.t()
-  def build_output_path(root, event_slug, photo_id) do
-    Path.join([root, event_slug, "#{photo_id}.jpg"])
+  @spec thumbnail_path(String.t(), String.t()) :: String.t()
+  def thumbnail_path(storage_root, photo_id) do
+    Path.join([storage_root, "_thumbnails", "#{photo_id}.jpg"])
   end
 
-  defp thumbnail_root do
-    Application.get_env(:photo_finish, :thumbnail_root, "/tmp/thumbnails")
-  end
-
-  defp preview_root do
-    Application.get_env(:photo_finish, :preview_root, "/tmp/previews")
+  @doc """
+  Builds the preview path for a photo within the event's storage root.
+  """
+  @spec preview_path(String.t(), String.t()) :: String.t()
+  def preview_path(storage_root, photo_id) do
+    Path.join([storage_root, "_previews", "#{photo_id}.jpg"])
   end
 
   def thumbnail_size, do: @thumbnail_size

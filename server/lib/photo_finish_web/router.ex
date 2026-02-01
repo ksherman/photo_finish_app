@@ -99,6 +99,9 @@ defmodule PhotoFinishWeb.Router do
     live "/events/:id/edit", EventLive.Form, :edit
     live "/events/:id", EventLive.Show, :show
     live "/events/:id/show/edit", EventLive.Show, :edit
+
+    get "/photos/thumbnail/:id", PhotoController, :thumbnail
+    get "/photos/preview/:id", PhotoController, :preview
   end
 
   # Other scopes may use custom stacks.

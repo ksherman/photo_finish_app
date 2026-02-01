@@ -91,9 +91,7 @@ defmodule PhotoFinish.Ingestion do
   defp photo_exists?(event_id, file) do
     Ash.read!(Photo)
     |> Enum.any?(fn p ->
-      p.event_id == event_id &&
-        p.filename == file.filename &&
-        p.file_size_bytes == file.size
+      p.event_id == event_id && p.ingestion_path == file.path
     end)
   end
 
@@ -133,7 +131,8 @@ defmodule PhotoFinish.Ingestion do
             gym: info.gym,
             session: info.session,
             group_name: info.group_name,
-            apparatus: info.apparatus
+            apparatus: info.apparatus,
+            source_folder: info.competitor_folder
           })
 
         _ ->

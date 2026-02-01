@@ -24,6 +24,8 @@ defmodule PhotoFinish.Ingestion.Scanner do
   @doc """
   Scans a directory recursively for JPEG files.
 
+  Skips directories starting with underscore (e.g., _thumbnails, _previews).
+
   Returns {:ok, [file_info]} or {:error, reason}
   """
   @spec scan_directory(String.t()) :: {:ok, [file_info()]} | {:error, :directory_not_found}
@@ -33,6 +35,7 @@ defmodule PhotoFinish.Ingestion.Scanner do
         path
         |> Path.join("**/*")
         |> Path.wildcard()
+        |> Enum.reject(&in_underscore_directory?/1)
         |> Enum.filter(&jpeg_file?/1)
         |> Enum.map(&build_file_info/1)
         |> Enum.reject(&is_nil/1)
@@ -64,6 +67,12 @@ defmodule PhotoFinish.Ingestion.Scanner do
 
   defp jpeg_file?(path) do
     File.regular?(path) && Path.extname(path) in @jpeg_extensions
+  end
+
+  defp in_underscore_directory?(path) do
+    path
+    |> Path.split()
+    |> Enum.any?(fn segment -> String.starts_with?(segment, "_") end)
   end
 
   defp build_file_info(path) do
