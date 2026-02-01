@@ -28,7 +28,6 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                 form="event-form"
                 type="submit"
                 phx-disable-with="Saving..."
-                variant="primary"
                 size="small"
               >
                 <.icon name="hero-check" class="w-4 h-4 mr-1" /> Save Event
@@ -195,7 +194,9 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                           <.folder_preview
                             storage_root={Phoenix.HTML.Form.input_value(@form, :storage_root)}
                             num_gyms={parse_int(Phoenix.HTML.Form.input_value(@form, :num_gyms), 1)}
-                            sessions_per_gym={parse_int(Phoenix.HTML.Form.input_value(@form, :sessions_per_gym), 1)}
+                            sessions_per_gym={
+                              parse_int(Phoenix.HTML.Form.input_value(@form, :sessions_per_gym), 1)
+                            }
                           />
                         </div>
                       </div>

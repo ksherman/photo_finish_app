@@ -139,10 +139,8 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                   phx-click="scan_now"
                   disabled={is_nil(@event.storage_root)}
                   size="small"
-                  variant="primary"
                 >
-                  <.icon name="hero-magnifying-glass" class="w-4 h-4 mr-1" />
-                  Scan Now
+                  <.icon name="hero-magnifying-glass" class="w-4 h-4 mr-1" /> Scan Now
                 </.button>
               </div>
               <%= if is_nil(@event.storage_root) do %>

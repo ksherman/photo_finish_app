@@ -21,8 +21,8 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "api_key_hash",
-      "type": "binary"
+      "source": "email",
+      "type": "citext"
     },
     {
       "allow_nil?": false,
@@ -33,8 +33,8 @@
       "references": null,
       "scale": null,
       "size": null,
-      "source": "expires_at",
-      "type": "utc_datetime_usec"
+      "source": "hashed_password",
+      "type": "text"
     },
     {
       "allow_nil?": true,
@@ -42,50 +42,32 @@
       "generated?": false,
       "precision": null,
       "primary_key?": false,
-      "references": {
-        "deferrable": false,
-        "destination_attribute": "id",
-        "destination_attribute_default": null,
-        "destination_attribute_generated": null,
-        "index?": false,
-        "match_type": null,
-        "match_with": null,
-        "multitenancy": {
-          "attribute": null,
-          "global": null,
-          "strategy": null
-        },
-        "name": "api_keys_user_id_fkey",
-        "on_delete": null,
-        "on_update": null,
-        "primary_key?": true,
-        "schema": "public",
-        "table": "users"
-      },
+      "references": null,
       "scale": null,
       "size": null,
-      "source": "user_id",
-      "type": "uuid"
+      "source": "confirmed_at",
+      "type": "utc_datetime_usec"
     }
   ],
   "base_filter": null,
   "check_constraints": [],
+  "create_table_options": null,
   "custom_indexes": [],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "DE0CC93A49A38D0611E9AA5437005C0012C604768763E4AA9D87186CF31F4FC4",
+  "hash": "66EB8EFC6DE32794D40FE6C1F804AF0C0184B0078D34C2AF1F1082841DE365C9",
   "identities": [
     {
       "all_tenants?": false,
       "base_filter": null,
-      "index_name": "api_keys_unique_api_key_index",
+      "index_name": "users_unique_email_index",
       "keys": [
         {
           "type": "atom",
-          "value": "api_key_hash"
+          "value": "email"
         }
       ],
-      "name": "unique_api_key",
+      "name": "unique_email",
       "nils_distinct?": true,
       "where": null
     }
@@ -97,5 +79,5 @@
   },
   "repo": "Elixir.PhotoFinish.Repo",
   "schema": null,
-  "table": "api_keys"
+  "table": "users"
 }

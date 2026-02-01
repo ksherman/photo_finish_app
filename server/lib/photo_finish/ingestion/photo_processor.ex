@@ -99,8 +99,9 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
     output_path |> Path.dirname() |> File.mkdir_p!()
 
     with {:ok, image} <- Image.new_from_file(input_path),
-         {:ok, resized} <- Operation.thumbnail_image(image, size) do
-      Image.write_to_file(resized, output_path)
+         {:ok, resized} <- Operation.thumbnail_image(image, size),
+         :ok <- Image.write_to_file(resized, output_path) do
+      {:ok, output_path}
     end
   end
 

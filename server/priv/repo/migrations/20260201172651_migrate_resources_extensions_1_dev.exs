@@ -1,4 +1,4 @@
-defmodule PhotoFinish.Repo.Migrations.SetupEventsAndPhotosExtensions1 do
+defmodule PhotoFinish.Repo.Migrations.MigrateResourcesExtensions1 do
   @moduledoc """
   Installs any extensions that are mentioned in the repo's `installed_extensions/0` callback
 
@@ -126,17 +126,6 @@ defmodule PhotoFinish.Repo.Migrations.SetupEventsAndPhotosExtensions1 do
     LANGUAGE PLPGSQL
     SET search_path = ''
     VOLATILE;
-    """)
-
-    execute("""
-    CREATE OR REPLACE FUNCTION timestamp_from_uuid_v7(_uuid uuid)
-    RETURNS TIMESTAMP WITHOUT TIME ZONE
-    AS $$
-      SELECT to_timestamp(('x0000' || substr(_uuid::TEXT, 1, 8) || substr(_uuid::TEXT, 10, 4))::BIT(64)::BIGINT::NUMERIC / 1000);
-    $$
-    LANGUAGE SQL
-    SET search_path = ''
-    IMMUTABLE PARALLEL SAFE STRICT;
     """)
 
     execute("CREATE EXTENSION IF NOT EXISTS \"citext\"")
