@@ -331,6 +331,14 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                 >
                   <.icon name="hero-list-bullet" class="w-4 h-4 mr-1" /> All Events
                 </.button_link>
+                <.button_link
+                  navigate={~p"/admin/events/#{@event.id}/competitors/import"}
+                  size="small"
+                  variant="outline"
+                  color="natural"
+                >
+                  <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-1" /> Import Roster
+                </.button_link>
               </div>
             </div>
           </div>
