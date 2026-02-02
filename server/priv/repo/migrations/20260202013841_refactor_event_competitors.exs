@@ -1,4 +1,4 @@
-defmodule PhotoFinish.Repo.Migrations.MigrateResources1 do
+defmodule PhotoFinish.Repo.Migrations.RefactorEventCompetitors do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 
@@ -8,6 +8,8 @@ defmodule PhotoFinish.Repo.Migrations.MigrateResources1 do
   use Ecto.Migration
 
   def up do
+    execute "CREATE EXTENSION IF NOT EXISTS citext"
+
     create table(:users, primary_key: false) do
       add :id, :uuid, null: false, default: fragment("gen_random_uuid()"), primary_key: true
       add :email, :citext, null: false
@@ -72,7 +74,7 @@ defmodule PhotoFinish.Repo.Migrations.MigrateResources1 do
         default: fragment("(now() AT TIME ZONE 'utc')")
 
       add :event_id, :text
-      add :competitor_id, :text
+      add :event_competitor_id, :text
     end
 
     create table(:events, primary_key: false) do
@@ -111,30 +113,27 @@ defmodule PhotoFinish.Repo.Migrations.MigrateResources1 do
         default: fragment("(now() AT TIME ZONE 'utc')")
     end
 
-    create table(:competitors, primary_key: false) do
+    create table(:event_competitors, primary_key: false) do
       add :id, :text, null: false, primary_key: true
     end
 
     alter table(:photos) do
-      modify :competitor_id,
-             references(:competitors,
+      modify :event_competitor_id,
+             references(:event_competitors,
                column: :id,
-               name: "photos_competitor_id_fkey",
+               name: "photos_event_competitor_id_fkey",
                type: :text,
                prefix: "public"
              )
     end
 
-    alter table(:competitors) do
+    alter table(:event_competitors) do
+      add :session, :text
       add :competitor_number, :text, null: false
-      add :first_name, :text, null: false
-      add :last_name, :text
       add :display_name, :text
       add :team_name, :text
       add :level, :text
       add :age_group, :text
-      add :email, :text
-      add :phone, :text
       add :is_active, :boolean, default: true
       add :metadata, :map
 
@@ -146,13 +145,51 @@ defmodule PhotoFinish.Repo.Migrations.MigrateResources1 do
         null: false,
         default: fragment("(now() AT TIME ZONE 'utc')")
 
-      add :event_id,
-          references(:events,
-            column: :id,
-            name: "competitors_event_id_fkey",
-            type: :text,
-            prefix: "public"
-          )
+      add :competitor_id, :text
+      add :event_id, :text
+    end
+
+    create table(:competitors, primary_key: false) do
+      add :id, :text, null: false, primary_key: true
+    end
+
+    alter table(:event_competitors) do
+      modify :competitor_id,
+             references(:competitors,
+               column: :id,
+               name: "event_competitors_competitor_id_fkey",
+               type: :text,
+               prefix: "public"
+             )
+
+      modify :event_id,
+             references(:events,
+               column: :id,
+               name: "event_competitors_event_id_fkey",
+               type: :text,
+               prefix: "public"
+             )
+    end
+
+    create unique_index(:event_competitors, [:event_id, :competitor_number],
+             name: "event_competitors_unique_event_competitor_number_index"
+           )
+
+    alter table(:competitors) do
+      add :first_name, :text, null: false
+      add :last_name, :text
+      add :external_id, :text
+      add :email, :text
+      add :phone, :text
+      add :metadata, :map
+
+      add :inserted_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
+
+      add :updated_at, :utc_datetime_usec,
+        null: false,
+        default: fragment("(now() AT TIME ZONE 'utc')")
     end
 
     create table(:api_keys, primary_key: false) do
@@ -179,32 +216,54 @@ defmodule PhotoFinish.Repo.Migrations.MigrateResources1 do
 
     drop table(:api_keys)
 
-    drop constraint(:competitors, "competitors_event_id_fkey")
-
     alter table(:competitors) do
-      remove :event_id
       remove :updated_at
       remove :inserted_at
       remove :metadata
-      remove :is_active
       remove :phone
       remove :email
-      remove :age_group
-      remove :level
-      remove :team_name
-      remove :display_name
+      remove :external_id
       remove :last_name
       remove :first_name
-      remove :competitor_number
     end
 
-    drop constraint(:photos, "photos_competitor_id_fkey")
+    drop_if_exists unique_index(:event_competitors, [:event_id, :competitor_number],
+                     name: "event_competitors_unique_event_competitor_number_index"
+                   )
 
-    alter table(:photos) do
+    drop constraint(:event_competitors, "event_competitors_competitor_id_fkey")
+
+    drop constraint(:event_competitors, "event_competitors_event_id_fkey")
+
+    alter table(:event_competitors) do
+      modify :event_id, :text
       modify :competitor_id, :text
     end
 
     drop table(:competitors)
+
+    alter table(:event_competitors) do
+      remove :event_id
+      remove :competitor_id
+      remove :updated_at
+      remove :inserted_at
+      remove :metadata
+      remove :is_active
+      remove :age_group
+      remove :level
+      remove :team_name
+      remove :display_name
+      remove :competitor_number
+      remove :session
+    end
+
+    drop constraint(:photos, "photos_event_competitor_id_fkey")
+
+    alter table(:photos) do
+      modify :event_competitor_id, :text
+    end
+
+    drop table(:event_competitors)
 
     alter table(:events) do
       remove :updated_at

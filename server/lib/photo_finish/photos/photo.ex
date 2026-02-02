@@ -15,7 +15,7 @@ defmodule PhotoFinish.Photos.Photo do
       :destroy,
       create: [
         :event_id,
-        :competitor_id,
+        :event_competitor_id,
         :ingestion_path,
         :current_path,
         :preview_path,
@@ -40,7 +40,7 @@ defmodule PhotoFinish.Photos.Photo do
       ],
       update: [
         :event_id,
-        :competitor_id,
+        :event_competitor_id,
         :ingestion_path,
         :current_path,
         :preview_path,
@@ -182,7 +182,7 @@ defmodule PhotoFinish.Photos.Photo do
       attribute_type :string
     end
 
-    belongs_to :competitor, PhotoFinish.Events.Competitor do
+    belongs_to :event_competitor, PhotoFinish.Events.EventCompetitor do
       public? true
       attribute_type :string
     end

@@ -13,34 +13,8 @@ defmodule PhotoFinish.Events.Competitor do
     defaults [
       :read,
       :destroy,
-      create: [
-        :event_id,
-        :competitor_number,
-        :first_name,
-        :last_name,
-        :display_name,
-        :team_name,
-        :level,
-        :age_group,
-        :email,
-        :phone,
-        :is_active,
-        :metadata
-      ],
-      update: [
-        :event_id,
-        :competitor_number,
-        :first_name,
-        :last_name,
-        :display_name,
-        :team_name,
-        :level,
-        :age_group,
-        :email,
-        :phone,
-        :is_active,
-        :metadata
-      ]
+      create: [:first_name, :last_name, :external_id, :email, :phone, :metadata],
+      update: [:first_name, :last_name, :external_id, :email, :phone, :metadata]
     ]
   end
 
@@ -52,11 +26,6 @@ defmodule PhotoFinish.Events.Competitor do
       writable? false
     end
 
-    attribute :competitor_number, :string do
-      allow_nil? false
-      public? true
-    end
-
     attribute :first_name, :string do
       allow_nil? false
       public? true
@@ -66,20 +35,9 @@ defmodule PhotoFinish.Events.Competitor do
       public? true
     end
 
-    attribute :display_name, :string do
+    attribute :external_id, :string do
       public? true
-    end
-
-    attribute :team_name, :string do
-      public? true
-    end
-
-    attribute :level, :string do
-      public? true
-    end
-
-    attribute :age_group, :string do
-      public? true
+      description "External ID like USAG number for cross-event linking"
     end
 
     attribute :email, :string do
@@ -90,11 +48,6 @@ defmodule PhotoFinish.Events.Competitor do
       public? true
     end
 
-    attribute :is_active, :boolean do
-      public? true
-      default true
-    end
-
     attribute :metadata, :map do
       public? true
     end
@@ -103,12 +56,7 @@ defmodule PhotoFinish.Events.Competitor do
   end
 
   relationships do
-    belongs_to :event, PhotoFinish.Events.Event do
-      public? true
-      attribute_type :string
-    end
-
-    has_many :photos, PhotoFinish.Photos.Photo do
+    has_many :event_competitors, PhotoFinish.Events.EventCompetitor do
       public? true
     end
   end

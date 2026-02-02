@@ -6,7 +6,7 @@ defmodule PhotoFinish.Ingestion do
   require Logger
 
   alias PhotoFinish.Ingestion.{Scanner, CompetitorMatcher, PhotoProcessor, PathParser}
-  alias PhotoFinish.Events.{Event, Competitor}
+  alias PhotoFinish.Events.{Event, EventCompetitor}
   alias PhotoFinish.Photos.Photo
 
   @type scan_result :: %{
@@ -60,7 +60,7 @@ defmodule PhotoFinish.Ingestion do
   end
 
   defp load_competitors(event_id) do
-    Ash.read!(Competitor)
+    Ash.read!(EventCompetitor)
     |> Enum.filter(&(&1.event_id == event_id))
   end
 
@@ -105,17 +105,17 @@ defmodule PhotoFinish.Ingestion do
     end
   end
 
-  defp create_photo(event, competitor, file, location_info) do
-    competitor_id =
-      case competitor do
-        {:ok, c} -> c.id
+  defp create_photo(event, event_competitor, file, location_info) do
+    event_competitor_id =
+      case event_competitor do
+        {:ok, ec} -> ec.id
         :no_match -> nil
       end
 
     # Build base attributes
     base_attrs = %{
       event_id: event.id,
-      competitor_id: competitor_id,
+      event_competitor_id: event_competitor_id,
       ingestion_path: file.path,
       filename: file.filename,
       original_filename: file.filename,

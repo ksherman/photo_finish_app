@@ -108,7 +108,7 @@ defmodule PhotoFinish.Events.Event do
   end
 
   relationships do
-    has_many :competitors, PhotoFinish.Events.Competitor do
+    has_many :event_competitors, PhotoFinish.Events.EventCompetitor do
       public? true
     end
 

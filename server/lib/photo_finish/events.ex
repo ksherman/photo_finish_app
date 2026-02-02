@@ -5,5 +5,6 @@ defmodule PhotoFinish.Events do
   resources do
     resource PhotoFinish.Events.Event
     resource PhotoFinish.Events.Competitor
+    resource PhotoFinish.Events.EventCompetitor
   end
 end
