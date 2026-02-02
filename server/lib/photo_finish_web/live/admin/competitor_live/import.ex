@@ -211,11 +211,12 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
   def handle_event("validate", %{"session" => session}, socket) do
     socket = assign(socket, :session, session)
 
-    # Parse uploaded file for preview (if any valid entries)
+    # Parse uploaded file for preview (if any new entries)
+    # Preserve existing preview/file_content if no new upload
     socket =
       case uploaded_entries(socket, :roster) do
         {[_entry], []} ->
-          # Read file content and parse for preview
+          # New file uploaded - read and parse it
           {content, socket} = read_upload_content(socket)
 
           case RosterParser.parse_txt(content) do
@@ -231,9 +232,8 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
           end
 
         _ ->
+          # No new upload - preserve existing preview/file_content
           socket
-          |> assign(:preview, nil)
-          |> assign(:file_content, nil)
       end
 
     {:noreply, socket}
