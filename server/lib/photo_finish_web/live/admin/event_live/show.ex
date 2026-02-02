@@ -339,6 +339,14 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                 >
                   <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-1" /> Import Roster
                 </.button_link>
+                <.button_link
+                  navigate={~p"/admin/events/#{@event.id}/associate"}
+                  size="small"
+                  variant="outline"
+                  color="natural"
+                >
+                  <.icon name="hero-link" class="w-4 h-4 mr-1" /> Associate Folders
+                </.button_link>
               </div>
             </div>
           </div>
