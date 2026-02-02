@@ -131,7 +131,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                       <.input
                         field={@form[:storage_root]}
                         type="text"
-                        label="Storage Root"
+                        label="Event File Directory"
                         placeholder="/mnt/nas/photos/events/svgm-2025"
                         required
                         readonly={@is_edit}
@@ -142,7 +142,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Form do
                           class="w-4 h-4 mr-1 mt-0.5 flex-shrink-0"
                         />
                         <span>
-                          Absolute path where photo files will be stored on the server
+                          Directory where event photos will be stored
                           <%= if @is_edit do %>
                             (read-only after creation)
                           <% end %>
