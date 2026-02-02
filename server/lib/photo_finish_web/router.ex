@@ -111,6 +111,12 @@ defmodule PhotoFinishWeb.Router do
     live "/events/:id", EventLive.Show, :show
     live "/events/:id/show/edit", EventLive.Show, :edit
 
+    # Competitor roster import
+    live "/events/:event_id/import-roster", CompetitorLive.Import, :import
+
+    # Folder-to-competitor association
+    live "/events/:event_id/folders", FolderLive.Associate, :associate
+
     get "/photos/thumbnail/:id", PhotoController, :thumbnail
     get "/photos/preview/:id", PhotoController, :preview
   end

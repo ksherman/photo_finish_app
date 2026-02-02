@@ -316,6 +316,22 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             <div class="p-6">
               <div class="flex flex-wrap gap-3">
                 <.button_link
+                  navigate={~p"/admin/events/#{@event.id}/import-roster"}
+                  size="small"
+                  variant="outline"
+                  color="primary"
+                >
+                  <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-1" /> Import Roster
+                </.button_link>
+                <.button_link
+                  navigate={~p"/admin/events/#{@event.id}/folders"}
+                  size="small"
+                  variant="outline"
+                  color="primary"
+                >
+                  <.icon name="hero-folder" class="w-4 h-4 mr-1" /> Associate Folders
+                </.button_link>
+                <.button_link
                   navigate={~p"/admin/events/#{@event}/edit"}
                   size="small"
                   variant="outline"
