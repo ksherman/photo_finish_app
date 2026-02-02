@@ -91,17 +91,6 @@ defmodule PhotoFinishWeb.Router do
     )
   end
 
-  # Public viewer (no auth)
-  scope "/view", PhotoFinishWeb do
-    pipe_through :browser
-
-    live "/", ViewerLive.Home, :home
-    live "/competitor/:id", ViewerLive.Competitor, :show
-
-    get "/photos/thumbnail/:id", ViewerPhotoController, :thumbnail
-    get "/photos/preview/:id", ViewerPhotoController, :preview
-  end
-
   scope "/admin", PhotoFinishWeb.Admin do
     pipe_through [:browser, :admin_auth]
 
@@ -110,9 +99,6 @@ defmodule PhotoFinishWeb.Router do
     live "/events/:id/edit", EventLive.Form, :edit
     live "/events/:id", EventLive.Show, :show
     live "/events/:id/show/edit", EventLive.Show, :edit
-
-    live "/events/:event_id/competitors/import", CompetitorLive.Import, :import
-    live "/events/:event_id/associate", FolderLive.Associate, :associate
 
     get "/photos/thumbnail/:id", PhotoController, :thumbnail
     get "/photos/preview/:id", PhotoController, :preview

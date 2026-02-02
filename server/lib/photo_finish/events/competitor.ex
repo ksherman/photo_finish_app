@@ -13,8 +13,22 @@ defmodule PhotoFinish.Events.Competitor do
     defaults [
       :read,
       :destroy,
-      create: [:first_name, :last_name, :external_id, :email, :phone, :metadata],
-      update: [:first_name, :last_name, :external_id, :email, :phone, :metadata]
+      create: [
+        :first_name,
+        :last_name,
+        :external_id,
+        :email,
+        :phone,
+        :metadata
+      ],
+      update: [
+        :first_name,
+        :last_name,
+        :external_id,
+        :email,
+        :phone,
+        :metadata
+      ]
     ]
   end
 
@@ -37,7 +51,6 @@ defmodule PhotoFinish.Events.Competitor do
 
     attribute :external_id, :string do
       public? true
-      description "External ID like USAG number for cross-event linking"
     end
 
     attribute :email, :string do

@@ -17,8 +17,8 @@ defmodule PhotoFinish.Id do
   def event_id, do: generate("evt_")
   def photo_id, do: generate("pho_")
   def competitor_id, do: generate("cmp_")
+  def event_competitor_id, do: generate("evc_")
   def order_id, do: generate("ord_")
   def order_item_id, do: generate("itm_")
   def product_id, do: generate("prd_")
-  def event_competitor_id, do: generate("evc_")
 end

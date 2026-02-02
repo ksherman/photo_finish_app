@@ -17,7 +17,7 @@ defmodule PhotoFinish.IngestionIntegrationTest do
       jpeg_path = Path.join(competitor_folder, "IMG_001.jpg")
       File.write!(jpeg_path, minimal_jpeg())
 
-      # Create event
+      # Create event with competitor
       {:ok, event} =
         Ash.create(PhotoFinish.Events.Event, %{
           name: "Integration Test",
@@ -25,19 +25,12 @@ defmodule PhotoFinish.IngestionIntegrationTest do
           storage_root: tmp_dir
         })
 
-      # Create competitor (person)
-      {:ok, competitor} =
+      {:ok, _competitor} =
         Ash.create(PhotoFinish.Events.Competitor, %{
+          event_id: event.id,
+          competitor_number: "1022",
           first_name: "Kevin",
           last_name: "S"
-        })
-
-      # Create event_competitor (links person to event)
-      {:ok, _event_competitor} =
-        Ash.create(PhotoFinish.Events.EventCompetitor, %{
-          event_id: event.id,
-          competitor_id: competitor.id,
-          competitor_number: "1022"
         })
 
       on_exit(fn -> File.rm_rf!(tmp_dir) end)
@@ -67,11 +60,11 @@ defmodule PhotoFinish.IngestionIntegrationTest do
       assert photo.status == :discovered
       assert photo.filename == "IMG_001.jpg"
 
-      # EventCompetitor should be linked
-      assert photo.event_competitor_id != nil
+      # Competitor should be linked
+      assert photo.competitor_id != nil
 
-      event_competitor = Ash.get!(PhotoFinish.Events.EventCompetitor, photo.event_competitor_id)
-      assert event_competitor.competitor_number == "1022"
+      competitor = Ash.get!(PhotoFinish.Events.Competitor, photo.competitor_id)
+      assert competitor.competitor_number == "1022"
 
       # Location fields should be populated
       assert photo.gym == "A"

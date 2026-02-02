@@ -4,6 +4,7 @@ defmodule PhotoFinish.Ingestion do
   """
 
   require Logger
+  require Ash.Query
 
   alias PhotoFinish.Ingestion.{Scanner, CompetitorMatcher, PhotoProcessor, PathParser}
   alias PhotoFinish.Events.{Event, EventCompetitor}
@@ -25,7 +26,7 @@ defmodule PhotoFinish.Ingestion do
   def scan_event(event_id) do
     with {:ok, event} <- load_event(event_id),
          {:ok, files} <- Scanner.scan_directory(event.storage_root) do
-      competitors = load_competitors(event_id)
+      event_competitors = load_event_competitors(event_id)
 
       result =
         Enum.reduce(
@@ -34,7 +35,7 @@ defmodule PhotoFinish.Ingestion do
           fn file, acc ->
             acc = %{acc | photos_found: acc.photos_found + 1}
 
-            case process_file(event, file, competitors) do
+            case process_file(event, file, event_competitors) do
               {:ok, :created} ->
                 %{acc | photos_new: acc.photos_new + 1}
 
@@ -59,12 +60,13 @@ defmodule PhotoFinish.Ingestion do
     end
   end
 
-  defp load_competitors(event_id) do
-    Ash.read!(EventCompetitor)
-    |> Enum.filter(&(&1.event_id == event_id))
+  defp load_event_competitors(event_id) do
+    EventCompetitor
+    |> Ash.Query.filter(event_id == ^event_id)
+    |> Ash.read!()
   end
 
-  defp process_file(event, file, competitors) do
+  defp process_file(event, file, event_competitors) do
     # Check if photo already exists (by signature)
     if photo_exists?(event.id, file) do
       {:ok, :skipped}
@@ -72,15 +74,15 @@ defmodule PhotoFinish.Ingestion do
       # Parse path to extract location info
       location_info = parse_location(file.path, event.storage_root)
 
-      # Extract folder name for competitor matching
+      # Extract folder name for event_competitor matching
       folder_name =
         case location_info do
           {:ok, info} -> info.competitor_folder
           _ -> Path.basename(Path.dirname(file.path))
         end
 
-      competitor = match_competitor(folder_name, competitors)
-      create_photo(event, competitor, file, location_info)
+      event_competitor = match_event_competitor(folder_name, event_competitors)
+      create_photo(event, event_competitor, file, location_info)
     end
   end
 
@@ -95,10 +97,10 @@ defmodule PhotoFinish.Ingestion do
     end)
   end
 
-  defp match_competitor(folder_name, competitors) do
+  defp match_event_competitor(folder_name, event_competitors) do
     case CompetitorMatcher.extract_competitor_number(folder_name) do
       {:ok, number} ->
-        CompetitorMatcher.find_competitor(competitors, number)
+        CompetitorMatcher.find_event_competitor(event_competitors, number)
 
       :no_match ->
         :no_match
