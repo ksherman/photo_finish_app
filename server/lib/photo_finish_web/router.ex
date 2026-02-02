@@ -91,6 +91,14 @@ defmodule PhotoFinishWeb.Router do
     )
   end
 
+  # Public viewer (no auth)
+  scope "/view", PhotoFinishWeb do
+    pipe_through :browser
+
+    live "/", ViewerLive.Home, :home
+    live "/competitor/:id", ViewerLive.Competitor, :show
+  end
+
   scope "/admin", PhotoFinishWeb.Admin do
     pipe_through [:browser, :admin_auth]
 
