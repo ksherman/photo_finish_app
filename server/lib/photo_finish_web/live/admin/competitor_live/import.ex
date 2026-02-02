@@ -26,9 +26,41 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
       |> assign(:preview, nil)
       |> assign(:file_content, nil)
       |> assign(:result, nil)
-      |> allow_upload(:roster, accept: ~w(.txt), max_entries: 1)
+      |> allow_upload(:roster,
+        accept: ~w(.txt),
+        max_entries: 1,
+        auto_upload: true,
+        progress: &handle_progress/3
+      )
 
     {:ok, socket}
+  end
+
+  defp handle_progress(:roster, entry, socket) do
+    if entry.done? do
+      # Upload complete - read and parse the file
+      content =
+        consume_uploaded_entry(socket, entry, fn %{path: path} ->
+          {:ok, File.read!(path)}
+        end)
+
+      case RosterParser.parse_txt(content) do
+        {:ok, competitors} ->
+          {:noreply,
+           socket
+           |> assign(:preview, competitors)
+           |> assign(:file_content, content)}
+
+        {:error, _reason} ->
+          {:noreply,
+           socket
+           |> assign(:preview, nil)
+           |> assign(:file_content, nil)
+           |> put_flash(:error, "Could not parse roster file")}
+      end
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -209,34 +241,8 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
 
   @impl true
   def handle_event("validate", %{"session" => session}, socket) do
-    socket = assign(socket, :session, session)
-
-    # Parse uploaded file for preview (if any new entries)
-    # Preserve existing preview/file_content if no new upload
-    socket =
-      case uploaded_entries(socket, :roster) do
-        {[_entry], []} ->
-          # New file uploaded - read and parse it
-          {content, socket} = read_upload_content(socket)
-
-          case RosterParser.parse_txt(content) do
-            {:ok, competitors} ->
-              socket
-              |> assign(:preview, competitors)
-              |> assign(:file_content, content)
-
-            {:error, _} ->
-              socket
-              |> assign(:preview, nil)
-              |> assign(:file_content, nil)
-          end
-
-        _ ->
-          # No new upload - preserve existing preview/file_content
-          socket
-      end
-
-    {:noreply, socket}
+    # Just update the session - file handling is done in handle_progress
+    {:noreply, assign(socket, :session, session)}
   end
 
   def handle_event("import", %{"session" => session}, socket) do
@@ -261,23 +267,6 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
           {:noreply, put_flash(socket, :error, "Import failed: #{inspect(reason)}")}
       end
     end
-  end
-
-  # Read upload content during validation
-  # Note: We use consume_uploaded_entries which works during phx-change
-  defp read_upload_content(socket) do
-    results =
-      consume_uploaded_entries(socket, :roster, fn %{path: path}, _entry ->
-        {:ok, File.read!(path)}
-      end)
-
-    content =
-      case results do
-        [content] -> content
-        _ -> ""
-      end
-
-    {content, socket}
   end
 
   defp error_to_string(:too_large), do: "File is too large"
