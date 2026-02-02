@@ -97,6 +97,9 @@ defmodule PhotoFinishWeb.Router do
 
     live "/", ViewerLive.Home, :home
     live "/competitor/:id", ViewerLive.Competitor, :show
+
+    get "/photos/thumbnail/:id", ViewerPhotoController, :thumbnail
+    get "/photos/preview/:id", ViewerPhotoController, :preview
   end
 
   scope "/admin", PhotoFinishWeb.Admin do
