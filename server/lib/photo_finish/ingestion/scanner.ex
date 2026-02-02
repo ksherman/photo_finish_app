@@ -35,7 +35,7 @@ defmodule PhotoFinish.Ingestion.Scanner do
         path
         |> Path.join("**/*")
         |> Path.wildcard()
-        |> Enum.reject(&in_underscore_directory?/1)
+        |> Enum.reject(&in_underscore_directory?(&1, path))
         |> Enum.filter(&jpeg_file?/1)
         |> Enum.map(&build_file_info/1)
         |> Enum.reject(&is_nil/1)
@@ -69,8 +69,12 @@ defmodule PhotoFinish.Ingestion.Scanner do
     File.regular?(path) && Path.extname(path) in @jpeg_extensions
   end
 
-  defp in_underscore_directory?(path) do
-    path
+  defp in_underscore_directory?(full_path, base_path) do
+    # Only check path segments relative to the base path
+    # This prevents false positives from system paths like /var/folders/_xxx/...
+    relative_path = Path.relative_to(full_path, base_path)
+
+    relative_path
     |> Path.split()
     |> Enum.any?(fn segment -> String.starts_with?(segment, "_") end)
   end

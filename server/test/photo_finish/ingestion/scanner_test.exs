@@ -5,16 +5,20 @@ defmodule PhotoFinish.Ingestion.ScannerTest do
 
   describe "scan_directory/1" do
     test "finds JPEG files recursively" do
-      # Create a temp directory structure
+      # Create a temp directory structure (avoid spaces in paths for consistency)
       tmp_dir = System.tmp_dir!() |> Path.join("scanner_test_#{:rand.uniform(10000)}")
-      File.mkdir_p!(Path.join([tmp_dir, "Gym A", "Session 1", "1022 Kevin S"]))
+      nested_dir = Path.join([tmp_dir, "gym", "session", "competitor"])
+      File.mkdir_p!(nested_dir)
 
       # Create test files
-      jpeg_path = Path.join([tmp_dir, "Gym A", "Session 1", "1022 Kevin S", "IMG_001.jpg"])
+      jpeg_path = Path.join(nested_dir, "IMG_001.jpg")
       File.write!(jpeg_path, "fake jpeg content")
 
+      # Verify file was created
+      assert File.exists?(jpeg_path), "JPEG file should exist at #{jpeg_path}"
+
       # Also create a non-JPEG to ensure it's filtered
-      txt_path = Path.join([tmp_dir, "Gym A", "Session 1", "1022 Kevin S", "notes.txt"])
+      txt_path = Path.join(nested_dir, "notes.txt")
       File.write!(txt_path, "some notes")
 
       try do

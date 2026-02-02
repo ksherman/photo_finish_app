@@ -12,16 +12,19 @@ defmodule PhotoFinish.Ingestion.PhotoProcessorTest do
     end
   end
 
-  describe "build_output_path/3" do
-    test "builds thumbnail path" do
-      result =
-        PhotoProcessor.build_output_path(
-          "/NAS/thumbnails",
-          "valentines-2025",
-          "photo-uuid-123"
-        )
+  describe "thumbnail_path/2" do
+    test "builds thumbnail path within storage root" do
+      result = PhotoProcessor.thumbnail_path("/NAS/photos/event-123", "photo-uuid-123")
 
-      assert result == "/NAS/thumbnails/valentines-2025/photo-uuid-123.jpg"
+      assert result == "/NAS/photos/event-123/_thumbnails/photo-uuid-123.jpg"
+    end
+  end
+
+  describe "preview_path/2" do
+    test "builds preview path within storage root" do
+      result = PhotoProcessor.preview_path("/NAS/photos/event-123", "photo-uuid-123")
+
+      assert result == "/NAS/photos/event-123/_previews/photo-uuid-123.jpg"
     end
   end
 end
