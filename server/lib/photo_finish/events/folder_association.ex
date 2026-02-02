@@ -77,8 +77,16 @@ defmodule PhotoFinish.Events.FolderAssociation do
   def list_session_event_competitors(event_id, session) do
     EventCompetitor
     |> Ash.Query.filter(event_id == ^event_id and session == ^session)
-    |> Ash.Query.sort(:competitor_number)
     |> Ash.read!()
+    |> Enum.sort_by(&parse_competitor_number/1)
+  end
+
+  # Sort competitor numbers numerically (handles mixed number/text like "123" or "123A")
+  defp parse_competitor_number(ec) do
+    case Integer.parse(ec.competitor_number || "") do
+      {num, _rest} -> num
+      :error -> 0
+    end
   end
 
   @doc """

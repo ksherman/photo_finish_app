@@ -141,7 +141,7 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
                         Map.has_key?(@assignments, folder.source_folder) && "opacity-50 bg-green-50 border border-green-200 cursor-not-allowed"
                       ]}
                     >
-                      <span class="font-mono text-sm">{folder.source_folder}</span>
+                      <span class="font-mono text-sm text-gray-900">{folder.source_folder}</span>
                       <span class="text-sm text-gray-500">{folder.photo_count} photos</span>
                     </button>
                   <% end %>
@@ -265,10 +265,17 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
     competitor = Enum.find(socket.assigns.competitors, &(&1.id == competitor_id))
     assignments = Map.put(socket.assigns.assignments, folder, competitor)
 
+    # Auto-select the next unassigned folder
+    next_folder =
+      socket.assigns.folders
+      |> Enum.find(fn f ->
+        f.source_folder != folder && !Map.has_key?(assignments, f.source_folder)
+      end)
+
     {:noreply,
      socket
      |> assign(:assignments, assignments)
-     |> assign(:selected_folder, nil)}
+     |> assign(:selected_folder, next_folder && next_folder.source_folder)}
   end
 
   def handle_event("unassign", %{"folder" => folder}, socket) do
