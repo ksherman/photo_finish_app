@@ -183,20 +183,19 @@ USB_DRIVE/
 ### Fulfillment Query
 
 ```elixir
-def get_usb_photos(competitor_ids) do
+def get_usb_photos(event_competitor_ids) do
   from(p in Photo,
-    join: c in Competitor, on: p.competitor_id == c.id,
-    join: n in HierarchyNode, on: p.node_id == n.id,
-    where: c.id in ^competitor_ids,
+    join: ec in EventCompetitor, on: p.event_competitor_id == ec.id,
+    where: ec.id in ^event_competitor_ids,
     where: p.status in ["ready", "finalized"],
     select: %{
-      competitor_name: c.display_name,
-      competitor_number: c.competitor_number,
-      apparatus: n.name,
+      competitor_name: ec.display_name,
+      competitor_number: ec.competitor_number,
+      apparatus: p.apparatus,
       file_path: coalesce(p.current_path, p.ingestion_path),
       filename: p.filename
     },
-    order_by: [c.competitor_number, n.display_order, p.filename]
+    order_by: [ec.competitor_number, p.apparatus, p.filename]
   )
   |> Repo.all()
 end

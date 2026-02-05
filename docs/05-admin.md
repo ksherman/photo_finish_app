@@ -67,23 +67,13 @@ Fields:
 - Order code (3 letters for order numbers)
 - Tax rate (default 8.5%)
 
-### Hierarchy Configuration
+### Event Structure
 
-Define levels for the event:
+Configure the event's physical layout:
+- **Number of gyms** (e.g., 2)
+- **Sessions per gym** (e.g., 4)
 
-```
-Level 1: Gym        (allow_photos: false)
-Level 2: Session    (allow_photos: false)
-Level 3: Apparatus  (allow_photos: false)
-Level 4: Flight     (allow_photos: false)
-Level 5: Competitor (allow_photos: true)
-```
-
-### Pre-create Nodes
-
-Option to create hierarchy structure before event:
-- Bulk create gyms, sessions, apparatuses
-- Or allow dynamic creation during ingestion
+This drives folder generation for the ingestion workflow. Photo location (gym, session, group, apparatus) is parsed from folder paths during ingestion.
 
 ---
 

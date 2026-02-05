@@ -9,10 +9,9 @@
 
 ```
 events
-  └── hierarchy_levels (defines structure: Gym -> Session -> Group -> Apparatus -> Competitor)
-  └── hierarchy_nodes (actual folders: "Gym A", "Session 11A", "1713 Julia V")
-      └── photos
-  └── competitors (logical roster data)
+  └── event_competitors (roster entries linked to event)
+      └── photos (flat location fields: gym, session, group_name, apparatus)
+  └── competitors (reusable competitor profiles)
   └── orders
       └── order_items
   └── products (catalog)
@@ -45,118 +44,72 @@ CREATE INDEX idx_events_status ON events(status);
 CREATE INDEX idx_events_slug ON events(slug);
 ```
 
-### hierarchy_levels
-
-Defines hierarchy structure per event.
-
-```sql
-CREATE TABLE hierarchy_levels (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    level_number INTEGER NOT NULL,  -- 1, 2, 3, 4, 5
-    level_name VARCHAR(100) NOT NULL,  -- "Gym", "Session", "Apparatus"
-    level_name_plural VARCHAR(100),
-    is_required BOOLEAN DEFAULT true,
-    allow_photos BOOLEAN DEFAULT false,  -- If true, photos can live at this level
-    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(event_id, level_number)
-);
-
-CREATE INDEX idx_hierarchy_levels_event ON hierarchy_levels(event_id);
-```
-
-**Standard Structure (Gymnastics):**
-| level_number | level_name | Example |
-|--------------|------------|---------|
-| 1 | Gym | "Gym A" |
-| 2 | Session | "Session 11A" |
-| 3 | Group | "Group 3A" |
-| 4 | Apparatus | "Beam" |
-| 5 | Competitor | "1713 Julia V" (Photos live here) |
-
-### hierarchy_nodes
-
-Actual organizational units (folders/categories).
-
-```sql
-CREATE TABLE hierarchy_nodes (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    parent_id UUID REFERENCES hierarchy_nodes(id) ON DELETE CASCADE,
-    level_number INTEGER NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    slug VARCHAR(255) NOT NULL,
-    display_order INTEGER DEFAULT 0,
-    metadata JSONB,
-    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX idx_hierarchy_nodes_event ON hierarchy_nodes(event_id);
-CREATE INDEX idx_hierarchy_nodes_parent ON hierarchy_nodes(parent_id);
-CREATE INDEX idx_hierarchy_nodes_level ON hierarchy_nodes(event_id, level_number);
-CREATE INDEX idx_hierarchy_nodes_slug ON hierarchy_nodes(event_id, slug);
-CREATE INDEX idx_hierarchy_nodes_path ON hierarchy_nodes(event_id, parent_id, level_number);
-```
-
 ### competitors
 
-Roster data (Logical People).
+Reusable competitor profiles (not event-specific).
 
 ```sql
 CREATE TABLE competitors (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    
-    -- Link to the physical folder node if one exists for this person
-    node_id UUID REFERENCES hierarchy_nodes(id) ON DELETE SET NULL,
-    
-    competitor_number VARCHAR(50) NOT NULL,  -- Meet ID: "1022"
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100),
-    display_name VARCHAR(255),  -- Computed or override: "1022 Kevin S"
-    
-    team_name VARCHAR(255),
-    level VARCHAR(50),  -- Gymnastics level
-    age_group VARCHAR(50),
-    
+    external_id VARCHAR(100),
     email VARCHAR(255),
     phone VARCHAR(50),
-    
+    metadata JSONB,
+    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### event_competitors
+
+Links competitors to events with event-specific data.
+
+```sql
+CREATE TABLE event_competitors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+    competitor_id UUID REFERENCES competitors(id) ON DELETE CASCADE,
+    competitor_number VARCHAR(50) NOT NULL,
+    display_name VARCHAR(255),
+    team_name VARCHAR(255),
+    session VARCHAR(50),
+    level VARCHAR(50),
+    age_group VARCHAR(50),
     is_active BOOLEAN DEFAULT true,
     metadata JSONB,
-    
     inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP,
-    
     UNIQUE(event_id, competitor_number)
 );
 
-CREATE INDEX idx_competitors_event ON competitors(event_id);
-CREATE INDEX idx_competitors_node ON competitors(node_id);
-CREATE INDEX idx_competitors_number ON competitors(event_id, competitor_number);
-CREATE INDEX idx_competitors_name ON competitors(event_id, last_name, first_name);
+CREATE INDEX idx_event_competitors_event ON event_competitors(event_id);
+CREATE INDEX idx_event_competitors_number ON event_competitors(event_id, competitor_number);
 ```
 
 ### photos
 
-Photo files and metadata.
+Photo files and metadata. Location is stored as flat fields parsed from the folder structure.
 
 ```sql
 CREATE TABLE photos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    node_id UUID REFERENCES hierarchy_nodes(id) ON DELETE CASCADE, -- The folder it is in
-    competitor_id UUID REFERENCES competitors(id) ON DELETE SET NULL, -- The person it is of
-    
+    event_competitor_id UUID REFERENCES event_competitors(id) ON DELETE SET NULL,
+
+    -- Location (flat, parsed from folder path)
+    gym VARCHAR(100),
+    session VARCHAR(50),
+    group_name VARCHAR(100),
+    apparatus VARCHAR(100),
+
     -- File paths
     ingestion_path VARCHAR(1000) NOT NULL,
     current_path VARCHAR(1000),
     preview_path VARCHAR(1000),
     thumbnail_path VARCHAR(1000),
-    
+
     -- File info
     filename VARCHAR(255) NOT NULL,
     original_filename VARCHAR(255),
@@ -164,33 +117,33 @@ CREATE TABLE photos (
     mime_type VARCHAR(100) DEFAULT 'image/jpeg',
     width INTEGER,
     height INTEGER,
-    
+
     -- Ingestion tracking
     photographer VARCHAR(100),
     source_folder VARCHAR(255),
-    
+
     -- Timestamps
     captured_at TIMESTAMP,
     discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP,
     finalized_at TIMESTAMP,
-    
+
     -- Status
     status VARCHAR(50) DEFAULT 'discovered',
     error_message TEXT,
-    
+
     -- Metadata
     exif_data JSONB,
     metadata JSONB,
-    
+
     inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_photos_event ON photos(event_id);
-CREATE INDEX idx_photos_node ON photos(node_id);
-CREATE INDEX idx_photos_competitor ON photos(competitor_id);
+CREATE INDEX idx_photos_event_competitor ON photos(event_competitor_id);
 CREATE INDEX idx_photos_status ON photos(status);
+CREATE INDEX idx_photos_location ON photos(event_id, gym, session, apparatus);
 ```
 
 ---

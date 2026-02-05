@@ -13,67 +13,17 @@ Public-facing web interface for browsing photos at viewing stations. No authenti
 
 ## Navigation Model
 
-Breadcrumb card-based navigation through hierarchy:
+Search-first navigation with optional browsing by location:
 
 ```
-Event → Gym → Session → Apparatus → Flight → Competitor → Photos
+Home (Search + Featured Photos) → Competitor → Photos
 ```
 
-Each level displays cards for children. Final level shows photo grid.
-
-### Example Flow
-
-1. **Event root:** Cards for "Gym A", "Gym B", "Gym C"
-2. **Click "Gym A":** Cards for "Session 1", "Session 2", "Session 3"
-3. **Click "Session 2":** Cards for "Floor", "Beam", "Bars", "Vault"
-4. **Click "Floor":** Cards for "A Flight", "B Flight"
-5. **Click "A Flight":** Cards for competitors with photo counts
-6. **Click "1022 Kevin S":** Photo grid
+Competitors are found via search (name, number, team). Photos are organized by flat location fields (gym, session, group, apparatus) parsed from folder structure.
 
 ---
 
 ## Page Layouts
-
-### Hierarchy Browser
-
-```
-┌─────────────────────────────────────────────────────┐
-│ [🔍 Search]                          PhotoFinish    │
-├─────────────────────────────────────────────────────┤
-│ Event > Gym A > Session 2 > Floor                   │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐             │
-│  │ A Flight│  │ B Flight│  │         │             │
-│  │  124 📷 │  │  118 📷 │  │         │             │
-│  └─────────┘  └─────────┘  └─────────┘             │
-│                                                     │
-└─────────────────────────────────────────────────────┘
-```
-
-### Competitor List (Final Hierarchy Level)
-
-```
-┌─────────────────────────────────────────────────────┐
-│ [🔍 Search]                          PhotoFinish    │
-├─────────────────────────────────────────────────────┤
-│ Event > Gym A > Session 2 > Floor > A Flight        │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌────────┐ │
-│  │ 1022    │  │ 1023    │  │ 1024    │  │ 1025   │ │
-│  │ Kevin S │  │ Sarah J │  │ Emma W  │  │ Lily M │ │
-│  │  24 📷  │  │  31 📷  │  │  28 📷  │  │  19 📷 │ │
-│  └─────────┘  └─────────┘  └─────────┘  └────────┘ │
-│                                                     │
-│  ┌─────────┐  ┌─────────┐                          │
-│  │ 1026    │  │ 1027    │                          │
-│  │ Mia T   │  │ Ava R   │                          │
-│  │  22 📷  │  │  27 📷  │                          │
-│  └─────────┘  └─────────┘                          │
-│                                                     │
-└─────────────────────────────────────────────────────┘
-```
 
 ### Photo Grid
 
@@ -134,24 +84,23 @@ Each level displays cards for children. Final level shows photo grid.
 ```elixir
 def search_competitors(event_id, query) do
   pattern = "%#{query}%"
-  
-  from(c in Competitor,
-    where: c.event_id == ^event_id,
-    where: c.is_active == true,
-    where: ilike(c.first_name, ^pattern)
-        or ilike(c.last_name, ^pattern)
-        or ilike(c.competitor_number, ^pattern)
-        or ilike(c.team_name, ^pattern),
-    left_join: p in Photo, on: p.competitor_id == c.id and p.status == "ready",
-    group_by: c.id,
+
+  from(ec in EventCompetitor,
+    where: ec.event_id == ^event_id,
+    where: ec.is_active == true,
+    where: ilike(ec.display_name, ^pattern)
+        or ilike(ec.competitor_number, ^pattern)
+        or ilike(ec.team_name, ^pattern),
+    left_join: p in Photo, on: p.event_competitor_id == ec.id and p.status == "ready",
+    group_by: ec.id,
     select: %{
-      id: c.id,
-      display_name: c.display_name,
-      competitor_number: c.competitor_number,
-      team_name: c.team_name,
+      id: ec.id,
+      display_name: ec.display_name,
+      competitor_number: ec.competitor_number,
+      team_name: ec.team_name,
       photo_count: count(p.id)
     },
-    order_by: [c.last_name, c.first_name],
+    order_by: [ec.display_name],
     limit: 10
   )
   |> Repo.all()
@@ -167,8 +116,8 @@ end
 ```elixir
 def mount(_params, _session, socket) do
   if connected?(socket) do
-    # Subscribe to current node
-    Phoenix.PubSub.subscribe(PhotoFinish.PubSub, "photos:node:#{node_id}")
+    # Subscribe to competitor's photos
+    Phoenix.PubSub.subscribe(PhotoFinish.PubSub, "photos:competitor:#{competitor_id}")
   end
   {:ok, socket}
 end
@@ -196,11 +145,11 @@ For competitors with many photos (100+):
 ```elixir
 @photos_per_page 24
 
-def load_photos(competitor_id, page \\ 1) do
+def load_photos(event_competitor_id, page \\ 1) do
   offset = (page - 1) * @photos_per_page
-  
+
   from(p in Photo,
-    where: p.competitor_id == ^competitor_id,
+    where: p.event_competitor_id == ^event_competitor_id,
     where: p.status == "ready",
     order_by: [p.filename],
     limit: @photos_per_page,
@@ -263,23 +212,6 @@ Consider virtual scrolling for smoother UX on large galleries.
 
 ## LiveView Components
 
-### HierarchyCard
-
-```elixir
-defmodule PhotoFinishWeb.Components.HierarchyCard do
-  use Phoenix.Component
-  
-  def card(assigns) do
-    ~H"""
-    <a href={@href} class="block p-4 bg-white rounded-lg shadow hover:shadow-md">
-      <h3 class="font-semibold text-lg"><%= @name %></h3>
-      <p class="text-gray-500 text-sm"><%= @photo_count %> photos</p>
-    </a>
-    """
-  end
-end
-```
-
 ### PhotoGrid
 
 ```elixir
@@ -328,14 +260,13 @@ end
 ## URL Structure
 
 ```
-/                           # Event root (hierarchy browser)
-/browse/:node_slug          # Any hierarchy level
-/competitor/:competitor_id  # Competitor photo grid
-/photo/:photo_id            # Direct link to photo (opens lightbox)
-/search?q=kevin             # Search results
-/cart                       # Shopping cart
-/checkout                   # Checkout form
-/order/:order_number        # Order confirmation
+/viewer                              # Home (search + featured photos)
+/viewer/competitor/:competitor_id    # Competitor photo grid
+/viewer/photo/:photo_id              # Direct link to photo (opens lightbox)
+/viewer/search?q=kevin               # Search results
+/viewer/cart                          # Shopping cart
+/viewer/checkout                      # Checkout form
+/viewer/order/:order_number           # Order confirmation
 ```
 
 ---

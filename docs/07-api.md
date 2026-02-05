@@ -55,13 +55,8 @@ Get event details.
     "status": "active",
     "order_code": "STV",
     "tax_rate": 8.5,
-    "hierarchy_levels": [
-      {"level_number": 1, "level_name": "Gym"},
-      {"level_number": 2, "level_name": "Session"},
-      {"level_number": 3, "level_name": "Apparatus"},
-      {"level_number": 4, "level_name": "Flight"},
-      {"level_number": 5, "level_name": "Competitor"}
-    ]
+    "num_gyms": 2,
+    "sessions_per_gym": 4
   }
 }
 ```
@@ -173,8 +168,10 @@ Get current ingestion pipeline status.
 List photos with filters.
 
 **Query params:**
-- `node_id` — Filter by hierarchy node
-- `competitor_id` — Filter by competitor
+- `gym` — Filter by gym
+- `session` — Filter by session
+- `apparatus` — Filter by apparatus
+- `event_competitor_id` — Filter by competitor
 - `status` — Filter by status (ready, processing, error)
 - `page`, `per_page` — Pagination
 
@@ -406,15 +403,6 @@ Get product catalog for event.
 ---
 
 ## WebSocket (Phoenix Channels)
-
-### photos:node:{node_id}
-
-Subscribe to photo updates for a hierarchy node.
-
-**Events:**
-- `new_photo` — New photo added
-- `photo_updated` — Photo status changed
-- `photo_removed` — Photo deleted/moved
 
 ### photos:competitor:{competitor_id}
 

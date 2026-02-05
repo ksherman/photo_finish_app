@@ -64,7 +64,7 @@ PhotoFinish is a local-network photo management and sales system for live sporti
 |-----------|------------|-----------|
 | **Ingestion App** | Tauri (Rust + VueJS 3) | Native USB/filesystem access |
 | **Server** | Elixir/Phoenix 1.7+ | Real-time, fault-tolerant, familiar |
-| **Database** | PostgreSQL | Robust, good for hierarchical queries |
+| **Database** | PostgreSQL | Robust, reliable |
 | **Frontend** | Phoenix LiveView + Tailwind | Minimal JS, real-time built-in |
 | **Image Processing** | libvips (via `vix`) | Fast, validated on Apple Silicon |
 | **Background Jobs** | Oban | Reliable, good monitoring |
@@ -199,7 +199,7 @@ ENABLE_FILE_WATCHER=true
 - [ ] Network configured
 - [ ] Viewing stations tested
 - [ ] Event created in system
-- [ ] Hierarchy defined
+- [ ] Event structure configured (gyms, sessions)
 - [ ] Roster imported
 - [ ] File watcher running
 
