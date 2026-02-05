@@ -276,7 +276,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                                   <img
                                     src={photo_thumbnail_url(photo)}
                                     alt={photo.filename}
-                                    class="w-full aspect-square object-cover rounded bg-gray-100"
+                                    class="w-full aspect-[2/3] object-cover rounded bg-gray-100"
                                     loading="lazy"
                                   />
                                   <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent p-1 rounded-b">

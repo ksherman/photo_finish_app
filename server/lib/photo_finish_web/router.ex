@@ -92,7 +92,7 @@ defmodule PhotoFinishWeb.Router do
   end
 
   # Public viewer routes (no authentication)
-  scope "/view", PhotoFinishWeb do
+  scope "/viewer", PhotoFinishWeb do
     pipe_through :browser
 
     live "/", ViewerLive.Home, :index

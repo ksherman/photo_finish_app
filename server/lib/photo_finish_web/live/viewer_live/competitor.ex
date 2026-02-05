@@ -32,29 +32,29 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
       <!-- Header -->
       <header class="bg-white shadow-sm sticky top-0 z-10">
         <div class="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
-          <.link navigate={~p"/view"} class="text-gray-500 hover:text-gray-700">
+          <.link navigate={~p"/viewer"} class="text-gray-500 hover:text-gray-700">
             <.icon name="hero-arrow-left" class="w-6 h-6" />
           </.link>
           <div>
             <h1 class="text-lg font-bold text-gray-900">
-              <%= @event_competitor.display_name || "Competitor #{@event_competitor.competitor_number}" %>
+              {@event_competitor.display_name || "Competitor #{@event_competitor.competitor_number}"}
             </h1>
-            <p class="text-sm text-gray-500"><%= length(@photos) %> photos</p>
+            <p class="text-sm text-gray-500">{length(@photos)} photos</p>
           </div>
         </div>
       </header>
-
-      <!-- Photo Grid -->
+      
+    <!-- Photo Grid -->
       <main class="max-w-6xl mx-auto px-4 py-6">
         <div class="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
           <%= for {photo, idx} <- Enum.with_index(@photos) do %>
             <button
               phx-click="open_lightbox"
               phx-value-index={idx}
-              class="aspect-[3/2] bg-gray-200 rounded overflow-hidden hover:opacity-90 transition"
+              class="aspect-[2/3] bg-gray-200 rounded overflow-hidden hover:opacity-90 transition"
             >
               <img
-                src={~p"/view/photos/thumbnail/#{photo.id}"}
+                src={~p"/viewer/photos/thumbnail/#{photo.id}"}
                 loading="lazy"
                 class="w-full h-full object-cover"
               />
@@ -68,8 +68,8 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
           </div>
         <% end %>
       </main>
-
-      <!-- Lightbox -->
+      
+    <!-- Lightbox -->
       <%= if @lightbox_photo do %>
         <div
           class="fixed inset-0 bg-black/90 z-50 flex items-center justify-center"
@@ -82,8 +82,8 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
           >
             <.icon name="hero-x-mark" class="w-8 h-8" />
           </button>
-
-          <!-- Previous -->
+          
+    <!-- Previous -->
           <%= if @lightbox_index > 0 do %>
             <button
               phx-click="lightbox_prev"
@@ -92,16 +92,16 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
               <.icon name="hero-chevron-left" class="w-10 h-10" />
             </button>
           <% end %>
-
-          <!-- Image -->
+          
+    <!-- Image -->
           <div class="max-w-4xl max-h-[80vh] px-16">
             <img
-              src={~p"/view/photos/preview/#{@lightbox_photo.id}"}
+              src={~p"/viewer/photos/preview/#{@lightbox_photo.id}"}
               class="max-w-full max-h-[80vh] object-contain"
             />
           </div>
-
-          <!-- Next -->
+          
+    <!-- Next -->
           <%= if @lightbox_index < length(@photos) - 1 do %>
             <button
               phx-click="lightbox_next"
@@ -110,10 +110,10 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
               <.icon name="hero-chevron-right" class="w-10 h-10" />
             </button>
           <% end %>
-
-          <!-- Counter -->
+          
+    <!-- Counter -->
           <div class="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/70">
-            <%= @lightbox_index + 1 %> of <%= length(@photos) %>
+            {@lightbox_index + 1} of {length(@photos)}
           </div>
         </div>
       <% end %>
@@ -158,7 +158,8 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
   end
 
   def handle_event("lightbox_key", %{"key" => "ArrowRight"}, socket) do
-    if socket.assigns.lightbox_index && socket.assigns.lightbox_index < length(socket.assigns.photos) - 1 do
+    if socket.assigns.lightbox_index &&
+         socket.assigns.lightbox_index < length(socket.assigns.photos) - 1 do
       handle_event("lightbox_next", %{}, socket)
     else
       {:noreply, socket}

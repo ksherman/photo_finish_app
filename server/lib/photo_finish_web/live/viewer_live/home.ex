@@ -8,18 +8,30 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
   require Ash.Query
 
   alias PhotoFinish.Events.Event
+  alias PhotoFinish.Photos.Photo
   alias PhotoFinish.Viewer.Search
+
+  @showcase_photo_count 24
 
   @impl true
   def mount(_params, _session, socket) do
     # Get the first active event (for MVP)
     event = get_active_event()
 
+    # Load random photos for the showcase
+    showcase_photos = if event, do: load_showcase_photos(event.id), else: []
+
+    # Split photos into 3 rows
+    {row1, row2, row3} = split_into_rows(showcase_photos)
+
     socket =
       socket
       |> assign(:event, event)
       |> assign(:query, "")
       |> assign(:results, [])
+      |> assign(:showcase_row1, row1)
+      |> assign(:showcase_row2, row2)
+      |> assign(:showcase_row3, row3)
 
     {:ok, socket}
   end
@@ -27,80 +39,137 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen bg-gray-100">
-      <!-- Header -->
-      <header class="bg-white shadow-sm">
-        <div class="max-w-4xl mx-auto px-4 py-4">
-          <h1 class="text-xl font-bold text-gray-900">PhotoFinish</h1>
-        </div>
-      </header>
+    <style>
+      @keyframes marquee-left {
+        from { transform: translateX(0); }
+        to { transform: translateX(-50%); }
+      }
+      @keyframes marquee-right {
+        from { transform: translateX(-50%); }
+        to { transform: translateX(0); }
+      }
+      .marquee-left {
+        animation: marquee-left 300s linear infinite;
+      }
+      .marquee-right {
+        animation: marquee-right 900s linear infinite;
+      }
+      .marquee-left-slow {
+        animation: marquee-left 350s linear infinite;
+      }
+    </style>
 
-      <!-- Main Content -->
-      <main class="max-w-4xl mx-auto px-4 py-12">
-        <div class="text-center mb-12">
-          <%= if @event do %>
-            <h2 class="text-3xl font-bold text-gray-900 mb-2"><%= @event.name %></h2>
-          <% else %>
-            <h2 class="text-3xl font-bold text-gray-900 mb-2">Photo Viewer</h2>
-          <% end %>
-        </div>
-
-        <!-- Search Box -->
-        <div class="max-w-xl mx-auto">
-          <form phx-change="search" phx-submit="search">
-            <div class="relative">
-              <input
-                type="text"
-                name="query"
-                value={@query}
-                placeholder="Search by name or number..."
-                phx-debounce="300"
-                autocomplete="off"
-                class="w-full px-6 py-4 text-lg rounded-full border-2 border-gray-200 focus:border-indigo-500 focus:ring-0 shadow-sm"
-              />
-              <div class="absolute right-4 top-1/2 -translate-y-1/2">
-                <.icon name="hero-magnifying-glass" class="w-6 h-6 text-gray-400" />
-              </div>
-            </div>
-          </form>
-
-          <!-- Results -->
-          <%= if @query != "" do %>
-            <div class="mt-4 bg-white rounded-xl shadow-lg overflow-hidden">
-              <%= if @results == [] do %>
-                <div class="p-6 text-center text-gray-500">
-                  No competitors found for "<%= @query %>"
-                </div>
-              <% else %>
-                <ul class="divide-y divide-gray-100">
-                  <%= for result <- @results do %>
-                    <li>
-                      <.link
-                        navigate={~p"/view/competitor/#{result.id}"}
-                        class="block px-6 py-4 hover:bg-gray-50 flex items-center justify-between"
-                      >
-                        <div>
-                          <div class="font-medium text-gray-900">
-                            <span class="font-mono mr-2"><%= result.competitor_number %></span>
-                            <%= result.first_name %> <%= result.last_name %>
-                          </div>
-                          <div class="text-sm text-gray-500">
-                            Session <%= result.session %>
-                          </div>
-                        </div>
-                        <div class="flex items-center gap-2 text-gray-500">
-                          <span><%= result.photo_count %> photos</span>
-                          <.icon name="hero-chevron-right" class="w-5 h-5" />
-                        </div>
-                      </.link>
-                    </li>
-                  <% end %>
-                </ul>
+    <div class="h-screen bg-gray-900 overflow-hidden relative">
+      <%!-- Photo Showcase Background --%>
+      <%= if @showcase_row1 != [] do %>
+        <div class="absolute inset-0 flex flex-col gap-1">
+          <%!-- Row 1: 20vh, scrolls left --%>
+          <div class="h-[20vh] overflow-hidden">
+            <div class="marquee-left flex gap-1 h-full w-max">
+              <%= for photo <- List.flatten(List.duplicate(@showcase_row1, 6)) do %>
+                <img
+                  src={~p"/viewer/photos/thumbnail/#{photo.id}"}
+                  class="h-full w-auto object-cover"
+                />
               <% end %>
             </div>
-          <% end %>
+          </div>
+
+          <%!-- Row 2: 60vh, scrolls right --%>
+          <div class="h-[60vh] overflow-hidden">
+            <div class="marquee-right flex gap-1 h-full w-max">
+              <%= for photo <- List.flatten(List.duplicate(@showcase_row2, 6)) do %>
+                <img
+                  src={~p"/viewer/photos/preview/#{photo.id}"}
+                  class="h-full w-auto object-cover"
+                />
+              <% end %>
+            </div>
+          </div>
+
+          <%!-- Row 3: 20vh, scrolls left slower --%>
+          <div class="h-[20vh] overflow-hidden">
+            <div class="marquee-left-slow flex gap-1 h-full w-max">
+              <%= for photo <- List.flatten(List.duplicate(@showcase_row3, 6)) do %>
+                <img
+                  src={~p"/viewer/photos/thumbnail/#{photo.id}"}
+                  class="h-full w-auto object-cover"
+                />
+              <% end %>
+            </div>
+          </div>
         </div>
-      </main>
+      <% end %>
+
+      <%!-- Search Overlay --%>
+      <div class="absolute inset-x-0 top-[35%] -translate-y-1/2 z-10">
+        <div class="max-w-xl mx-auto px-4">
+          <div class="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
+            <div class="text-center mb-6">
+              <%= if @event do %>
+                <h1 class="text-3xl font-bold text-gray-900 mb-1">{@event.name}</h1>
+                <p class="text-gray-500">Find your photos</p>
+              <% else %>
+                <h1 class="text-3xl font-bold text-gray-900 mb-1">PhotoFinish</h1>
+                <p class="text-gray-500">Photo Viewer</p>
+              <% end %>
+            </div>
+
+            <form phx-change="search" phx-submit="search">
+              <div class="relative">
+                <input
+                  type="text"
+                  name="query"
+                  value={@query}
+                  placeholder="Search by name or number..."
+                  phx-debounce="300"
+                  autocomplete="off"
+                  class="w-full px-6 py-4 text-lg rounded-full border-2 border-gray-200 focus:border-indigo-500 focus:ring-0"
+                />
+                <div class="absolute right-4 top-1/2 -translate-y-1/2">
+                  <.icon name="hero-magnifying-glass" class="w-6 h-6 text-gray-400" />
+                </div>
+              </div>
+            </form>
+
+            <%!-- Results --%>
+            <%= if @query != "" do %>
+              <div class="mt-4 max-h-64 overflow-y-auto rounded-xl border border-gray-200">
+                <%= if @results == [] do %>
+                  <div class="p-6 text-center text-gray-500">
+                    No competitors found for "{@query}"
+                  </div>
+                <% else %>
+                  <ul class="divide-y divide-gray-100">
+                    <%= for result <- @results do %>
+                      <li>
+                        <.link
+                          navigate={~p"/viewer/competitor/#{result.id}"}
+                          class="block px-6 py-4 hover:bg-gray-50 flex items-center justify-between"
+                        >
+                          <div>
+                            <div class="font-medium text-gray-900">
+                              <span class="font-mono mr-2">{result.competitor_number}</span>
+                              {result.first_name} {result.last_name}
+                            </div>
+                            <div class="text-sm text-gray-500">
+                              Session {result.session}
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-2 text-gray-500">
+                            <span>{result.photo_count} photos</span>
+                            <.icon name="hero-chevron-right" class="w-5 h-5" />
+                          </div>
+                        </.link>
+                      </li>
+                    <% end %>
+                  </ul>
+                <% end %>
+              </div>
+            <% end %>
+          </div>
+        </div>
+      </div>
     </div>
     """
   end
@@ -123,5 +192,26 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
     |> Ash.Query.limit(1)
     |> Ash.read!()
     |> List.first()
+  end
+
+  defp load_showcase_photos(event_id) do
+    Photo
+    |> Ash.Query.filter(event_id == ^event_id and status == :ready)
+    |> Ash.read!()
+    |> Enum.shuffle()
+    |> Enum.take(@showcase_photo_count)
+  end
+
+  defp split_into_rows(photos) do
+    # Split photos into 3 rows: 25%, 50%, 25% distribution
+    total = length(photos)
+    row1_count = max(1, div(total, 4))
+    row3_count = max(1, div(total, 4))
+    row2_count = total - row1_count - row3_count
+
+    {row1, rest} = Enum.split(photos, row1_count)
+    {row2, row3} = Enum.split(rest, row2_count)
+
+    {row1, row2, row3}
   end
 end
