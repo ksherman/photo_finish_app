@@ -10,7 +10,10 @@ defmodule PhotoFinish.IngestionIntegrationTest do
       # Create temp directory with full test structure:
       # Gym A/Session 1A/Group 2B/Beam/1022 Kevin S/IMG_001.jpg
       tmp_dir = System.tmp_dir!() |> Path.join("integration_#{:rand.uniform(100_000)}")
-      competitor_folder = Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S"])
+
+      competitor_folder =
+        Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S"])
+
       File.mkdir_p!(competitor_folder)
 
       # Create minimal valid JPEG

@@ -12,12 +12,13 @@ defmodule PhotoFinish.Events.FolderAssociationTest do
       {:ok, _} = create_photo(event.id, nil, "Gym 01", "A", "3A", "Group 3A", "Beam")
       {:ok, _} = create_photo(event.id, nil, "Gym 02", "A", "3A", "Group 3A", "Beam")
 
-      folders = FolderAssociation.list_unassigned_folders(event.id, %{
-        gym: "A",
-        session: "3A",
-        group_name: "Group 3A",
-        apparatus: "Beam"
-      })
+      folders =
+        FolderAssociation.list_unassigned_folders(event.id, %{
+          gym: "A",
+          session: "3A",
+          group_name: "Group 3A",
+          apparatus: "Beam"
+        })
 
       assert length(folders) == 2
       assert Enum.find(folders, &(&1.source_folder == "Gym 01")).photo_count == 2
@@ -34,12 +35,13 @@ defmodule PhotoFinish.Events.FolderAssociationTest do
       # One folder with unassigned photos (should be included)
       {:ok, _} = create_photo(event.id, nil, "Unassigned Folder", "A", "3A", "Group 3A", "Beam")
 
-      folders = FolderAssociation.list_unassigned_folders(event.id, %{
-        gym: "A",
-        session: "3A",
-        group_name: "Group 3A",
-        apparatus: "Beam"
-      })
+      folders =
+        FolderAssociation.list_unassigned_folders(event.id, %{
+          gym: "A",
+          session: "3A",
+          group_name: "Group 3A",
+          apparatus: "Beam"
+        })
 
       assert length(folders) == 1
       assert hd(folders).source_folder == "Unassigned Folder"
@@ -51,12 +53,13 @@ defmodule PhotoFinish.Events.FolderAssociationTest do
       {:ok, _} = create_photo(event.id, nil, nil, "A", "3A", "Group 3A", "Beam")
       {:ok, _} = create_photo(event.id, nil, "Valid Folder", "A", "3A", "Group 3A", "Beam")
 
-      folders = FolderAssociation.list_unassigned_folders(event.id, %{
-        gym: "A",
-        session: "3A",
-        group_name: "Group 3A",
-        apparatus: "Beam"
-      })
+      folders =
+        FolderAssociation.list_unassigned_folders(event.id, %{
+          gym: "A",
+          session: "3A",
+          group_name: "Group 3A",
+          apparatus: "Beam"
+        })
 
       assert length(folders) == 1
       assert hd(folders).source_folder == "Valid Folder"
@@ -69,19 +72,21 @@ defmodule PhotoFinish.Events.FolderAssociationTest do
       {:ok, _} = create_photo(event.id, nil, "Folder X", "A", "3A", "Group 3A", "Beam")
       {:ok, _} = create_photo(event.id, nil, "Folder X", "B", "3A", "Group 3A", "Beam")
 
-      folders_gym_a = FolderAssociation.list_unassigned_folders(event.id, %{
-        gym: "A",
-        session: "3A",
-        group_name: "Group 3A",
-        apparatus: "Beam"
-      })
+      folders_gym_a =
+        FolderAssociation.list_unassigned_folders(event.id, %{
+          gym: "A",
+          session: "3A",
+          group_name: "Group 3A",
+          apparatus: "Beam"
+        })
 
-      folders_gym_b = FolderAssociation.list_unassigned_folders(event.id, %{
-        gym: "B",
-        session: "3A",
-        group_name: "Group 3A",
-        apparatus: "Beam"
-      })
+      folders_gym_b =
+        FolderAssociation.list_unassigned_folders(event.id, %{
+          gym: "B",
+          session: "3A",
+          group_name: "Group 3A",
+          apparatus: "Beam"
+        })
 
       assert length(folders_gym_a) == 1
       assert length(folders_gym_b) == 1
@@ -199,7 +204,15 @@ defmodule PhotoFinish.Events.FolderAssociationTest do
     })
   end
 
-  defp create_photo(event_id, event_competitor_id, source_folder, gym, session, group_name, apparatus) do
+  defp create_photo(
+         event_id,
+         event_competitor_id,
+         source_folder,
+         gym,
+         session,
+         group_name,
+         apparatus
+       ) do
     Ash.create(Photo, %{
       event_id: event_id,
       event_competitor_id: event_competitor_id,

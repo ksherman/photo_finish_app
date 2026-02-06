@@ -40,6 +40,7 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
       "photos:event:#{photo.event_id}",
       {:photo_status_changed, %{photo_id: photo.id, status: status}}
     )
+
     :ok
   end
 
@@ -51,6 +52,7 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
           "photos:event:#{photo.event_id}",
           {:photo_status_changed, %{photo_id: photo.id, status: :error}}
         )
+
       _ ->
         :ok
     end

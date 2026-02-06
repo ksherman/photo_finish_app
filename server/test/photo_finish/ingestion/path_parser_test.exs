@@ -88,7 +88,9 @@ defmodule PhotoFinish.Ingestion.PathParserTest do
 
     test "handles deep storage root path" do
       storage_root = "/events/2024/gymnastics/meet1"
-      full_path = "/events/2024/gymnastics/meet1/Gym A/Session 1A/Group 2B/Beam/1022 Kevin S/IMG_001.jpg"
+
+      full_path =
+        "/events/2024/gymnastics/meet1/Gym A/Session 1A/Group 2B/Beam/1022 Kevin S/IMG_001.jpg"
 
       assert {:ok, result} = PathParser.parse(full_path, storage_root)
 

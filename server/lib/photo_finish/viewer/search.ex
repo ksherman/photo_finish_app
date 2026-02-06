@@ -33,7 +33,8 @@ defmodule PhotoFinish.Viewer.Search do
       pattern = "%#{query}%"
 
       from(ec in EventCompetitor,
-        join: c in Competitor, on: ec.competitor_id == c.id,
+        join: c in Competitor,
+        on: ec.competitor_id == c.id,
         where: ec.event_id == ^event_id,
         where: ec.is_active == true,
         where:

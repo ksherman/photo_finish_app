@@ -14,11 +14,12 @@ defmodule PhotoFinish.Events.RosterParserTest do
       {:ok, competitors} = RosterParser.parse_txt(content)
 
       assert length(competitors) == 3
+
       assert Enum.at(competitors, 0) == %{
-        competitor_number: "143",
-        first_name: "Avery",
-        last_name: "W"
-      }
+               competitor_number: "143",
+               first_name: "Avery",
+               last_name: "W"
+             }
     end
 
     test "handles single-word names" do

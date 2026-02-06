@@ -136,9 +136,13 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
                       disabled={Map.has_key?(@assignments, folder.source_folder)}
                       class={[
                         "w-full p-3 rounded-lg text-left flex justify-between items-center transition-colors",
-                        @selected_folder == folder.source_folder && "bg-blue-100 border-2 border-blue-500",
-                        @selected_folder != folder.source_folder && !Map.has_key?(@assignments, folder.source_folder) && "bg-gray-50 border border-gray-200 hover:border-gray-300 hover:bg-gray-100",
-                        Map.has_key?(@assignments, folder.source_folder) && "opacity-50 bg-green-50 border border-green-200 cursor-not-allowed"
+                        @selected_folder == folder.source_folder &&
+                          "bg-blue-100 border-2 border-blue-500",
+                        @selected_folder != folder.source_folder &&
+                          !Map.has_key?(@assignments, folder.source_folder) &&
+                          "bg-gray-50 border border-gray-200 hover:border-gray-300 hover:bg-gray-100",
+                        Map.has_key?(@assignments, folder.source_folder) &&
+                          "opacity-50 bg-green-50 border border-green-200 cursor-not-allowed"
                       ]}
                     >
                       <span class="font-mono text-sm text-gray-900">{folder.source_folder}</span>
@@ -177,12 +181,16 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
                         !@selected_folder && "opacity-50 cursor-not-allowed"
                       ]}
                     >
-                      <span class="font-mono text-sm w-16 text-gray-600">{competitor.competitor_number}</span>
+                      <span class="font-mono text-sm w-16 text-gray-600">
+                        {competitor.competitor_number}
+                      </span>
                       <span class="text-gray-900">{competitor.display_name}</span>
                     </button>
                   <% end %>
                   <%= if @competitors == [] do %>
-                    <p class="text-gray-500 italic text-center py-4">No competitors for this session</p>
+                    <p class="text-gray-500 italic text-center py-4">
+                      No competitors for this session
+                    </p>
                   <% end %>
                 </div>
               </div>
@@ -194,7 +202,9 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
                 <div class="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
                   <div>
                     <h3 class="font-semibold text-gray-900">Pending Assignments</h3>
-                    <p class="text-xs text-gray-500">{map_size(@assignments)} assignment(s) ready to save</p>
+                    <p class="text-xs text-gray-500">
+                      {map_size(@assignments)} assignment(s) ready to save
+                    </p>
                   </div>
                   <.button
                     phx-click="save_assignments"
@@ -211,7 +221,9 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
                       <div class="flex items-center gap-2">
                         <span class="font-mono text-sm text-gray-700">{folder}</span>
                         <.icon name="hero-arrow-right" class="w-4 h-4 text-gray-400" />
-                        <span class="font-mono text-sm text-gray-500">{competitor.competitor_number}</span>
+                        <span class="font-mono text-sm text-gray-500">
+                          {competitor.competitor_number}
+                        </span>
                         <span class="text-gray-900">{competitor.display_name}</span>
                       </div>
                       <button

@@ -82,7 +82,7 @@ defmodule PhotoFinish.Photos.LocationBrowser do
     photos =
       event_id
       |> base_query(path)
-      |> order_by([p], [asc: p.source_folder, asc: p.filename])
+      |> order_by([p], asc: p.source_folder, asc: p.filename)
       |> Repo.all()
 
     photos

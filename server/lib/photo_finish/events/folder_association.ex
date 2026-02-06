@@ -115,7 +115,9 @@ defmodule PhotoFinish.Events.FolderAssociation do
         where: p.source_folder == ^source_folder,
         where: is_nil(p.event_competitor_id)
       )
-      |> Repo.update_all(set: [event_competitor_id: event_competitor_id, updated_at: DateTime.utc_now()])
+      |> Repo.update_all(
+        set: [event_competitor_id: event_competitor_id, updated_at: DateTime.utc_now()]
+      )
 
     {:ok, count}
   end

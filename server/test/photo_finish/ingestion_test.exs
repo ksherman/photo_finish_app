@@ -8,10 +8,23 @@ defmodule PhotoFinish.IngestionTest do
       # Create a temp directory structure with full path format:
       # Gym A/Session 1A/Group 2B/Beam/1022 Kevin S/IMG_001.jpg
       tmp_dir = System.tmp_dir!() |> Path.join("ingestion_test_#{:rand.uniform(100_000)}")
-      File.mkdir_p!(Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S"]))
+
+      File.mkdir_p!(
+        Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S"])
+      )
 
       # Create test JPEG
-      jpeg_path = Path.join([tmp_dir, "Gym A", "Session 1A", "Group 2B", "Beam", "1022 Kevin S", "IMG_001.jpg"])
+      jpeg_path =
+        Path.join([
+          tmp_dir,
+          "Gym A",
+          "Session 1A",
+          "Group 2B",
+          "Beam",
+          "1022 Kevin S",
+          "IMG_001.jpg"
+        ])
+
       File.write!(jpeg_path, "fake jpeg content for testing")
 
       # Create an event with storage_directory pointing to tmp_dir

@@ -47,7 +47,10 @@ defmodule PhotoFinish.Events.EventCompetitorTest do
       assert event_competitor.competitor_id == competitor.id
     end
 
-    test "creates event_competitor with session and all optional fields", %{event: event, competitor: competitor} do
+    test "creates event_competitor with session and all optional fields", %{
+      event: event,
+      competitor: competitor
+    } do
       {:ok, event_competitor} =
         Ash.create(EventCompetitor, %{
           event_id: event.id,

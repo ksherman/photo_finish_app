@@ -205,8 +205,7 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
                     size="medium"
                     color="primary"
                   >
-                    <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-2" />
-                    Import Competitors
+                    <.icon name="hero-arrow-up-tray" class="w-4 h-4 mr-2" /> Import Competitors
                   </.button>
 
                   <.button_link
@@ -225,8 +224,7 @@ defmodule PhotoFinishWeb.Admin.CompetitorLive.Import do
           <%!-- Help Section --%>
           <div class="mt-6 bg-blue-50 rounded-lg border border-blue-100 p-4">
             <h3 class="text-sm font-semibold text-blue-900 flex items-center gap-2">
-              <.icon name="hero-information-circle" class="w-4 h-4" />
-              File Format
+              <.icon name="hero-information-circle" class="w-4 h-4" /> File Format
             </h3>
             <div class="mt-2 text-sm text-blue-800">
               <p>Each line should contain a competitor number followed by their name:</p>
