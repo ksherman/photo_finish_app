@@ -12,9 +12,11 @@ events
   └── event_competitors (roster entries linked to event)
       └── photos (flat location fields: gym, session, group_name, apparatus)
   └── competitors (reusable competitor profiles)
+  └── event_products (per-event pricing, links to product_templates)
   └── orders
-      └── order_items
-  └── products (catalog)
+      └── order_items (links to event_product + event_competitor)
+
+product_templates (system-level catalog, not event-scoped)
 ```
 
 ---
@@ -36,6 +38,7 @@ CREATE TABLE events (
     status VARCHAR(50) DEFAULT 'active',  -- active, archived
     order_code VARCHAR(10),  -- 3-letter code for order numbers (e.g., "STV")
     tax_rate_basis_points INTEGER DEFAULT 850, -- 8.5%
+    next_order_number INTEGER DEFAULT 0,  -- counter for sequential order numbers
     inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -150,93 +153,64 @@ CREATE INDEX idx_photos_location ON photos(event_id, gym, session, apparatus);
 
 ## Ordering Tables
 
+### product_templates
+
+System-level product catalog. Holds default pricing, not event-scoped.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | text PK | Prefixed: `ptm_abc1234` |
+| product_type | atom | `:usb`, `:print`, `:collage`, `:custom_photo`, `:accessory` |
+| product_name | text | Display name, e.g. "All Photos USB Drive" |
+| product_size | text | Nullable. e.g. "5x7", "8x10" |
+| default_price_cents | integer | Default price in cents |
+| is_active | boolean | Default true. Inactive templates excluded from new events |
+| display_order | integer | Controls ordering on forms/UI |
+| timestamps | | |
+
+### event_products
+
+Per-event price overrides. Created by copying active product_templates when an event is initialized.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | text PK | Prefixed: `evp_abc1234` |
+| event_id | text FK → events | |
+| product_template_id | text FK → product_templates | |
+| price_cents | integer | Actual price for this event |
+| is_available | boolean | Default true. Can disable per event |
+| timestamps | | |
+| | | UNIQUE(event_id, product_template_id) |
+
 ### orders
 
-```sql
-CREATE TABLE orders (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    
-    order_number VARCHAR(50) UNIQUE NOT NULL,
-    
-    -- Customer
-    customer_name VARCHAR(255) NOT NULL,
-    customer_email VARCHAR(255),
-    customer_phone VARCHAR(50),
-    
-    -- Financial
-    subtotal_cents INTEGER NOT NULL,
-    tax_rate_basis_points INTEGER NOT NULL,
-    tax_cents INTEGER NOT NULL,
-    total_cents INTEGER NOT NULL,
-    
-    -- Payment
-    payment_status VARCHAR(50) NOT NULL DEFAULT 'pending',
-    payment_method VARCHAR(50),
-    payment_reference VARCHAR(255),
-    paid_at TIMESTAMP,
-    
-    -- Accounting
-    needs_accounting_review BOOLEAN DEFAULT false,
-    accounting_notes TEXT,
-    notes TEXT,
-    internal_notes TEXT,
-    
-    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
+| Column | Type | Notes |
+|--------|------|-------|
+| id | text PK | Prefixed: `ord_abc1234` |
+| event_id | text FK → events | |
+| order_number | text | Unique. Format: `{order_code}-{NNNN}` |
+| customer_name | text | Required |
+| customer_email | text | Nullable |
+| customer_phone | text | Nullable |
+| subtotal_cents | integer | Sum of line items |
+| tax_rate_basis_points | integer | Snapshot from event at order time |
+| tax_cents | integer | Calculated |
+| total_cents | integer | subtotal + tax |
+| payment_status | atom | `:pending`, `:paid`, `:refunded` |
+| payment_reference | text | Nullable. For payment reconciliation |
+| notes | text | Nullable. Staff notes |
+| timestamps | | |
 
 ### order_items
 
-```sql
-CREATE TABLE order_items (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
-    
-    product_type VARCHAR(50) NOT NULL,
-    product_size VARCHAR(50),
-    product_name VARCHAR(255),
-    
-    photo_id UUID REFERENCES photos(id) ON DELETE SET NULL,
-    competitor_ids JSONB,
-    
-    unit_price_cents INTEGER NOT NULL,
-    quantity INTEGER DEFAULT 1,
-    line_total_cents INTEGER NOT NULL,
-    
-    fulfillment_status VARCHAR(50) DEFAULT 'pending',
-    fulfilled_at TIMESTAMP,
-    
-    notes TEXT,
-    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### products
-
-```sql
-CREATE TABLE products (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    
-    product_type VARCHAR(50) NOT NULL,
-    product_name VARCHAR(255) NOT NULL,
-    product_description TEXT,
-    product_size VARCHAR(50),
-    
-    price_cents INTEGER NOT NULL,
-    
-    is_active BOOLEAN DEFAULT true,
-    display_order INTEGER DEFAULT 0,
-    
-    sku VARCHAR(100),
-    metadata JSONB,
-    
-    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(event_id, product_type, product_size)
-);
-```
+| Column | Type | Notes |
+|--------|------|-------|
+| id | text PK | Prefixed: `itm_abc1234` |
+| order_id | text FK → orders | |
+| event_product_id | text FK → event_products | Price source |
+| event_competitor_id | text FK → event_competitors | Which gymnast |
+| quantity | integer | Default 1 |
+| unit_price_cents | integer | Snapshot of price at order time |
+| line_total_cents | integer | quantity * unit_price |
+| fulfillment_status | atom | `:pending`, `:fulfilled` |
+| timestamps | | |
