@@ -13,7 +13,7 @@ config :ash_oban, pro?: false
 config :photo_finish, Oban,
   engine: Oban.Engines.Basic,
   notifier: Oban.Notifiers.Postgres,
-  queues: [default: 10, media: 4],
+  queues: [default: 10, media: max(2, System.schedulers_online() - 2)],
   repo: PhotoFinish.Repo,
   plugins: [{Oban.Plugins.Cron, []}]
 
