@@ -27,6 +27,7 @@ Reference these docs for detailed specs:
 | `docs/05-admin.md`        | Admin dashboard, roster management, photo organization    |
 | `docs/06-ordering.md`     | Shopping cart, checkout, payment, fulfillment workflows   |
 | `docs/07-api.md`          | HTTP endpoints, WebSocket channels                        |
+| `docs/08-payments.md`     | Square POS integration, QR checkout, processing rates     |
 
 ## Key Conventions
 

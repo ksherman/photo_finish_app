@@ -10,6 +10,8 @@ defmodule PhotoFinish.Ingestion do
   alias PhotoFinish.Events.{Event, EventCompetitor}
   alias PhotoFinish.Photos.Photo
 
+  @chunk_size 5000
+
   @type scan_result :: %{
           photos_found: non_neg_integer(),
           photos_new: non_neg_integer(),
@@ -21,34 +23,46 @@ defmodule PhotoFinish.Ingestion do
   Scans an event's storage directory for photos.
 
   Creates photo records and queues processing jobs.
+  Photos are created in bulk and Oban jobs are batch-inserted
+  in chunks of #{@chunk_size} for efficiency at scale.
   """
   @spec scan_event(String.t()) :: {:ok, scan_result()} | {:error, term()}
   def scan_event(event_id) do
     with {:ok, event} <- load_event(event_id),
          {:ok, files} <- Scanner.scan_directory(event.storage_root) do
       event_competitors = load_event_competitors(event_id)
+      existing_paths = load_existing_paths(event_id)
 
-      result =
-        Enum.reduce(
-          files,
-          %{photos_found: 0, photos_new: 0, photos_skipped: 0, errors: []},
-          fn file, acc ->
-            acc = %{acc | photos_found: acc.photos_found + 1}
+      # Partition into new vs already-ingested files
+      {new_files, skipped_count} =
+        Enum.reduce(files, {[], 0}, fn file, {new_acc, skip_count} ->
+          if MapSet.member?(existing_paths, file.path),
+            do: {new_acc, skip_count + 1},
+            else: {[file | new_acc], skip_count}
+        end)
 
-            case process_file(event, file, event_competitors) do
-              {:ok, :created} ->
-                %{acc | photos_new: acc.photos_new + 1}
+      Logger.info(
+        "Scan found #{length(files)} files: #{length(new_files)} new, #{skipped_count} skipped"
+      )
 
-              {:ok, :skipped} ->
-                %{acc | photos_skipped: acc.photos_skipped + 1}
+      # Build attrs, bulk-create photos, and bulk-queue Oban jobs in chunks
+      {created_count, errors} =
+        new_files
+        |> Stream.map(&build_photo_attrs(event, &1, event_competitors))
+        |> Stream.chunk_every(@chunk_size)
+        |> Enum.reduce({0, []}, fn chunk, {created, errs} ->
+          {count, chunk_errs} = bulk_create_and_queue(chunk, event)
+          Logger.info("Bulk created #{count} photos (#{created + count} total)")
+          {created + count, errs ++ chunk_errs}
+        end)
 
-              {:error, reason} ->
-                %{acc | errors: [reason | acc.errors]}
-            end
-          end
-        )
-
-      {:ok, result}
+      {:ok,
+       %{
+         photos_found: length(files),
+         photos_new: created_count,
+         photos_skipped: skipped_count,
+         errors: errors
+       }}
     end
   end
 
@@ -66,55 +80,29 @@ defmodule PhotoFinish.Ingestion do
     |> Ash.read!()
   end
 
-  defp process_file(event, file, event_competitors) do
-    # Check if photo already exists (by signature)
-    if photo_exists?(event.id, file) do
-      {:ok, :skipped}
-    else
-      # Parse path to extract location info
-      location_info = parse_location(file.path, event.storage_root)
-
-      # Extract folder name for event_competitor matching
-      folder_name =
-        case location_info do
-          {:ok, info} -> info.competitor_folder
-          _ -> Path.basename(Path.dirname(file.path))
-        end
-
-      event_competitor = match_event_competitor(folder_name, event_competitors)
-      create_photo(event, event_competitor, file, location_info)
-    end
+  defp load_existing_paths(event_id) do
+    Photo
+    |> Ash.Query.filter(event_id == ^event_id)
+    |> Ash.Query.select([:ingestion_path])
+    |> Ash.read!()
+    |> MapSet.new(& &1.ingestion_path)
   end
 
-  defp parse_location(path, storage_root) do
-    PathParser.parse(path, storage_root)
-  end
+  defp build_photo_attrs(event, file, event_competitors) do
+    location_info = PathParser.parse(file.path, event.storage_root)
 
-  defp photo_exists?(event_id, file) do
-    Ash.read!(Photo)
-    |> Enum.any?(fn p ->
-      p.event_id == event_id && p.ingestion_path == file.path
-    end)
-  end
+    folder_name =
+      case location_info do
+        {:ok, info} -> info.competitor_folder
+        _ -> Path.basename(Path.dirname(file.path))
+      end
 
-  defp match_event_competitor(folder_name, event_competitors) do
-    case CompetitorMatcher.extract_competitor_number(folder_name) do
-      {:ok, number} ->
-        CompetitorMatcher.find_event_competitor(event_competitors, number)
-
-      :no_match ->
-        :no_match
-    end
-  end
-
-  defp create_photo(event, event_competitor, file, location_info) do
     event_competitor_id =
-      case event_competitor do
+      case match_event_competitor(folder_name, event_competitors) do
         {:ok, ec} -> ec.id
         :no_match -> nil
       end
 
-    # Build base attributes
     base_attrs = %{
       event_id: event.id,
       event_competitor_id: event_competitor_id,
@@ -125,35 +113,70 @@ defmodule PhotoFinish.Ingestion do
       status: :discovered
     }
 
-    # Add location fields if path was parsed successfully
-    attrs =
-      case location_info do
-        {:ok, info} ->
-          Map.merge(base_attrs, %{
-            gym: info.gym,
-            session: info.session,
-            group_name: info.group_name,
-            apparatus: info.apparatus,
-            source_folder: info.competitor_folder
-          })
+    case location_info do
+      {:ok, info} ->
+        Map.merge(base_attrs, %{
+          gym: info.gym,
+          session: info.session,
+          group_name: info.group_name,
+          apparatus: info.apparatus,
+          source_folder: info.competitor_folder
+        })
 
-        _ ->
-          base_attrs
-      end
-
-    case Ash.create(Photo, attrs) do
-      {:ok, photo} ->
-        queue_processing(photo)
-        {:ok, :created}
-
-      {:error, reason} ->
-        {:error, reason}
+      _ ->
+        base_attrs
     end
   end
 
-  defp queue_processing(photo) do
-    %{photo_id: photo.id}
-    |> PhotoProcessor.new()
-    |> Oban.insert()
+  defp bulk_create_and_queue(attrs_chunk, event) do
+    result =
+      Ash.bulk_create(attrs_chunk, Photo, :create,
+        return_records?: true,
+        return_errors?: true,
+        stop_on_error?: false
+      )
+
+    records = result.records || []
+
+    # Bulk-insert Oban jobs with all data needed to skip the DB read
+    if records != [] do
+      records
+      |> Enum.map(fn photo ->
+        PhotoProcessor.new(%{
+          photo_id: photo.id,
+          event_id: event.id,
+          ingestion_path: photo.ingestion_path,
+          storage_root: event.storage_root
+        })
+      end)
+      |> Oban.insert_all()
+    end
+
+    errors =
+      case result.errors do
+        errs when errs in [nil, []] ->
+          []
+
+        errs ->
+          mapped = Enum.map(errs, &inspect/1)
+
+          Logger.warning(
+            "Batch had #{length(mapped)} error(s) out of #{length(attrs_chunk)} records: #{Enum.take(mapped, 3) |> Enum.join(", ")}"
+          )
+
+          mapped
+      end
+
+    {length(records), errors}
+  end
+
+  defp match_event_competitor(folder_name, event_competitors) do
+    case CompetitorMatcher.extract_competitor_number(folder_name) do
+      {:ok, number} ->
+        CompetitorMatcher.find_event_competitor(event_competitors, number)
+
+      :no_match ->
+        :no_match
+    end
   end
 end

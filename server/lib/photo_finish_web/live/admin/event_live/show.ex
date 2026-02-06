@@ -705,11 +705,18 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
     socket =
       case PhotoFinish.Ingestion.scan_event(socket.assigns.event.id) do
         {:ok, result} ->
+          flash_kind = if result.errors == [], do: :info, else: :warning
+
+          flash_msg =
+            if result.errors == [] do
+              "Scan complete. Found #{result.photos_new} new photos, #{result.photos_skipped} skipped."
+            else
+              "Scan complete. #{result.photos_new} new photos, #{result.photos_skipped} skipped. " <>
+                "#{length(result.errors)} failed due to ID collisions — run scan again to pick them up."
+            end
+
           socket
-          |> put_flash(
-            :info,
-            "Scan complete. Found #{result.photos_new} new photos, #{result.photos_skipped} skipped."
-          )
+          |> put_flash(flash_kind, flash_msg)
           |> assign(:photo_counts, load_photo_counts(socket.assigns.event.id))
           |> load_browser_data(socket.assigns.event.id, socket.assigns.browser_path)
 
