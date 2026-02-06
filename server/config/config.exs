@@ -65,7 +65,7 @@ config :spark,
 config :photo_finish,
   ecto_repos: [PhotoFinish.Repo],
   generators: [timestamp_type: :utc_datetime],
-  ash_domains: [PhotoFinish.Photos, PhotoFinish.Events, PhotoFinish.Accounts]
+  ash_domains: [PhotoFinish.Photos, PhotoFinish.Events, PhotoFinish.Accounts, PhotoFinish.Orders]
 
 # Configure the endpoint
 config :photo_finish, PhotoFinishWeb.Endpoint,
