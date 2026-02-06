@@ -14,30 +14,79 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
   @showcase_photo_count 24
 
   @impl true
-  def mount(_params, _session, socket) do
-    # Get the first active event (for MVP)
-    event = get_active_event()
+  def mount(params, _session, socket) do
+    case params do
+      %{"event_id" => event_id} ->
+        event = Ash.get!(Event, event_id)
+        showcase_photos = load_showcase_photos(event.id)
+        {row1, row2, row3} = split_into_rows(showcase_photos)
 
-    # Load random photos for the showcase
-    showcase_photos = if event, do: load_showcase_photos(event.id), else: []
+        socket =
+          socket
+          |> assign(:event, event)
+          |> assign(:mode, :search)
+          |> assign(:query, "")
+          |> assign(:results, [])
+          |> assign(:showcase_row1, row1)
+          |> assign(:showcase_row2, row2)
+          |> assign(:showcase_row3, row3)
 
-    # Split photos into 3 rows
-    {row1, row2, row3} = split_into_rows(showcase_photos)
+        {:ok, socket}
 
-    socket =
-      socket
-      |> assign(:event, event)
-      |> assign(:query, "")
-      |> assign(:results, [])
-      |> assign(:showcase_row1, row1)
-      |> assign(:showcase_row2, row2)
-      |> assign(:showcase_row3, row3)
+      _ ->
+        events = list_active_events()
 
-    {:ok, socket}
+        # If only one active event, redirect directly
+        case events do
+          [single_event] ->
+            {:ok, push_navigate(socket, to: ~p"/viewer/#{single_event.id}")}
+
+          _ ->
+            socket =
+              socket
+              |> assign(:events, events)
+              |> assign(:mode, :pick_event)
+
+            {:ok, socket}
+        end
+    end
   end
 
   @impl true
-  def render(assigns) do
+  def render(%{mode: :pick_event} = assigns) do
+    ~H"""
+    <div class="h-screen bg-gray-900 flex items-center justify-center">
+      <div class="max-w-xl w-full mx-auto px-4">
+        <div class="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
+          <div class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-gray-900 mb-1">PhotoFinish</h1>
+            <p class="text-gray-500">Select an event</p>
+          </div>
+
+          <%= if @events == [] do %>
+            <p class="text-center text-gray-500 py-4">No active events</p>
+          <% else %>
+            <div class="space-y-3">
+              <%= for event <- @events do %>
+                <.link
+                  navigate={~p"/viewer/#{event.id}"}
+                  class="block w-full p-4 rounded-xl border-2 border-gray-200 hover:border-indigo-500 hover:bg-indigo-50 transition text-left"
+                >
+                  <p class="font-semibold text-gray-900 text-lg">{event.name}</p>
+                  <p :if={event.description} class="text-sm text-gray-500 mt-1">
+                    {event.description}
+                  </p>
+                </.link>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  def render(%{mode: :search} = assigns) do
     ~H"""
     <style>
       @keyframes marquee-left {
@@ -106,13 +155,8 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
         <div class="max-w-xl mx-auto px-4">
           <div class="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
             <div class="text-center mb-6">
-              <%= if @event do %>
-                <h1 class="text-3xl font-bold text-gray-900 mb-1">{@event.name}</h1>
-                <p class="text-gray-500">Find your photos</p>
-              <% else %>
-                <h1 class="text-3xl font-bold text-gray-900 mb-1">PhotoFinish</h1>
-                <p class="text-gray-500">Photo Viewer</p>
-              <% end %>
+              <h1 class="text-3xl font-bold text-gray-900 mb-1">{@event.name}</h1>
+              <p class="text-gray-500">Find your photos</p>
             </div>
 
             <form phx-change="search" phx-submit="search">
@@ -144,7 +188,7 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
                     <%= for result <- @results do %>
                       <li>
                         <.link
-                          navigate={~p"/viewer/competitor/#{result.id}"}
+                          navigate={~p"/viewer/#{@event.id}/competitor/#{result.id}"}
                           class="block px-6 py-4 hover:bg-gray-50 flex items-center justify-between"
                         >
                           <div>
@@ -186,12 +230,11 @@ defmodule PhotoFinishWeb.ViewerLive.Home do
     end
   end
 
-  defp get_active_event do
+  defp list_active_events do
     Event
     |> Ash.Query.filter(status == :active)
-    |> Ash.Query.limit(1)
+    |> Ash.Query.sort(:name)
     |> Ash.read!()
-    |> List.first()
   end
 
   defp load_showcase_photos(event_id) do

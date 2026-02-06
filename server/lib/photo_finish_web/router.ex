@@ -2,6 +2,7 @@ defmodule PhotoFinishWeb.Router do
   use PhotoFinishWeb, :router
 
   import Oban.Web.Router
+  import Oban.Web.Router
   use AshAuthentication.Phoenix.Router
 
   import AshAuthentication.Plug.Helpers
@@ -95,9 +96,12 @@ defmodule PhotoFinishWeb.Router do
   scope "/viewer", PhotoFinishWeb do
     pipe_through :browser
 
+    # Event picker (lists active events)
     live "/", ViewerLive.Home, :index
-    live "/competitor/:id", ViewerLive.Competitor, :show
-    live "/competitor/:id/order", ViewerLive.Order, :new
+    # Event-scoped viewer
+    live "/:event_id", ViewerLive.Home, :index
+    live "/:event_id/competitor/:id", ViewerLive.Competitor, :show
+    live "/:event_id/competitor/:id/order", ViewerLive.Order, :new
 
     get "/photos/thumbnail/:id", Viewer.PhotoController, :thumbnail
     get "/photos/preview/:id", Viewer.PhotoController, :preview
@@ -105,6 +109,8 @@ defmodule PhotoFinishWeb.Router do
 
   scope "/admin", PhotoFinishWeb.Admin do
     pipe_through [:browser, :admin_auth]
+
+    oban_dashboard("/oban")
 
     live "/events", EventLive.Index, :index
     live "/events/new", EventLive.Form, :new
@@ -150,12 +156,6 @@ defmodule PhotoFinishWeb.Router do
 
       live_dashboard "/dashboard", metrics: PhotoFinishWeb.Telemetry
       forward "/mailbox", Plug.Swoosh.MailboxPreview
-    end
-
-    scope "/" do
-      pipe_through :browser
-
-      oban_dashboard("/oban")
     end
   end
 

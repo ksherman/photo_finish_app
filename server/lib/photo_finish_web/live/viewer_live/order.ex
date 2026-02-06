@@ -16,7 +16,7 @@ defmodule PhotoFinishWeb.ViewerLive.Order do
   alias PhotoFinish.Photos.Photo
 
   @impl true
-  def mount(%{"id" => id}, _session, socket) do
+  def mount(%{"event_id" => event_id, "id" => id}, _session, socket) do
     event_competitor = Ash.get!(EventCompetitor, id)
     event = Ash.get!(PhotoFinish.Events.Event, event_competitor.event_id)
 
@@ -30,6 +30,7 @@ defmodule PhotoFinishWeb.ViewerLive.Order do
 
     socket =
       socket
+      |> assign(:event_id, event_id)
       |> assign(:event_competitor, event_competitor)
       |> assign(:event, event)
       |> assign(:usb_product, usb_product)
@@ -51,7 +52,7 @@ defmodule PhotoFinishWeb.ViewerLive.Order do
         <div class="max-w-2xl mx-auto px-4 py-4 flex items-center gap-4">
           <.link
             :if={@step != :confirmation}
-            navigate={~p"/viewer/competitor/#{@event_competitor.id}"}
+            navigate={~p"/viewer/#{@event_id}/competitor/#{@event_competitor.id}"}
             class="text-gray-500 hover:text-gray-700"
           >
             <.icon name="hero-arrow-left" class="w-6 h-6" />
@@ -243,7 +244,7 @@ defmodule PhotoFinishWeb.ViewerLive.Order do
       </div>
 
       <.link
-        navigate={~p"/viewer"}
+        navigate={~p"/viewer/#{@event_id}"}
         class="inline-block w-full py-4 border-2 border-gray-300 text-gray-700 text-lg font-semibold rounded-xl hover:bg-gray-50 transition"
       >
         Start New Order

@@ -11,12 +11,13 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
   alias PhotoFinish.Photos.Photo
 
   @impl true
-  def mount(%{"id" => id}, _session, socket) do
+  def mount(%{"event_id" => event_id, "id" => id}, _session, socket) do
     event_competitor = load_event_competitor(id)
     photos = load_photos(id)
 
     socket =
       socket
+      |> assign(:event_id, event_id)
       |> assign(:event_competitor, event_competitor)
       |> assign(:photos, photos)
       |> assign(:lightbox_photo, nil)
@@ -32,7 +33,7 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
       <!-- Header -->
       <header class="bg-white shadow-sm sticky top-0 z-10">
         <div class="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
-          <.link navigate={~p"/viewer"} class="text-gray-500 hover:text-gray-700">
+          <.link navigate={~p"/viewer/#{@event_id}"} class="text-gray-500 hover:text-gray-700">
             <.icon name="hero-arrow-left" class="w-6 h-6" />
           </.link>
           <div class="flex-1">
@@ -42,7 +43,7 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
             <p class="text-sm text-gray-500">{length(@photos)} photos</p>
           </div>
           <.link
-            navigate={~p"/viewer/competitor/#{@event_competitor.id}/order"}
+            navigate={~p"/viewer/#{@event_id}/competitor/#{@event_competitor.id}/order"}
             class="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-sm"
           >
             <.icon name="hero-shopping-cart" class="w-5 h-5" />

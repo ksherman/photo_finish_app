@@ -23,7 +23,9 @@ defmodule PhotoFinish.Ingestion.PhotoProcessor do
          {:ok, photo} <- generate_preview(photo),
          {:ok, photo} <- mark_ready(photo) do
       Logger.info("Successfully processed photo #{photo_id}")
+
       broadcast_progress(photo, :ready)
+
       :ok
     else
       {:error, reason} ->
