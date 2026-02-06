@@ -171,20 +171,25 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
                 </div>
                 <div class="p-4 space-y-1 max-h-96 overflow-y-auto">
                   <%= for competitor <- @competitors do %>
+                    <% already_assigned? = competitor.id in Enum.map(Map.values(@assignments), & &1.id) %>
                     <button
                       phx-click="assign"
                       phx-value-competitor-id={competitor.id}
                       disabled={@selected_folder == nil}
                       class={[
                         "w-full p-2 rounded text-left flex items-center gap-3 transition-colors",
-                        @selected_folder && "hover:bg-blue-50 cursor-pointer",
-                        !@selected_folder && "opacity-50 cursor-not-allowed"
+                        !already_assigned? && @selected_folder && "hover:bg-blue-50 cursor-pointer",
+                        !already_assigned? && !@selected_folder && "opacity-50 cursor-not-allowed",
+                        already_assigned? && "opacity-40"
                       ]}
                     >
                       <span class="font-mono text-sm w-16 text-gray-600">
                         {competitor.competitor_number}
                       </span>
                       <span class="text-gray-900">{competitor.display_name}</span>
+                      <%= if already_assigned? do %>
+                        <.icon name="hero-check" class="w-4 h-4 text-green-500 ml-auto" />
+                      <% end %>
                     </button>
                   <% end %>
                   <%= if @competitors == [] do %>
@@ -297,10 +302,19 @@ defmodule PhotoFinishWeb.Admin.FolderLive.Associate do
 
   def handle_event("save_assignments", _params, socket) do
     event_id = socket.assigns.event.id
+    [gym, session, group_name, apparatus] = socket.assigns.path
+
+    location = %{
+      storage_root: socket.assigns.event.storage_root,
+      gym: gym,
+      session: session,
+      group_name: group_name,
+      apparatus: apparatus
+    }
 
     results =
       for {folder, competitor} <- socket.assigns.assignments do
-        FolderAssociation.assign_folder(event_id, folder, competitor.id)
+        FolderAssociation.assign_folder(event_id, folder, competitor, location)
       end
 
     total = Enum.sum(for {:ok, count} <- results, do: count)

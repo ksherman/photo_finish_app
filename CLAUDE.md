@@ -32,7 +32,7 @@ Reference these docs for detailed specs:
 ## Key Conventions
 
 - **Money:** Store as cents (`price_cents`, `total_cents`)
-- **IDs:** UUIDs for all primary keys
+- **IDs:** Prefixed short strings via `PhotoFinish.Id` (e.g., `pho_abc1234`, `evt_xyz9876`)
 - **Images:** JPEG only, three versions (original, preview 1280px, thumbnail 320px)
 - **Contexts:** `Events`, `Photos`, `Orders`, `Ingestion`
 
