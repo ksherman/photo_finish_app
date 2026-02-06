@@ -21,4 +21,6 @@ defmodule PhotoFinish.Id do
   def order_id, do: generate("ord_")
   def order_item_id, do: generate("itm_")
   def product_id, do: generate("prd_")
+  def product_template_id, do: generate("ptm_")
+  def event_product_id, do: generate("evp_")
 end

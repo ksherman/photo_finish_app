@@ -81,4 +81,24 @@ defmodule PhotoFinish.IdTest do
       assert Regex.match?(~r/^[a-z]{3}[0-9]{4}$/, suffix)
     end
   end
+
+  describe "product_template_id/0" do
+    test "generates ID with ptm_ prefix" do
+      id = Id.product_template_id()
+
+      assert String.starts_with?(id, "ptm_")
+      suffix = String.replace_prefix(id, "ptm_", "")
+      assert Regex.match?(~r/^[a-z]{3}[0-9]{4}$/, suffix)
+    end
+  end
+
+  describe "event_product_id/0" do
+    test "generates ID with evp_ prefix" do
+      id = Id.event_product_id()
+
+      assert String.starts_with?(id, "evp_")
+      suffix = String.replace_prefix(id, "evp_", "")
+      assert Regex.match?(~r/^[a-z]{3}[0-9]{4}$/, suffix)
+    end
+  end
 end
