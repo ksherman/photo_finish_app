@@ -117,6 +117,11 @@ defmodule PhotoFinishWeb.Router do
     # Folder-to-competitor association
     live "/events/:event_id/folders", FolderLive.Associate, :associate
 
+    # Product template management
+    live "/products", ProductLive.Index, :index
+    live "/products/new", ProductLive.Form, :new
+    live "/products/:id/edit", ProductLive.Form, :edit
+
     get "/photos/thumbnail/:id", PhotoController, :thumbnail
     get "/photos/preview/:id", PhotoController, :preview
   end
