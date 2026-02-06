@@ -460,6 +460,14 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
             <div class="p-6">
               <div class="flex flex-wrap gap-3">
                 <.button_link
+                  navigate={~p"/admin/events/#{@event.id}/orders"}
+                  size="small"
+                  variant="outline"
+                  color="primary"
+                >
+                  <.icon name="hero-shopping-bag" class="w-4 h-4 mr-1" /> View Orders
+                </.button_link>
+                <.button_link
                   navigate={~p"/admin/events/#{@event.id}/import-roster"}
                   size="small"
                   variant="outline"
