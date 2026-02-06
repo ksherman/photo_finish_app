@@ -9,9 +9,61 @@ defmodule PhotoFinish.Orders do
     resource PhotoFinish.Orders.OrderItem
   end
 
+  require Ash.Query
+
   alias PhotoFinish.Repo
   alias PhotoFinish.Events.Event
-  alias PhotoFinish.Orders.{EventProduct, Order, OrderItem, OrderNumber}
+  alias PhotoFinish.Orders.{EventProduct, ProductTemplate, Order, OrderItem, OrderNumber}
+
+  @doc """
+  Initializes event products for an event by copying all active product templates.
+
+  Creates an EventProduct for each active ProductTemplate, using the template's
+  default_price_cents as the initial price_cents. Idempotent — if the event
+  already has products, returns the existing ones without creating duplicates.
+
+  ## Parameters
+
+    * `event_id` - The event ID to initialize products for
+
+  ## Returns
+
+    * `{:ok, event_products}` - List of EventProducts (with product_template loaded)
+    * `{:error, reason}` - On failure
+  """
+  @spec initialize_event_products(String.t()) :: {:ok, [EventProduct.t()]} | {:error, term()}
+  def initialize_event_products(event_id) do
+    existing =
+      EventProduct
+      |> Ash.Query.filter(event_id == ^event_id)
+      |> Ash.read!()
+
+    if existing != [] do
+      {:ok, Ash.load!(existing, :product_template)}
+    else
+      active_templates =
+        ProductTemplate
+        |> Ash.Query.filter(is_active == true)
+        |> Ash.read!()
+
+      if active_templates == [] do
+        {:ok, []}
+      else
+        event_products =
+          Enum.map(active_templates, fn template ->
+            Ash.create!(EventProduct, %{
+              event_id: event_id,
+              product_template_id: template.id,
+              price_cents: template.default_price_cents
+            })
+          end)
+
+        {:ok, Ash.load!(event_products, :product_template)}
+      end
+    end
+  rescue
+    e -> {:error, e}
+  end
 
   @doc """
   Places a new order within a single database transaction.

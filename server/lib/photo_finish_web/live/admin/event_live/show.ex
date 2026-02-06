@@ -1,7 +1,11 @@
 defmodule PhotoFinishWeb.Admin.EventLive.Show do
   use PhotoFinishWeb, :live_view
 
+  require Ash.Query
+
   alias PhotoFinish.Events.FolderGenerator
+  alias PhotoFinish.Orders
+  alias PhotoFinish.Orders.EventProduct
   alias PhotoFinish.Photos.Photo
   alias PhotoFinish.Photos.LocationBrowser
 
@@ -132,9 +136,27 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                     color="natural"
                   >
                     <%= if @scanning do %>
-                      <svg class="animate-spin w-4 h-4 mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      <svg
+                        class="animate-spin w-4 h-4 mr-1"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          class="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          stroke-width="4"
+                        >
+                        </circle>
+                        <path
+                          class="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        >
+                        </path>
                       </svg>
                       Scanning...
                     <% else %>
@@ -149,10 +171,13 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                 <div class="mt-3">
                   <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
                     <span class="flex items-center gap-1">
-                      <span class="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+                      <span class="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse">
+                      </span>
                       Processing photos...
                     </span>
-                    <span>{@photo_counts.ready + @photo_counts.error} of {@photo_counts.total} complete</span>
+                    <span>
+                      {@photo_counts.ready + @photo_counts.error} of {@photo_counts.total} complete
+                    </span>
                   </div>
                   <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                     <div
@@ -208,7 +233,9 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                 <%!-- Level indicator --%>
                 <%= if !LocationBrowser.at_leaf_level?(@browser_path) do %>
                   <p class="text-xs text-gray-500 mb-4">
-                    Select a {LocationBrowser.level_label(LocationBrowser.current_level(@browser_path))}
+                    Select a {LocationBrowser.level_label(
+                      LocationBrowser.current_level(@browser_path)
+                    )}
                   </p>
                 <% end %>
 
@@ -260,7 +287,11 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                         >
                           <div class="flex items-center gap-3">
                             <.icon
-                              name={if MapSet.member?(@expanded_folders, folder.folder), do: "hero-chevron-down", else: "hero-chevron-right"}
+                              name={
+                                if MapSet.member?(@expanded_folders, folder.folder),
+                                  do: "hero-chevron-down",
+                                  else: "hero-chevron-right"
+                              }
                               class="w-4 h-4 text-gray-500"
                             />
                             <span class="font-medium text-gray-900">{folder.folder}</span>
@@ -285,7 +316,10 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                                   <%= if photo.status == :error do %>
                                     <div class="absolute top-1 right-1">
                                       <span class="inline-flex items-center justify-center w-4 h-4 bg-red-500 rounded-full">
-                                        <.icon name="hero-exclamation-triangle" class="w-2 h-2 text-white" />
+                                        <.icon
+                                          name="hero-exclamation-triangle"
+                                          class="w-2 h-2 text-white"
+                                        />
                                       </span>
                                     </div>
                                   <% end %>
@@ -304,6 +338,116 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
                     No photos found at this location.
                   </p>
                 <% end %>
+              <% end %>
+            </div>
+          </div>
+
+          <%!-- Products Card --%>
+          <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+            <div class="px-6 py-4 bg-gray-50 border-b border-gray-200">
+              <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Products</h2>
+                <%= if @event_products == [] do %>
+                  <.button
+                    phx-click="initialize_products"
+                    size="small"
+                    variant="outline"
+                    color="primary"
+                  >
+                    <.icon name="hero-plus" class="w-4 h-4 mr-1" /> Initialize Products
+                  </.button>
+                <% end %>
+              </div>
+            </div>
+            <div class="p-6">
+              <%= if @event_products == [] do %>
+                <p class="text-sm text-gray-500 text-center py-4">
+                  No products configured for this event. Click "Initialize Products" to copy active product templates.
+                </p>
+              <% else %>
+                <div class="overflow-x-auto">
+                  <table class="min-w-full divide-y divide-gray-200">
+                    <thead>
+                      <tr>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Product Name
+                        </th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Type
+                        </th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Size
+                        </th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Price
+                        </th>
+                        <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Available
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-100">
+                      <%= for ep <- @event_products do %>
+                        <tr class="hover:bg-gray-50">
+                          <td class="px-4 py-3 text-sm text-gray-900 font-medium">
+                            {ep.product_template.product_name}
+                          </td>
+                          <td class="px-4 py-3 text-sm text-gray-600">
+                            {Phoenix.Naming.humanize(ep.product_template.product_type)}
+                          </td>
+                          <td class="px-4 py-3 text-sm text-gray-600">
+                            {ep.product_template.product_size || "-"}
+                          </td>
+                          <td class="px-4 py-3 text-sm">
+                            <form phx-submit="update_product_price" class="flex items-center gap-2">
+                              <input type="hidden" name="product_id" value={ep.id} />
+                              <div class="flex items-center">
+                                <span class="text-gray-500 mr-1">$</span>
+                                <input
+                                  type="number"
+                                  name="price"
+                                  value={format_dollars(ep.price_cents)}
+                                  step="0.01"
+                                  min="0"
+                                  class="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                              </div>
+                              <button
+                                type="submit"
+                                class="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                              >
+                                Save
+                              </button>
+                            </form>
+                            <%= if ep.price_cents != ep.product_template.default_price_cents do %>
+                              <span class="text-xs text-gray-400">
+                                default: {format_price(ep.product_template.default_price_cents)}
+                              </span>
+                            <% end %>
+                          </td>
+                          <td class="px-4 py-3 text-sm">
+                            <button
+                              phx-click="toggle_product_availability"
+                              phx-value-product-id={ep.id}
+                              class={[
+                                "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2",
+                                ep.is_available && "bg-blue-600",
+                                !ep.is_available && "bg-gray-200"
+                              ]}
+                            >
+                              <span class={[
+                                "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                                ep.is_available && "translate-x-5",
+                                !ep.is_available && "translate-x-0"
+                              ]}>
+                              </span>
+                            </button>
+                          </td>
+                        </tr>
+                      <% end %>
+                    </tbody>
+                  </table>
+                </div>
               <% end %>
             </div>
           </div>
@@ -378,6 +522,7 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
      |> assign(:browser_path, [])
      |> assign(:expanded_folders, MapSet.new())
      |> assign(:scanning, false)
+     |> assign(:event_products, load_event_products(id))
      |> load_browser_data(id, [])}
   end
 
@@ -497,6 +642,56 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
     {:noreply, assign(socket, :expanded_folders, MapSet.new())}
   end
 
+  def handle_event("initialize_products", _params, socket) do
+    event_id = socket.assigns.event.id
+
+    case Orders.initialize_event_products(event_id) do
+      {:ok, event_products} ->
+        {:noreply,
+         socket
+         |> assign(:event_products, event_products)
+         |> put_flash(:info, "Products initialized from #{length(event_products)} active templates.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to initialize products: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("update_product_price", %{"product_id" => product_id, "price" => price_str}, socket) do
+    case parse_price(price_str) do
+      {:ok, price_cents} ->
+        ep = Enum.find(socket.assigns.event_products, &(&1.id == product_id))
+
+        case Ash.update(ep, %{price_cents: price_cents}) do
+          {:ok, _updated} ->
+            {:noreply,
+             socket
+             |> assign(:event_products, load_event_products(socket.assigns.event.id))
+             |> put_flash(:info, "Price updated.")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to update price: #{inspect(reason)}")}
+        end
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Invalid price format.")}
+    end
+  end
+
+  def handle_event("toggle_product_availability", %{"product-id" => product_id}, socket) do
+    ep = Enum.find(socket.assigns.event_products, &(&1.id == product_id))
+
+    case Ash.update(ep, %{is_available: !ep.is_available}) do
+      {:ok, _updated} ->
+        {:noreply,
+         socket
+         |> assign(:event_products, load_event_products(socket.assigns.event.id))}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to toggle availability: #{inspect(reason)}")}
+    end
+  end
+
   @impl true
   def handle_info(:do_scan, socket) do
     socket =
@@ -528,5 +723,31 @@ defmodule PhotoFinishWeb.Admin.EventLive.Show do
       |> load_browser_data(socket.assigns.event.id, socket.assigns.browser_path)
 
     {:noreply, socket}
+  end
+
+  defp load_event_products(event_id) do
+    EventProduct
+    |> Ash.Query.filter(event_id == ^event_id)
+    |> Ash.read!()
+    |> Ash.load!(:product_template)
+    |> Enum.sort_by(& &1.product_template.display_order)
+  end
+
+  defp format_price(cents) when is_integer(cents) do
+    "$#{:erlang.float_to_binary(cents / 100, decimals: 2)}"
+  end
+
+  defp format_dollars(cents) when is_integer(cents) do
+    :erlang.float_to_binary(cents / 100, decimals: 2)
+  end
+
+  defp parse_price(price_str) do
+    case Float.parse(price_str) do
+      {dollars, _} when dollars >= 0 ->
+        {:ok, round(dollars * 100)}
+
+      _ ->
+        {:error, :invalid_price}
+    end
   end
 end
