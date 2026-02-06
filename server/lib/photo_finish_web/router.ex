@@ -97,6 +97,7 @@ defmodule PhotoFinishWeb.Router do
 
     live "/", ViewerLive.Home, :index
     live "/competitor/:id", ViewerLive.Competitor, :show
+    live "/competitor/:id/order", ViewerLive.Order, :new
 
     get "/photos/thumbnail/:id", Viewer.PhotoController, :thumbnail
     get "/photos/preview/:id", Viewer.PhotoController, :preview

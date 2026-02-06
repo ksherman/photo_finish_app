@@ -35,12 +35,19 @@ defmodule PhotoFinishWeb.ViewerLive.Competitor do
           <.link navigate={~p"/viewer"} class="text-gray-500 hover:text-gray-700">
             <.icon name="hero-arrow-left" class="w-6 h-6" />
           </.link>
-          <div>
+          <div class="flex-1">
             <h1 class="text-lg font-bold text-gray-900">
               {@event_competitor.display_name || "Competitor #{@event_competitor.competitor_number}"}
             </h1>
             <p class="text-sm text-gray-500">{length(@photos)} photos</p>
           </div>
+          <.link
+            navigate={~p"/viewer/competitor/#{@event_competitor.id}/order"}
+            class="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition shadow-sm"
+          >
+            <.icon name="hero-shopping-cart" class="w-5 h-5" />
+            Order Photos
+          </.link>
         </div>
       </header>
       
