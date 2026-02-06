@@ -104,6 +104,12 @@ defmodule PhotoFinish.Events.Event do
       public? true
     end
 
+    attribute :next_order_number, :integer do
+      allow_nil? false
+      default 0
+      public? true
+    end
+
     timestamps()
   end
 
