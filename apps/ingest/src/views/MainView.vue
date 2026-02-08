@@ -44,12 +44,22 @@ const displayedReaders = computed<CardReaderInfo[]>(() => {
   });
 });
 
+function clearStateForRemovedReaders() {
+  const currentIds = new Set(cardReaderStore.cardReaders.map(r => r.reader_id));
+  for (const readerId of Object.keys(cardReaderStore.copyStates)) {
+    if (!currentIds.has(readerId)) {
+      cardReaderStore.resetCopyState(readerId);
+    }
+  }
+}
+
 onMounted(() => {
   cardReaderStore.discoverReaders();
 
   // Poll for volume changes
-  pollInterval = setInterval(() => {
-    cardReaderStore.discoverReaders();
+  pollInterval = setInterval(async () => {
+    await cardReaderStore.discoverReaders();
+    clearStateForRemovedReaders();
   }, 3000);
 });
 

@@ -164,12 +164,22 @@ async function startCopy() {
         </p>
       </div>
 
-      <div v-if="copyState.lastResult?.success" class="mt-4 bg-green-50 p-2 rounded text-xs text-green-700 border border-green-100">
-        ✅ Copied {{ copyState.lastResult.count }} files in {{ copyState.lastResult.durationSeconds.toFixed(1) }}s
+      <div v-if="copyState.lastResult?.success" class="mt-4 bg-green-50 p-2 rounded text-xs text-green-700 border border-green-100 flex items-center justify-between">
+        <span>Copied {{ copyState.lastResult.count }} files in {{ copyState.lastResult.durationSeconds.toFixed(1) }}s</span>
+        <button @click="cardReaderStore.resetCopyState(reader.reader_id)" class="ml-2 text-green-500 hover:text-green-700 flex-shrink-0" title="Dismiss">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
       </div>
-      
-      <div v-if="copyState.error" class="mt-4 bg-red-50 p-2 rounded text-xs text-red-700 border border-red-100">
-        ❌ Error: {{ copyState.error }}
+
+      <div v-if="copyState.error" class="mt-4 bg-red-50 p-2 rounded text-xs text-red-700 border border-red-100 flex items-center justify-between">
+        <span>Error: {{ copyState.error }}</span>
+        <button @click="cardReaderStore.resetCopyState(reader.reader_id)" class="ml-2 text-red-500 hover:text-red-700 flex-shrink-0" title="Dismiss">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
       </div>
     </div>
 

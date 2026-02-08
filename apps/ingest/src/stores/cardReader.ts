@@ -1,7 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
-  VolumeInfo,
   DirectoryEntry,
   CopyProgressEvent,
   CardReaderInfo,
@@ -16,14 +15,12 @@ interface CopyState {
 
 export const useCardReaderStore = defineStore("cardReader", {
   state: () => ({
-    volumes: [] as VolumeInfo[],
     cardReaders: [] as CardReaderInfo[],
-    
+
     // Selection state for Setup UI
-    selectedVolume: null as VolumeInfo | null,
     selectedReader: null as CardReaderInfo | null,
     directories: [] as DirectoryEntry[], // For preview in Setup
-    
+
     // Per-reader state
     copyStates: {} as Record<string, CopyState>,
   }),
@@ -45,9 +42,7 @@ export const useCardReaderStore = defineStore("cardReader", {
         const readers = await invoke<CardReaderInfo[]>(
           "discover_card_readers"
         );
-        
-        // Preserve existing readers' object references if possible or just replace
-        // But we need to update file counts.
+
         this.cardReaders = readers;
 
         // If we have a selected reader, update it
@@ -64,14 +59,6 @@ export const useCardReaderStore = defineStore("cardReader", {
         }
       } catch (error) {
         console.error("Failed to discover card readers:", error);
-      }
-    },
-
-    async refreshVolumes() {
-      try {
-        this.volumes = await invoke<VolumeInfo[]>("list_volumes");
-      } catch (error) {
-        console.error("Failed to list volumes:", error);
       }
     },
 
@@ -166,11 +153,10 @@ export const useCardReaderStore = defineStore("cardReader", {
     },
 
     clearSelection() {
-      this.selectedVolume = null;
       this.selectedReader = null;
       this.directories = [];
     },
-    
+
     resetCopyState(readerId: string) {
         if (this.copyStates[readerId]) {
             delete this.copyStates[readerId];

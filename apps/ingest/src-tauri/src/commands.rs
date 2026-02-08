@@ -5,13 +5,6 @@ use std::process::Command;
 use tauri::ipc::Channel;
 use walkdir::WalkDir;
 
-#[derive(Serialize)]
-pub struct VolumeInfo {
-    pub name: String,
-    pub path: String,
-    pub is_removable: bool,
-}
-
 #[derive(Debug, Serialize, Clone)]
 pub struct CardReaderInfo {
     pub reader_id: String,          // DeviceTreePath - unique identifier
@@ -39,30 +32,6 @@ pub struct CopyProgressEvent {
     pub copied: u32,
     pub current_file: String,
     pub percentage: f32,
-}
-
-#[tauri::command]
-pub fn list_volumes() -> Result<Vec<VolumeInfo>, String> {
-    let volumes_path = Path::new("/Volumes");
-    let mut volumes = Vec::new();
-
-    if let Ok(entries) = fs::read_dir(volumes_path) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let path = entry.path().to_string_lossy().to_string();
-
-            // Skip Macintosh HD (system volume)
-            let is_removable = name != "Macintosh HD";
-
-            volumes.push(VolumeInfo {
-                name,
-                path,
-                is_removable,
-            });
-        }
-    }
-
-    Ok(volumes)
 }
 
 #[tauri::command]
@@ -97,11 +66,6 @@ pub fn list_directory(path: String) -> Result<Vec<DirectoryEntry>, String> {
 
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
-}
-
-#[tauri::command]
-pub fn get_file_count(path: String) -> Result<u32, String> {
-    Ok(count_jpeg_files(Path::new(&path)))
 }
 
 fn count_folders(path: &Path) -> u32 {
@@ -290,17 +254,6 @@ pub async fn copy_files_to_destination(
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn rename_folder(source_path: String, new_name: String) -> Result<String, String> {
-    let source = Path::new(&source_path);
-    let parent = source.parent().ok_or("Invalid path")?;
-    let new_path = parent.join(&new_name);
-
-    fs::rename(source, &new_path).map_err(|e| e.to_string())?;
-
-    Ok(new_path.to_string_lossy().to_string())
 }
 
 #[derive(Deserialize)]

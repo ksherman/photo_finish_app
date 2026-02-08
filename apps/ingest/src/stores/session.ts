@@ -14,10 +14,6 @@ export interface ReaderMapping {
 }
 
 export interface SessionState {
-  // Legacy single-destination mode
-  destination: string;
-  photographer: string;
-  currentOrder: number;
   // Reader-to-destination mappings (keyed by reader_id)
   readerMappings: Record<string, ReaderMapping>;
   // Currently active reader
@@ -26,9 +22,6 @@ export interface SessionState {
 
 export const useSessionStore = defineStore("session", {
   state: (): SessionState => ({
-    destination: "",
-    photographer: "",
-    currentOrder: 1,
     readerMappings: {},
     activeReaderId: null,
   }),
@@ -40,50 +33,37 @@ export const useSessionStore = defineStore("session", {
     },
 
     destinationPath(): string {
-      // Use active reader mapping if available
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        const mapping = this.readerMappings[this.activeReaderId];
-        const orderPadded = String(mapping.currentOrder).padStart(4, "0");
-        return `${mapping.destination}/${orderPadded}`;
-      }
-      // Fallback to legacy mode
-      if (!this.destination) return "";
-      const orderPadded = String(this.currentOrder).padStart(4, "0");
-      return `${this.destination}/${orderPadded}`;
+      if (!this.activeReaderId || !this.readerMappings[this.activeReaderId]) return "";
+      const mapping = this.readerMappings[this.activeReaderId];
+      const orderPadded = String(mapping.currentOrder).padStart(4, "0");
+      return `${mapping.destination}/${orderPadded}`;
     },
 
     isConfigured(): boolean {
-      // Check active reader mapping first
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        const mapping = this.readerMappings[this.activeReaderId];
-        return Boolean(mapping.destination && mapping.photographer);
-      }
-      // Fallback to legacy mode
-      return Boolean(this.destination && this.photographer);
+      if (!this.activeReaderId || !this.readerMappings[this.activeReaderId]) return false;
+      const mapping = this.readerMappings[this.activeReaderId];
+      return Boolean(mapping.destination && mapping.photographer);
     },
 
-    // Get photographer for current context
     currentPhotographer(): string {
       if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
         return this.readerMappings[this.activeReaderId].photographer;
       }
-      return this.photographer;
+      return "";
     },
 
-    // Get destination for current context
     currentDestination(): string {
       if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
         return this.readerMappings[this.activeReaderId].destination;
       }
-      return this.destination;
+      return "";
     },
 
-    // Get order for current context
     currentOrderNumber(): number {
       if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
         return this.readerMappings[this.activeReaderId].currentOrder;
       }
-      return this.currentOrder;
+      return 1;
     },
   },
 
@@ -138,33 +118,9 @@ export const useSessionStore = defineStore("session", {
       return this.readerMappings[readerId] || null;
     },
 
-    incrementOrder() {
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        this.readerMappings[this.activeReaderId].currentOrder++;
-      } else {
-        this.currentOrder++;
-      }
-    },
-
     incrementOrderForReader(readerId: string) {
       if (this.readerMappings[readerId]) {
         this.readerMappings[readerId].currentOrder++;
-      }
-    },
-
-    resetOrder() {
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        this.readerMappings[this.activeReaderId].currentOrder = 1;
-      } else {
-        this.currentOrder = 1;
-      }
-    },
-
-    setDestination(path: string) {
-      // If destination changed, reset order
-      if (path !== this.destination) {
-        this.destination = path;
-        this.currentOrder = 1;
       }
     },
   },

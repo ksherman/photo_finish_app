@@ -7,11 +7,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            commands::list_volumes,
             commands::list_directory,
-            commands::get_file_count,
             commands::copy_files_to_destination,
-            commands::rename_folder,
             commands::discover_card_readers,
         ])
         .run(tauri::generate_context!())
