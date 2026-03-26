@@ -45,7 +45,6 @@ export const useCardReaderStore = defineStore("cardReader", {
 
         this.cardReaders = readers;
 
-        // If we have a selected reader, update it
         if (this.selectedReader) {
           const updated = this.cardReaders.find(
             (r) => r.reader_id === this.selectedReader?.reader_id
@@ -98,7 +97,6 @@ export const useCardReaderStore = defineStore("cardReader", {
       const reader = this.cardReaders.find(r => r.reader_id === readerId);
       if (!reader) throw new Error("Reader not found");
 
-      // Initialize state for this reader
       this.copyStates[readerId] = {
         isCopying: true,
         progress: {
@@ -141,13 +139,13 @@ export const useCardReaderStore = defineStore("cardReader", {
       } catch (error) {
         const msg = String(error);
         if (this.copyStates[readerId]) {
-            this.copyStates[readerId].error = msg;
-            this.copyStates[readerId].lastResult = { count: 0, success: false, durationSeconds: 0 };
+          this.copyStates[readerId].error = msg;
+          this.copyStates[readerId].lastResult = { count: 0, success: false, durationSeconds: 0 };
         }
         throw error;
       } finally {
         if (this.copyStates[readerId]) {
-            this.copyStates[readerId].isCopying = false;
+          this.copyStates[readerId].isCopying = false;
         }
       }
     },
@@ -158,9 +156,9 @@ export const useCardReaderStore = defineStore("cardReader", {
     },
 
     resetCopyState(readerId: string) {
-        if (this.copyStates[readerId]) {
-            delete this.copyStates[readerId];
-        }
+      if (this.copyStates[readerId]) {
+        delete this.copyStates[readerId];
+      }
     }
   },
 });

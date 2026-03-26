@@ -35,26 +35,24 @@ const canCopy = computed(
     props.reader.file_count > 0
 );
 
+const cleanSubPath = computed(() =>
+  customSubPath.value.trim().replace(/^\/+|\/+$/g, "")
+);
+
 const destinationDisplay = computed(() => {
   if (!mapping.value) return "";
-  
-  let display = mapping.value.destination;
-  
-  if (customSubPath.value.trim()) {
-    display += `/${customSubPath.value.trim().replace(/^\/+|\/+$/g, '')}`;
-  }
-  
-  return display;
+  return cleanSubPath.value
+    ? `${mapping.value.destination}/${cleanSubPath.value}`
+    : mapping.value.destination;
 });
 
 async function startCopy() {
   if (!canCopy.value || !mapping.value) return;
 
-  let fullPath = `${mapping.value.destination}`;
+  let fullPath = mapping.value.destination;
 
-  if (customSubPath.value.trim()) {
-    const cleanSubPath = customSubPath.value.trim().replace(/^\/+|\/+$/g, '');
-    fullPath = `${fullPath}/${cleanSubPath}`;
+  if (cleanSubPath.value) {
+    fullPath = `${fullPath}/${cleanSubPath.value}`;
   }
 
   try {
@@ -67,7 +65,6 @@ async function startCopy() {
       mapping.value.fileRenamePrefix
     );
 
-    // Increment order on success (still tracking it in background in case needed later)
     sessionStore.incrementOrderForReader(props.reader.reader_id);
     
   } catch (error) {

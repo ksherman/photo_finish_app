@@ -73,11 +73,7 @@ function onConfigureReader(reader: CardReaderInfo) {
   configuringReader.value = reader;
 }
 
-function onSetupClose() {
-  configuringReader.value = null;
-}
-
-function onSetupSaved() {
+function closeSetupModal() {
   configuringReader.value = null;
 }
 
@@ -154,8 +150,8 @@ async function confirmReset() {
         <div class="w-full max-w-lg bg-white rounded-lg shadow-xl" @click.stop>
           <ReaderSetup
             :reader="configuringReader"
-            @close="onSetupClose"
-            @saved="onSetupSaved"
+            @close="closeSetupModal"
+            @saved="closeSetupModal"
           />
         </div>
       </div>

@@ -46,24 +46,15 @@ export const useSessionStore = defineStore("session", {
     },
 
     currentPhotographer(): string {
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        return this.readerMappings[this.activeReaderId].photographer;
-      }
-      return "";
+      return this.activeMapping?.photographer ?? "";
     },
 
     currentDestination(): string {
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        return this.readerMappings[this.activeReaderId].destination;
-      }
-      return "";
+      return this.activeMapping?.destination ?? "";
     },
 
     currentOrderNumber(): number {
-      if (this.activeReaderId && this.readerMappings[this.activeReaderId]) {
-        return this.readerMappings[this.activeReaderId].currentOrder;
-      }
-      return 1;
+      return this.activeMapping?.currentOrder ?? 1;
     },
   },
 
