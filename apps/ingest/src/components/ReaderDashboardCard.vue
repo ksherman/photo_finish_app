@@ -44,7 +44,8 @@ const canCopy = computed(
     isConfigured.value &&
     !copyState.value.isCopying &&
     props.reader.file_count > 0 &&
-    !subfolderRequired.value
+    !subfolderRequired.value &&
+    (folderEntries.value.length === 0 || Object.values(folderToggles.value).some(Boolean))
 );
 
 const destinationDisplay = computed(() => {
@@ -128,9 +129,9 @@ onMounted(() => {
 });
 
 watch(
-  () => props.reader.volume_name,
-  (newVal) => {
-    if (newVal !== "Offline") {
+  () => [props.reader.volume_name, props.reader.mount_point],
+  ([newVol]) => {
+    if (newVol !== "Offline") {
       loadFolderList();
     }
   }
@@ -221,6 +222,9 @@ watch(
               </span>
             </label>
           </div>
+        </div>
+        <div v-else-if="!isOffline && isConfigured" class="mt-1 text-xs text-gray-400 italic">
+          No folders found on card
         </div>
 
         <!-- Destination Preview -->
