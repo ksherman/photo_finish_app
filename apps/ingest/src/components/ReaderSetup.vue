@@ -21,6 +21,7 @@ const photographer = ref("");
 const cameraBrand = ref("");
 const renamePrefix = ref("");
 const autoRename = ref(false);
+const requireSubfolder = ref(false);
 const fileRenamePrefix = ref("");
 
 const cameraBrands = [
@@ -42,7 +43,7 @@ const previewFolderCount = ref(0);
 // Initialize form data
 onMounted(() => {
   if (!props.reader) return;
-  
+
   const existing = sessionStore.getReaderMapping(props.reader.reader_id);
   if (existing) {
     destination.value = existing.destination;
@@ -50,6 +51,7 @@ onMounted(() => {
     cameraBrand.value = existing.cameraBrand;
     renamePrefix.value = existing.renamePrefix || "";
     autoRename.value = existing.autoRename || false;
+    requireSubfolder.value = existing.requireSubfolder || false;
     fileRenamePrefix.value = existing.fileRenamePrefix || "";
     loadPreview(props.reader, existing.cameraFolderPath);
   } else {
@@ -58,6 +60,7 @@ onMounted(() => {
     cameraBrand.value = "";
     renamePrefix.value = "";
     autoRename.value = false;
+    requireSubfolder.value = false;
     fileRenamePrefix.value = "";
   }
 });
@@ -123,7 +126,8 @@ function save() {
     selectedCameraBrand.value.folderPath,
     renamePrefix.value,
     autoRename.value,
-    fileRenamePrefix.value
+    fileRenamePrefix.value,
+    requireSubfolder.value
   );
 
   emit("saved");
@@ -257,6 +261,22 @@ const isValid = computed(
               Auto-rename folders during copy
             </span>
           </label>
+        </div>
+
+        <div>
+          <label class="flex items-center cursor-pointer">
+            <input
+              v-model="requireSubfolder"
+              type="checkbox"
+              class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <span class="ml-2 text-sm text-gray-700">
+              Require sub-folder before copying
+            </span>
+          </label>
+          <p class="text-xs text-gray-500 mt-1 ml-6">
+            Prevents copying until a sub-folder name is entered. Clears automatically after each copy.
+          </p>
         </div>
       </div>
     </div>
