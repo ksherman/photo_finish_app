@@ -174,7 +174,10 @@ pub async fn copy_files_to_destination(
                 if e.file_name().to_string_lossy().starts_with('.') {
                     return false;
                 }
-                // Filter by included folders if specified
+                // Filter by included folders if specified.
+                // `included_folders` must contain top-level folder names directly under `source`
+                // (e.g. "105MSDCF"). Files sitting directly in `source` with no subfolder are
+                // always included regardless of this filter.
                 if let Some(ref folders) = included_folders {
                     let relative = e.path().strip_prefix(source).unwrap_or(e.path());
                     let mut components = relative.components();
