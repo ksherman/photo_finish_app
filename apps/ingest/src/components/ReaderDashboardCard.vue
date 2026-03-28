@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "@/stores/session";
 import { useCardReaderStore } from "@/stores/cardReader";
-import type { CardReaderInfo } from "@/types";
+import type { CardReaderInfo, DirectoryEntry } from "@/types";
 
 const props = defineProps<{
   reader: CardReaderInfo;
@@ -15,6 +16,8 @@ const emit = defineEmits<{
 const sessionStore = useSessionStore();
 const cardReaderStore = useCardReaderStore();
 const customSubPath = ref("");
+const folderEntries = ref<DirectoryEntry[]>([]);
+const folderToggles = ref<Record<string, boolean>>({});
 
 const mapping = computed(() =>
   sessionStore.getReaderMapping(props.reader.reader_id)
@@ -27,16 +30,21 @@ const copyState = computed(() =>
 const isConfigured = computed(() => !!mapping.value);
 const isOffline = computed(() => props.reader.volume_name === "Offline");
 
+const cleanSubPath = computed(() =>
+  customSubPath.value.trim().replace(/^\/+|\/+$/g, "")
+);
+
+const subfolderRequired = computed(
+  () => !!mapping.value?.requireSubfolder && !cleanSubPath.value
+);
+
 const canCopy = computed(
   () =>
     !isOffline.value &&
     isConfigured.value &&
     !copyState.value.isCopying &&
-    props.reader.file_count > 0
-);
-
-const cleanSubPath = computed(() =>
-  customSubPath.value.trim().replace(/^\/+|\/+$/g, "")
+    props.reader.file_count > 0 &&
+    !subfolderRequired.value
 );
 
 const destinationDisplay = computed(() => {
@@ -46,14 +54,55 @@ const destinationDisplay = computed(() => {
     : mapping.value.destination;
 });
 
+function previewFolderName(name: string, prefix: string): string {
+  const match = name.match(/(\d{2,3})/);
+  if (!match) return name;
+  const lastTwo = match[1].slice(-2);
+  return `${prefix} ${lastTwo}`;
+}
+
+async function loadFolderList() {
+  if (!mapping.value || isOffline.value) return;
+  const basePath = mapping.value.cameraFolderPath
+    ? `${props.reader.mount_point}/${mapping.value.cameraFolderPath}`
+    : props.reader.mount_point;
+  try {
+    const entries = await invoke<DirectoryEntry[]>("list_directory", { path: basePath });
+    folderEntries.value = entries.filter((e) => e.is_directory);
+    const defaults: Record<string, boolean> = {};
+    for (const entry of folderEntries.value) {
+      defaults[entry.name] = entry.file_count > 0;
+    }
+    folderToggles.value = defaults;
+  } catch {
+    folderEntries.value = [];
+    folderToggles.value = {};
+  }
+}
+
+function selectAll() {
+  for (const key of Object.keys(folderToggles.value)) {
+    folderToggles.value[key] = true;
+  }
+}
+
+function resetDefaults() {
+  for (const entry of folderEntries.value) {
+    folderToggles.value[entry.name] = entry.file_count > 0;
+  }
+}
+
 async function startCopy() {
   if (!canCopy.value || !mapping.value) return;
 
   let fullPath = mapping.value.destination;
-
   if (cleanSubPath.value) {
     fullPath = `${fullPath}/${cleanSubPath.value}`;
   }
+
+  const includedFolders = Object.entries(folderToggles.value)
+    .filter(([, included]) => included)
+    .map(([name]) => name);
 
   try {
     await cardReaderStore.copyFiles(
@@ -62,15 +111,30 @@ async function startCopy() {
       mapping.value.cameraFolderPath,
       mapping.value.renamePrefix,
       mapping.value.autoRename,
-      mapping.value.fileRenamePrefix
+      mapping.value.fileRenamePrefix,
+      includedFolders.length > 0 ? includedFolders : undefined
     );
 
+    customSubPath.value = "";
     sessionStore.incrementOrderForReader(props.reader.reader_id);
-    
+    await loadFolderList();
   } catch (error) {
     console.error("Copy failed:", error);
   }
 }
+
+onMounted(() => {
+  loadFolderList();
+});
+
+watch(
+  () => props.reader.volume_name,
+  (newVal) => {
+    if (newVal !== "Offline") {
+      loadFolderList();
+    }
+  }
+);
 </script>
 
 <template>
@@ -91,8 +155,8 @@ async function startCopy() {
           {{ isConfigured ? 'Ready' : 'Setup Needed' }}
         </span>
         <span
-           v-else
-           class="px-2 py-1 text-xs font-medium rounded-full bg-gray-200 text-gray-600"
+          v-else
+          class="px-2 py-1 text-xs font-medium rounded-full bg-gray-200 text-gray-600"
         >
           Offline
         </span>
@@ -100,7 +164,7 @@ async function startCopy() {
     </div>
 
     <!-- Body -->
-    <div class="p-4 flex-1 space-y-3">
+    <div class="p-4 flex-1 space-y-3 overflow-y-auto">
       <div v-if="isConfigured && mapping">
         <div class="grid grid-cols-2 gap-2 text-sm mb-3">
           <div>
@@ -110,19 +174,55 @@ async function startCopy() {
           <div v-if="!isOffline">
             <span class="text-gray-500 block text-xs">Files on Card</span>
             <span class="font-medium text-gray-900">
-                {{ reader.file_count }} 
-                <span class="text-gray-400 font-normal ml-1 text-xs">in {{ reader.folder_count }} folders</span>
+              {{ reader.file_count }}
+              <span class="text-gray-400 font-normal ml-1 text-xs">in {{ reader.folder_count }} folders</span>
             </span>
           </div>
         </div>
-      </div>
 
-      <div v-else class="text-center py-6 text-gray-500 text-sm">
-        <p v-if="!isOffline">Configure this reader to start ingesting photos.</p>
-        <p v-else>Reader is offline but can be configured.</p>
-      </div>
+        <!-- Folder Listing -->
+        <div v-if="!isOffline && folderEntries.length > 0" class="mt-1">
+          <div class="flex items-center justify-between text-xs mb-1">
+            <span class="font-medium text-gray-700">Folders</span>
+            <div class="flex gap-2 text-gray-400">
+              <button @click="selectAll" class="hover:text-blue-600 transition-colors">All</button>
+              <span>·</span>
+              <button @click="resetDefaults" class="hover:text-blue-600 transition-colors">Reset</button>
+            </div>
+          </div>
+          <div class="overflow-y-auto max-h-44 border border-gray-200 rounded-md divide-y divide-gray-100">
+            <label
+              v-for="entry in folderEntries"
+              :key="entry.name"
+              class="flex items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-gray-50 transition-colors"
+              :class="{ 'opacity-50': !folderToggles[entry.name] }"
+            >
+              <input
+                type="checkbox"
+                :checked="folderToggles[entry.name]"
+                @change="folderToggles[entry.name] = ($event.target as HTMLInputElement).checked"
+                class="w-3.5 h-3.5 text-blue-600 border-gray-300 rounded flex-shrink-0"
+                :disabled="copyState.isCopying"
+              />
+              <span class="flex-1 text-xs font-mono truncate text-gray-800 min-w-0">
+                {{ entry.name }}
+                <span
+                  v-if="mapping.autoRename && mapping.renamePrefix"
+                  class="text-gray-400 not-italic"
+                >
+                  → {{ previewFolderName(entry.name, mapping.renamePrefix) }}
+                </span>
+              </span>
+              <span
+                class="text-xs flex-shrink-0 font-medium"
+                :class="entry.file_count === 0 ? 'text-yellow-500' : 'text-gray-400'"
+              >
+                {{ entry.file_count === 0 ? '⚠ 0' : entry.file_count }}
+              </span>
+            </label>
+          </div>
+        </div>
 
-      <div v-if="isConfigured" class="mt-auto space-y-3">
         <!-- Destination Preview -->
         <div class="text-sm bg-gray-50 p-2 rounded border border-gray-100">
           <span class="text-gray-500 block text-xs mb-1">Destination</span>
@@ -132,16 +232,26 @@ async function startCopy() {
         <!-- Sub-Folder Input -->
         <div class="pt-2 border-t border-dashed border-gray-200">
           <label class="block text-xs font-medium text-gray-700 mb-1">
-            Optional Sub-folder
+            Sub-folder
+            <span v-if="mapping.requireSubfolder" class="text-red-500 ml-1">*</span>
           </label>
           <input
-              v-model="customSubPath"
-              type="text"
-              placeholder="e.g. Group 8B/Floor"
-              class="w-full text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              :disabled="copyState.isCopying"
+            v-model="customSubPath"
+            type="text"
+            placeholder="e.g. Group 8B/Floor"
+            class="w-full text-sm border rounded-md px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            :class="subfolderRequired ? 'border-amber-400' : 'border-gray-300'"
+            :disabled="copyState.isCopying"
           />
+          <p v-if="subfolderRequired" class="text-xs text-amber-600 mt-1">
+            Sub-folder required before copying
+          </p>
         </div>
+      </div>
+
+      <div v-else class="text-center py-6 text-gray-500 text-sm">
+        <p v-if="!isOffline">Configure this reader to start ingesting photos.</p>
+        <p v-else>Reader is offline but can be configured.</p>
       </div>
 
       <!-- Progress / Status -->
@@ -188,7 +298,7 @@ async function startCopy() {
       >
         {{ isConfigured ? 'Edit Config' : 'Configure' }}
       </button>
-      
+
       <button
         v-if="isConfigured"
         @click="startCopy"
