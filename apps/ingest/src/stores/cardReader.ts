@@ -92,7 +92,8 @@ export const useCardReaderStore = defineStore("cardReader", {
       cameraFolderPath?: string,
       renamePrefix?: string,
       autoRename?: boolean,
-      fileRenamePrefix?: string
+      fileRenamePrefix?: string,
+      includedFolders?: string[]
     ): Promise<number> {
       const reader = this.cardReaders.find(r => r.reader_id === readerId);
       if (!reader) throw new Error("Reader not found");
@@ -129,7 +130,8 @@ export const useCardReaderStore = defineStore("cardReader", {
           onProgress: channel,
           renamePrefix: renamePrefix || null,
           autoRename: autoRename || false,
-          fileRenamePrefix: fileRenamePrefix || null
+          fileRenamePrefix: fileRenamePrefix || null,
+          includedFolders: includedFolders ?? null
         });
 
         const durationSeconds = (performance.now() - startTime) / 1000;
