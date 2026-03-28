@@ -152,8 +152,8 @@ pub async fn copy_files_to_destination(
     rename_prefix: Option<String>,
     auto_rename: bool,
     file_rename_prefix: Option<String>,
+    included_folders: Option<Vec<String>>,
 ) -> Result<u32, String> {
-    // Run blocking IO on a separate thread
     tauri::async_runtime::spawn_blocking(move || {
         let source = Path::new(&source_path);
         let dest = Path::new(&destination_path);
@@ -174,7 +174,21 @@ pub async fn copy_files_to_destination(
                 if e.file_name().to_string_lossy().starts_with('.') {
                     return false;
                 }
-
+                // Filter by included folders if specified
+                if let Some(ref folders) = included_folders {
+                    let relative = e.path().strip_prefix(source).unwrap_or(e.path());
+                    let mut components = relative.components();
+                    if let Some(first) = components.next() {
+                        if components.next().is_some() {
+                            // File is inside a top-level subfolder — check if it's included
+                            let folder_name = first.as_os_str().to_string_lossy().to_string();
+                            if !folders.contains(&folder_name) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                // JPEG extension check
                 e.path()
                     .extension()
                     .map(|ext| {
@@ -205,24 +219,20 @@ pub async fn copy_files_to_destination(
 
             // Apply file renaming if enabled
             if let Some(prefix) = &file_rename_prefix {
-                 if let Some(file_name) = dest_path_buf.file_name().and_then(|n| n.to_str()) {
-                     // Find last numeric sequence
-                     // We iterate over all matches and take the last one to be safe,
-                     // or just assume the main number is captured.
-                     // A simple approach: find regex matches, take the last match.
-                     if let Some(caps) = re_file.find_iter(file_name).last() {
-                         let number = caps.as_str();
-                         let ext = dest_path_buf.extension().and_then(|e| e.to_str()).unwrap_or("");
-                         
-                         let new_name = if ext.is_empty() {
-                             format!("{}_{}", prefix, number)
-                         } else {
-                             format!("{}_{}.{}", prefix, number, ext)
-                         };
-                         
-                         dest_path_buf.set_file_name(new_name);
-                     }
-                 }
+                if let Some(file_name) = dest_path_buf.file_name().and_then(|n| n.to_str()) {
+                    if let Some(caps) = re_file.find_iter(file_name).last() {
+                        let number = caps.as_str();
+                        let ext = dest_path_buf.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+                        let new_name = if ext.is_empty() {
+                            format!("{}_{}", prefix, number)
+                        } else {
+                            format!("{}_{}.{}", prefix, number, ext)
+                        };
+
+                        dest_path_buf.set_file_name(new_name);
+                    }
+                }
             }
 
             // Create parent directories
@@ -240,7 +250,7 @@ pub async fn copy_files_to_destination(
                 let _ = on_progress.send(CopyProgressEvent {
                     total,
                     copied,
-                    current_file: dest_path_buf // Show new name in progress
+                    current_file: dest_path_buf
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
