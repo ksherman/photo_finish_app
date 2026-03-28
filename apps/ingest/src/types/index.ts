@@ -14,6 +14,7 @@ export interface CopyProgressEvent {
 
 export interface CardReaderInfo {
   reader_id: string;
+  usb_serial?: string;
   display_name: string;
   mount_point: string;
   volume_name: string;

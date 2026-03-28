@@ -7,7 +7,8 @@ use walkdir::WalkDir;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct CardReaderInfo {
-    pub reader_id: String,          // DeviceTreePath - unique identifier
+    pub reader_id: String,          // Stable identity: USB serial, "sdxc-builtin", or DeviceTreePath fallback
+    pub usb_serial: Option<String>, // Raw USB hardware serial (for display/debug)
     pub display_name: String,       // Human-readable name
     pub mount_point: String,        // /Volumes/xxx
     pub volume_name: String,        // Name of mounted volume
@@ -349,12 +350,6 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
                     Err(_) => continue,
                 };
 
-                // Use the disk's DeviceTreePath as the reader identifier
-                let reader_id = disk_info
-                    .device_tree_path
-                    .clone()
-                    .unwrap_or_else(|| disk.device_identifier.clone());
-
                 let volume_name = partition
                     .volume_name
                     .clone()
@@ -367,6 +362,27 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
                     .unwrap_or_else(|| "Unknown".to_string());
 
                 let is_internal = disk_info.internal.unwrap_or(false);
+
+                // Determine stable reader identity.
+                // External USB readers: use hardware serial number (persists across port changes).
+                // Built-in SDXC slot: fixed constant (no USB serial available).
+                // Fallback: DeviceTreePath (port-based, legacy behavior).
+                let usb_serial = if is_internal {
+                    None
+                } else {
+                    crate::platform::get_usb_serial_for_disk(&disk.device_identifier)
+                };
+
+                let reader_id = if is_internal {
+                    "sdxc-builtin".to_string()
+                } else if let Some(ref serial) = usb_serial {
+                    serial.clone()
+                } else {
+                    disk_info
+                        .device_tree_path
+                        .clone()
+                        .unwrap_or_else(|| disk.device_identifier.clone())
+                };
 
                 // Build a human-readable display name
                 let display_name = if is_internal {
@@ -389,6 +405,7 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
 
                 readers.push(CardReaderInfo {
                     reader_id,
+                    usb_serial,
                     display_name,
                     mount_point: mount_point.clone(),
                     volume_name,
