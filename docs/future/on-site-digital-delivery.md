@@ -64,7 +64,7 @@ Originals (5-8MB each, ~60GB/hr) are NOT uploaded during the event. They ship ho
 | Setup | Needs clear sky view (set up outside) | Pocket-sized, works anywhere |
 | Cost | ~$599 hardware + $165/mo | ~$50-80/mo |
 
-**Recommendation:** Starlink as primary, 5G hotspot as backup.
+**Recommendation:** Try 5G hotspot first (lower cost, may already have one). If it can't handle meet-day crowd congestion reliably, upgrade to Starlink as primary with 5G as backup.
 
 At 10 Mbps upload (Starlink low end), you get ~4.5 GB/hr — enough to keep up with the ~3.5 GB/hr of thumbnails + previews. At 20+ Mbps (typical), you have comfortable margin.
 
