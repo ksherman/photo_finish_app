@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from "vue";
 import { useKioskStore } from "./store";
+import BrandMark from "@/components/BrandMark.vue";
 import KioskHomeView from "./views/KioskHomeView.vue";
 import KioskSubjectView from "./views/KioskSubjectView.vue";
 import KioskCartView from "./views/KioskCartView.vue";
@@ -24,15 +25,19 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="store.loading && !store.activeEvent" class="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-    <p class="text-slate-400 text-lg">Connecting to PhotoFinish server...</p>
+  <div v-if="store.loading && !store.activeEvent" class="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6 text-center">
+    <div class="space-y-4">
+      <BrandMark class="w-16 h-16 mx-auto drop-shadow-lg" />
+      <p class="text-slate-400 text-lg">Connecting to PhotoFinish server...</p>
+    </div>
   </div>
 
   <div
     v-else-if="!store.activeEvent"
     class="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6 text-center"
   >
-    <div class="max-w-md space-y-3">
+    <div class="max-w-md space-y-4">
+      <BrandMark class="w-16 h-16 mx-auto drop-shadow-lg" />
       <h1 class="text-3xl font-extrabold">PhotoFinish Kiosk</h1>
       <p class="text-slate-400">Waiting for operator to open an event on the station...</p>
       <button

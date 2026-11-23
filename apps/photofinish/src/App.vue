@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import { useEventStore } from "@/stores/event";
 import ServerStatusBar from "@/components/ServerStatusBar.vue";
+import BrandMark from "@/components/BrandMark.vue";
 import EventsView from "@/views/EventsView.vue";
 import IngestView from "@/views/IngestView.vue";
 import RosterAndFoldersView from "@/views/RosterAndFoldersView.vue";
@@ -29,9 +30,12 @@ onMounted(() => {
   <div class="min-h-screen flex bg-slate-100">
     <!-- Sidebar -->
     <aside class="w-56 bg-slate-900 text-slate-200 flex flex-col flex-shrink-0">
-      <div class="px-5 py-5 border-b border-slate-800">
-        <div class="text-lg font-bold tracking-tight text-white">PhotoFinish</div>
-        <div class="text-xs text-slate-400">Unified Event Station</div>
+      <div class="px-4 py-4 border-b border-slate-800 flex items-center gap-3">
+        <BrandMark class="w-9 h-9 shrink-0 drop-shadow-sm" />
+        <div class="min-w-0">
+          <div class="text-base font-bold tracking-tight text-white leading-tight">PhotoFinish</div>
+          <div class="text-[11px] text-slate-400 truncate">Unified Event Station</div>
+        </div>
       </div>
 
       <nav class="p-3 space-y-1 flex-1">

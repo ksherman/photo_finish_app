@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { formatCents, useKioskStore } from "../store";
+import BrandMark from "@/components/BrandMark.vue";
 import type { KioskSubject } from "../types";
 
 const store = useKioskStore();
@@ -171,7 +172,8 @@ onMounted(() => {
     <!-- Center Search Card -->
     <div class="relative z-10 flex-1 flex items-center justify-center px-4 py-8">
       <div class="w-full max-w-2xl bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl p-6 sm:p-8 space-y-5">
-        <div class="text-center space-y-1">
+        <div class="text-center space-y-1.5">
+          <BrandMark class="w-12 h-12 mx-auto mb-2 drop-shadow-sm" />
           <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
             {{ store.activeEvent?.name || "PhotoFinish" }}
           </h1>
