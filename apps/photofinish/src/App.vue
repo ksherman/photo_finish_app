@@ -32,10 +32,7 @@ onMounted(() => {
     <aside class="w-56 bg-slate-900 text-slate-200 flex flex-col flex-shrink-0">
       <div class="px-4 py-4 border-b border-slate-800 flex items-center gap-3">
         <BrandMark class="w-9 h-9 shrink-0 drop-shadow-sm" />
-        <div class="min-w-0">
-          <div class="text-base font-bold tracking-tight text-white leading-tight">PhotoFinish</div>
-          <div class="text-[11px] text-slate-400 truncate">Unified Event Station</div>
-        </div>
+        <div class="text-lg font-bold tracking-tight text-white truncate">PhotoFinish</div>
       </div>
 
       <nav class="p-3 space-y-1 flex-1">
@@ -53,10 +50,6 @@ onMounted(() => {
           {{ item.label }}
         </button>
       </nav>
-
-      <div class="p-4 border-t border-slate-800 text-xs text-slate-500">
-        Portable SQLite Bundle Architecture
-      </div>
     </aside>
 
     <!-- Main Area -->
