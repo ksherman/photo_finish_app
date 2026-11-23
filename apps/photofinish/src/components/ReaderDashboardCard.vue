@@ -19,6 +19,16 @@ const ingestStore = useIngestStore();
 const customSubPath = ref("");
 const folderEntries = ref<DirectoryEntry[]>([]);
 const folderToggles = ref<Record<string, boolean>>({});
+const isEjecting = ref(false);
+const ejectError = ref<string | null>(null);
+const lastEjected = ref(false);
+const autoEjectAfterIngest = ref(
+  localStorage.getItem("photofinish:autoEjectCard") !== "false"
+);
+
+watch(autoEjectAfterIngest, (val) => {
+  localStorage.setItem("photofinish:autoEjectCard", String(val));
+});
 
 const config = computed(() => ingestStore.getReaderConfig(props.reader.reader_id));
 const copyState = computed(() => ingestStore.getCopyState(props.reader.reader_id));
@@ -82,8 +92,26 @@ function resetDefaults() {
   }
 }
 
+async function handleEject() {
+  if (isOffline.value || !props.reader.disk_id || copyState.value.isCopying || isEjecting.value) {
+    return;
+  }
+  isEjecting.value = true;
+  ejectError.value = null;
+  try {
+    await ingestStore.ejectReader(props.reader.disk_id);
+    lastEjected.value = true;
+  } catch (err) {
+    ejectError.value = String(err);
+  } finally {
+    isEjecting.value = false;
+  }
+}
+
 async function startCopy() {
   if (!canCopy.value || !config.value) return;
+  ejectError.value = null;
+  lastEjected.value = false;
 
   const includedFolders = Object.entries(folderToggles.value)
     .filter(([, included]) => included)
@@ -97,7 +125,13 @@ async function startCopy() {
   );
 
   customSubPath.value = "";
-  await Promise.all([loadFolderList(), eventStore.refreshActiveEvent()]);
+  await eventStore.refreshActiveEvent();
+
+  if (autoEjectAfterIngest.value && props.reader.disk_id) {
+    await handleEject();
+  } else {
+    await loadFolderList();
+  }
 }
 
 onMounted(loadFolderList);
@@ -123,18 +157,29 @@ watch(
         </p>
         <p v-else class="text-xs text-red-500 font-medium mt-0.5">Reader Disconnected</p>
       </div>
-      <span
-        class="px-2 py-0.5 text-xs font-medium rounded-full flex-shrink-0"
-        :class="
-          isOffline
-            ? 'bg-slate-200 text-slate-600'
-            : isConfigured
-              ? 'bg-emerald-100 text-emerald-700'
-              : 'bg-amber-100 text-amber-700'
-        "
-      >
-        {{ isOffline ? "Offline" : isConfigured ? "Ready" : "Setup Needed" }}
-      </span>
+      <div class="flex items-center gap-1.5 flex-shrink-0">
+        <button
+          v-if="!isOffline && reader.disk_id"
+          @click="handleEject"
+          :disabled="copyState.isCopying || isEjecting"
+          title="Safely eject memory card so macOS doesn't complain when removing it"
+          class="px-2 py-0.5 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {{ isEjecting ? "Ejecting..." : "⏏ Eject" }}
+        </button>
+        <span
+          class="px-2 py-0.5 text-xs font-medium rounded-full"
+          :class="
+            isOffline
+              ? 'bg-slate-200 text-slate-600'
+              : isConfigured
+                ? 'bg-emerald-100 text-emerald-700'
+                : 'bg-amber-100 text-amber-700'
+          "
+        >
+          {{ isOffline ? "Offline" : isConfigured ? "Ready" : "Setup Needed" }}
+        </span>
+      </div>
     </div>
 
     <div class="p-4 flex-1 space-y-3 overflow-y-auto">
@@ -209,6 +254,15 @@ watch(
             @keydown.enter.prevent="canCopy && startCopy()"
           />
           <p v-if="subfolderRequired" class="text-xs text-amber-600 mt-1">Sub-folder required before copying</p>
+          <label class="mt-2 flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+            <input
+              v-model="autoEjectAfterIngest"
+              type="checkbox"
+              :disabled="copyState.isCopying"
+              class="rounded"
+            />
+            <span>Auto-eject card after ingest</span>
+          </label>
         </div>
       </template>
 
@@ -238,9 +292,17 @@ watch(
       >
         <span>
           Copied {{ copyState.lastResult.copiedCount }} files ({{ copyState.lastResult.queuedCount }} queued) in
-          {{ copyState.lastResult.durationSeconds.toFixed(1) }}s
+          {{ copyState.lastResult.durationSeconds.toFixed(1) }}s{{ lastEjected ? " · Safely ejected ✓" : "" }}
         </span>
-        <button @click="ingestStore.resetCopyState(reader.reader_id)" class="ml-2 text-emerald-600">&times;</button>
+        <button @click="ingestStore.resetCopyState(reader.reader_id); lastEjected = false" class="ml-2 text-emerald-600">&times;</button>
+      </div>
+
+      <div
+        v-if="ejectError"
+        class="bg-amber-50 p-2 rounded text-xs text-amber-800 border border-amber-200 flex items-center justify-between"
+      >
+        <span class="break-all">Eject failed: {{ ejectError }}</span>
+        <button @click="ejectError = null" class="ml-2 text-amber-700">&times;</button>
       </div>
 
       <div

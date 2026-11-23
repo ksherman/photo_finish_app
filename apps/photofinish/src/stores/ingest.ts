@@ -71,6 +71,11 @@ export const useIngestStore = defineStore("ingest", {
       }
     },
 
+    async ejectReader(diskId: string) {
+      await invoke("eject_usb_drive", { diskId });
+      await this.discoverReaders();
+    },
+
     async ingestFromReader(
       reader: CardReaderInfo,
       config: ReaderConfig,

@@ -11,7 +11,32 @@ const eventStore = useEventStore();
 const ingestStore = useIngestStore();
 
 const configuringReader = ref<CardReaderInfo | null>(null);
+const isEjectingAll = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+const onlineReaders = computed(() =>
+  ingestStore.cardReaders.filter((r) => r.volume_name !== "Offline" && Boolean(r.disk_id))
+);
+
+const anyReaderCopying = computed(() =>
+  onlineReaders.value.some((r) => ingestStore.getCopyState(r.reader_id).isCopying)
+);
+
+async function ejectAllCards() {
+  if (isEjectingAll.value || anyReaderCopying.value) return;
+  isEjectingAll.value = true;
+  try {
+    for (const r of onlineReaders.value) {
+      try {
+        await ingestStore.ejectReader(r.disk_id);
+      } catch (err) {
+        console.error(`Failed to eject ${r.volume_name}:`, err);
+      }
+    }
+  } finally {
+    isEjectingAll.value = false;
+  }
+}
 
 const displayedReaders = computed<CardReaderInfo[]>(() => {
   const readers = [...ingestStore.cardReaders];
@@ -73,6 +98,14 @@ async function confirmResetConfigs() {
         </p>
       </div>
       <div class="flex items-center gap-3">
+        <button
+          v-if="onlineReaders.length > 1"
+          @click="ejectAllCards"
+          :disabled="isEjectingAll || anyReaderCopying"
+          class="px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+        >
+          {{ isEjectingAll ? "Ejecting..." : `⏏ Eject All (${onlineReaders.length})` }}
+        </button>
         <button
           @click="ingestStore.discoverReaders()"
           class="px-3 py-1.5 text-sm rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
