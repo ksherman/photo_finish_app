@@ -180,7 +180,7 @@ pub fn list_subject_groups(state: State<'_, AppState>) -> Result<Vec<String>, St
 }
 
 #[tauri::command]
-pub fn list_subjects(
+pub async fn list_subjects(
     state: State<'_, AppState>,
     query: Option<String>,
     group_label: Option<String>,
@@ -190,9 +190,13 @@ pub fn list_subjects(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .list_subjects(query.as_deref(), group_label.as_deref(), limit.unwrap_or(500))
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .list_subjects(query.as_deref(), group_label.as_deref(), limit.unwrap_or(500))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -237,7 +241,7 @@ pub fn assign_folder_to_subject(
 }
 
 #[tauri::command]
-pub fn list_folders(
+pub async fn list_folders(
     state: State<'_, AppState>,
     parent_filter: Option<String>,
     only_unassigned: bool,
@@ -247,17 +251,21 @@ pub fn list_folders(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .list_folders(
-            parent_filter.as_deref(),
-            only_unassigned,
-            context_parent.as_deref(),
-        )
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .list_folders(
+                parent_filter.as_deref(),
+                only_unassigned,
+                context_parent.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn apply_folder_reassignments(
+pub async fn apply_folder_reassignments(
     state: State<'_, AppState>,
     changes: Vec<FolderReassignmentInput>,
     rename_on_disk: bool,
@@ -266,13 +274,17 @@ pub fn apply_folder_reassignments(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .apply_folder_reassignments(&changes, rename_on_disk)
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .apply_folder_reassignments(&changes, rename_on_disk)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn remove_folder(
+pub async fn remove_folder(
     state: State<'_, AppState>,
     folder_path: String,
     mode: RemoveFolderMode,
@@ -281,9 +293,13 @@ pub fn remove_folder(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .remove_folder(&folder_path, mode)
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .remove_folder(&folder_path, mode)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

@@ -671,6 +671,14 @@ watch(
     }
   }
 );
+watch(
+  () => eventStore.activeEvent?.photoCounts.total,
+  (next, prev) => {
+    if (eventStore.activeEvent && prev !== undefined && next !== prev) {
+      loadFolders();
+    }
+  }
+);
 </script>
 
 <template>
@@ -699,7 +707,7 @@ watch(
               Roster ({{ eventStore.activeEvent.subjectCount.toLocaleString() }})
             </button>
             <button
-              @click="subTab = 'folders'; loadFolders()"
+              @click="subTab = 'folders'"
               class="px-3.5 py-1.5 rounded-md transition-colors flex items-center gap-1.5"
               :class="subTab === 'folders' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
             >
@@ -725,7 +733,7 @@ watch(
       </div>
 
       <!-- ================= ROSTER TAB ================= -->
-      <div v-if="subTab === 'roster'" class="space-y-5">
+      <div v-show="subTab === 'roster'" class="space-y-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-2">
             <input
@@ -891,7 +899,7 @@ watch(
       </div>
 
       <!-- ================= FOLDERS TAB ================= -->
-      <div v-else class="space-y-4">
+      <div v-show="subTab === 'folders'" class="space-y-4">
         <!-- Toolbar: Mode Toggle + Searchable Location Selector -->
         <div class="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
           <div class="flex flex-wrap items-center justify-between gap-3">

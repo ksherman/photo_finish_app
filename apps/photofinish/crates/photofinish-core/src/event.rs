@@ -632,19 +632,29 @@ impl EventBundle {
         context_parent: Option<&str>,
     ) -> Result<ListFoldersResponse> {
         let conn = self.read_conn()?;
+
+        // Preload lightweight subject lookup map (< 1ms for 2,000 subjects) so the
+        // folder GROUP BY stays purely on `idx_photos_folder` with zero JOIN / temp B-tree.
+        let subject_map: HashMap<String, (String, Option<String>)> = {
+            let mut s_stmt = conn.prepare("SELECT id, display_name, number FROM subjects")?;
+            let rows = s_stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?),
+                ))
+            })?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
         let mut stmt = conn.prepare(
-            "SELECT p.folder_path,
-                    COALESCE(p.leaf_folder, p.folder_path),
+            "SELECT folder_path,
                     COUNT(*) AS photo_count,
-                    SUM(CASE WHEN p.subject_id IS NULL THEN 1 ELSE 0 END) AS unassigned_count,
-                    COUNT(DISTINCT p.subject_id) AS distinct_subjects,
-                    MIN(p.subject_id) AS any_subject_id,
-                    MIN(s.display_name) AS any_subject_name,
-                    MIN(s.number) AS any_subject_number
-             FROM photos p
-             LEFT JOIN subjects s ON s.id = p.subject_id
-             WHERE p.folder_path != ''
-             GROUP BY p.folder_path",
+                    SUM(CASE WHEN subject_id IS NULL THEN 1 ELSE 0 END) AS unassigned_count,
+                    MIN(subject_id) AS min_subject_id,
+                    MAX(subject_id) AS max_subject_id
+             FROM photos
+             WHERE folder_path != ''
+             GROUP BY folder_path",
         )?;
 
         struct RawFolderRow {
@@ -653,29 +663,25 @@ impl EventBundle {
             leaf_folder: String,
             photo_count: i64,
             unassigned_count: i64,
-            distinct_subjects: i64,
-            assigned_subject_id: Option<String>,
-            assigned_subject_name: Option<String>,
-            assigned_subject_number: Option<String>,
+            min_subject_id: Option<String>,
+            max_subject_id: Option<String>,
         }
 
         let raw_rows: Vec<RawFolderRow> = stmt
             .query_map([], |r| {
                 let folder_path: String = r.get(0)?;
-                let parent_path = folder_path
-                    .rsplit_once('/')
-                    .map(|(p, _)| p.to_string())
-                    .unwrap_or_default();
+                let (parent_path, leaf_folder) = match folder_path.rsplit_once('/') {
+                    Some((p, l)) => (p.to_string(), l.to_string()),
+                    None => (String::new(), folder_path.clone()),
+                };
                 Ok(RawFolderRow {
                     folder_path,
                     parent_path,
-                    leaf_folder: r.get(1)?,
-                    photo_count: r.get(2)?,
-                    unassigned_count: r.get(3)?,
-                    distinct_subjects: r.get(4)?,
-                    assigned_subject_id: r.get(5)?,
-                    assigned_subject_name: r.get(6)?,
-                    assigned_subject_number: r.get(7)?,
+                    leaf_folder,
+                    photo_count: r.get(1)?,
+                    unassigned_count: r.get(2)?,
+                    min_subject_id: r.get(3)?,
+                    max_subject_id: r.get(4)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -732,9 +738,11 @@ impl EventBundle {
             selected_rows.truncate(200);
         }
 
+        // `+status = 'ready'` forces SQLite to use `idx_photos_folder` instead of
+        // scanning all 150k ready rows via `idx_photos_status`.
         let mut sample_stmt = conn.prepare(
             "SELECT id FROM photos
-             WHERE folder_path = ?1 AND status = 'ready'
+             WHERE folder_path = ?1 AND +status = 'ready'
              ORDER BY filename ASC
              LIMIT 4",
         )?;
@@ -745,15 +753,18 @@ impl EventBundle {
                 .query_map([&row.folder_path], |r| r.get(0))?
                 .filter_map(|r| r.ok())
                 .collect();
-            let is_mixed = row.distinct_subjects > 1
-                || (row.distinct_subjects == 1 && row.unassigned_count > 0);
+            let has_multiple_subjects = row.min_subject_id != row.max_subject_id;
+            let has_any_subject = row.min_subject_id.is_some();
+            let is_mixed = has_multiple_subjects || (has_any_subject && row.unassigned_count > 0);
             let (assigned_subject_id, assigned_subject_name, assigned_subject_number) =
-                if row.distinct_subjects == 1 && !is_mixed {
-                    (
-                        row.assigned_subject_id,
-                        row.assigned_subject_name,
-                        row.assigned_subject_number,
-                    )
+                if has_any_subject && !is_mixed {
+                    let sid = row.min_subject_id;
+                    let (name, num) = sid
+                        .as_ref()
+                        .and_then(|id| subject_map.get(id))
+                        .map(|(n, num)| (Some(n.clone()), num.clone()))
+                        .unwrap_or((None, None));
+                    (sid, name, num)
                 } else {
                     (None, None, None)
                 };
@@ -817,6 +828,7 @@ impl EventBundle {
 
             // 3. Collect 1 reference thumbnail per subject in Same Group and Same Session,
             //    preferring a ready photo OUTSIDE `ctx_parent` (e.g. Floor when fixing Beam!).
+            //    `+status = 'ready'` forces `idx_photos_subject` (~1ms total for 100 subjects!).
             let mut candidate_subject_ids: HashSet<String> =
                 same_group_subject_ids.iter().cloned().collect();
             if let Some(ref sess) = detected_session_group {
@@ -834,15 +846,13 @@ impl EventBundle {
             let ctx_prefix_end = format!("{}0", ctx_parent);
             let mut other_photo_stmt = conn.prepare(
                 "SELECT id FROM photos
-                 WHERE subject_id = ?1 AND status = 'ready'
+                 WHERE subject_id = ?1 AND +status = 'ready'
                    AND NOT (folder_path >= ?2 AND folder_path < ?3)
-                 ORDER BY filename ASC
                  LIMIT 1",
             )?;
             let mut any_photo_stmt = conn.prepare(
                 "SELECT id FROM photos
-                 WHERE subject_id = ?1 AND status = 'ready'
-                 ORDER BY filename ASC
+                 WHERE subject_id = ?1 AND +status = 'ready'
                  LIMIT 1",
             )?;
 
@@ -1372,7 +1382,7 @@ impl EventBundle {
 
         let mut sample_stmt = conn.prepare(
             "SELECT id FROM photos
-             WHERE folder_path = ?1 AND subject_id IS NULL AND status = 'ready'
+             WHERE folder_path = ?1 AND subject_id IS NULL AND +status = 'ready'
              ORDER BY filename ASC
              LIMIT 4",
         )?;
@@ -2026,7 +2036,7 @@ impl EventBundle {
                     filename, status, thumbnail_rel_path, preview_rel_path,
                     width, height, tags_json
              FROM photos
-             WHERE subject_id = ?1 AND status = 'ready'
+             WHERE subject_id = ?1 AND +status = 'ready'
              ORDER BY folder_path ASC, filename ASC",
         )?;
         let rows = stmt.query_map([subject_id], |r| {
