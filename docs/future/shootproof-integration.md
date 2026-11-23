@@ -46,15 +46,15 @@ FULFILLMENT & TWO-SPEED SYNC
 
 ## Five ShootProof Studio API Integration Points
 
-*(Endpoint structure validated against ShootProof's Studio OpenAPI spec.)*
+*(Verified against ShootProof's live OpenAPI 3.0 spec at `https://developer.shootproof.com/oas/studio.json` on 2026-11-23. Auth: OAuth 2.0 `studio` scope, free developer Client ID requested via `support@shootproof.com`.)*
 
 | Step | ShootProof Studio API Endpoint | Role in PhotoFinish |
 | --- | --- | --- |
 | **1. Create Event & Nested Albums** | `POST /brand/{brandId}/event`<br>`POST /brand/{brandId}/event/{eventId}/album` | Creates the meet event and nested `Gym → Athlete` sub-albums (plus optional per-album PINs via `/album/passwords`). |
 | **2. High-Speed S3 Photo Upload** | `POST /brand/{brandId}/event/{eventId}/photo/upload-policy`<br>`PATCH .../album/{eventAlbumId}/photo` | Pivots on-site apparatus folders into athlete-sorted albums and streams JPEGs directly to ShootProof S3 using 20–50 async workers. |
-| **3. Automated Digital Zip Delivery** | `POST /brand/{brandId}/event/{eventId}/album/{eventAlbumId}/zip-bundle` | Generates and emails full-res digital download links for paid athlete packages (eliminates manual zipping). |
-| **4. On-Site Print → Lab Drop-Ship** | `POST /brand/{brandId}/order`<br>`POST /brand/{brandId}/order/{orderId}/lab-shipment` | Pushes on-site kiosk print orders into ShootProof's WHCC / Bay Photo fulfillment queue so prints drop-ship directly to the family. |
-| **5. Per-Athlete QR / Sorting** | `POST /brand/{brandId}/event/{eventId}/qr-code`<br>`GET /brand/{brandId}/event/{eventId}/volume-sort` | Generates native per-athlete QR codes / access links for kiosk receipts and post-meet marketing. |
+| **3. Automated Digital Zip Delivery (Paid On-Site via Square)** | `POST /brand/{brandId}/event/{eventId}/album/{eventAlbumId}/zip-bundle`<br>`POST /brand/{brandId}/event/{eventId}/zip-bundle` | Generates full-res ZIP bundles and emails client download links directly to `email` — supports both **full athlete gallery** (omit `photoIds`) and **single/selected digital photos** (pass `photoIds: [...]`) without exposing the public gallery for free. Idempotent resend if called again. Optional per-album/per-contact `POST .../digital-rule` (`resolution: null`, `downloadAll: true`, 4–8 digit `downloadPin`) for in-gallery phone saving. |
+| **4. On-Site Print → Lab Drop-Ship** | `POST /brand/{brandId}/order`<br>`POST /brand/{brandId}/order/{orderId}/item`<br>`POST /brand/{brandId}/order/{orderId}/lab-shipment` | Creates studio-initiated orders on behalf of customers who paid on-site via Square (passing WHCC/Bay Photo `labCatalogProductId`, `photoId`, and family `shippingAddress`) and submits direct lab drop-shipments. |
+| **5. Client Emails & Contact Sync** | `POST /brand/{brandId}/contact`<br>`POST /brand/{brandId}/contact/{contactId}/email`<br>`POST /brand/{brandId}/event/{eventId}/email` | Syncs buyer contacts and optionally sends custom branded emails containing shareable `zip-bundle` links or gallery invites. |
 
 ---
 

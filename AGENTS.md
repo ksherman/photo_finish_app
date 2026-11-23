@@ -26,7 +26,7 @@
 | `server/AGENTS.md` | Auto-generated Elixir / Phoenix 1.8 / LiveView / Ash usage rules (4,005 lines — consult only if reading/editing `server/`) | Do not load blindly into context |
 | `apps/ingest/` | *(Reference / superseded by `apps/photofinish/`)* Original standalone Tauri 2 card-copying app | ~500 LOC Rust, ~1.1k LOC Vue/TS — refined UX ported into `apps/photofinish/` |
 | `docker-compose.yml` | Local PostgreSQL 18 container (`photofinish_db`) mapped to host port `8200` | Used by `server/` in dev |
-| `docs/` | Core architecture, data model, ingestion, viewer, admin, ordering, API, and Square payment specs | `docs/STATUS.md` is **stale** (dated 2026-02-05, before orders & later ingest commits) |
+| `docs/` | Core architecture, data model, ingestion, viewer, admin, ordering, API, and Square payment specs | `docs/STATUS.md` tracks active `apps/photofinish/` status; `01`–`08` are v1 domain specs |
 | `docs/future/` | Future design docs: **ShootProof Studio API v3 direction** (`shootproof-integration.md`, supersedes custom R2/B2 storefront), older custom online gallery/digital delivery notes, payment provider comparison, photographer QC | `shootproof-integration.md` is the latest target direction |
 | `as-built/` | Legacy Windows software (`Photo Parata`, `KioskViewingStation`, `downloader.exe`) and screenshots | Reference only (untracked) |
 | `test-images/` & `test-xcel/` | Sample meet folder structures, sample `.txt` rosters, example camera DCIM cards, and test outputs | Local test fixtures |
@@ -45,32 +45,36 @@
 
 ## 4. Ground-Truth Implementation Status
 
-*(Supersedes the outdated `docs/STATUS.md`.)*
+*(Mirrors `docs/STATUS.md`, updated 2026-11-23. Test suite: **18/18** `photofinish-core` tests passing; release macOS `.app` 18.7 MiB / `.dmg` 7.0 MiB verified.)*
 
 ### Built & Working — `apps/photofinish/` (Active Unified App)
 - **Core (`crates/photofinish-core`):**
-  - Portable Event Bundle storage (`<event>/_photofinish/photofinish.db` in SQLite WAL mode, relative-only paths) + machine-local `photofinish_app.db` (library bookmarks, USB-serial reader configs, settings).
+  - Portable Event Bundle storage (`<event>/_photofinish/photofinish.db` in SQLite WAL mode, relative-only paths) + machine-local `photofinish_app.db` (library bookmarks, hardware-locked reader configs w/ persistent groups/labels/sort order via `0002_app_reader_layout.sql`, settings).
   - Forward-only embedded SQLite migration runner with automatic online pre-migration backups (`_photofinish/backups/`) and newer-schema protection (`SchemaTooNew`).
   - Sport-agnostic event presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, configurable folder scaffolding, flexible path-to-tags parser, and chronological `ingest_batches` audit trail.
-  - Card reader discovery (macOS `diskutil` + `ioreg` USB hardware serial) and non-blocking copy with folder toggles, folder/file auto-rename, and immediate DB indexing.
-  - Hybrid JPEG thumbnail (320px) + preview (1280px) pipeline: macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (~180 photos/sec on M4 Max) with optimized pure-Rust SIMD fallback, dedicated worker pool, batched SQLite commits (64/txn), and live throughput/ETA telemetry.
-  - Multi-file roster import (`.txt` / `.csv` with automatic group/session label inference from filenames, idempotent upsert, and automatic photo folder matching) + thumbnail-assisted folder-to-subject matching (with optional safe physical folder rename/merge on disk).
-  - Embedded `axum` 0.8 LAN kiosk HTTP server (`rust-embed` Vue 3 SPA + `/api/status`, `/api/kiosk/showcase`, `/api/subjects` w/ numeric ranking, `/api/subjects/{id}` w/ sport-agnostic `section_label` grouping, `/api/products`, `POST /api/orders` w/ offline `square-commerce-v1://` QR payload, `/photos/thumbnail/{id}`, `/photos/preview/{id}`) with LAN IP detection.
+  - Hardware layer (`hardware/macos.rs`): `diskutil` + `ioreg` USB hardware serial discovery (with duplicate-serial `DeviceTreePath` disambiguation, virtual/disk-image exclusion for `.dmg`/`Docker`, and `diskutil eject`), external USB drive discovery (with free-space & `DCIM/` camera-card guard), non-blocking card copy with folder toggles & auto-rename, and streaming high-speed USB order copy.
+  - Hybrid JPEG thumbnail (320px) + preview (1280px) pipeline: macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (~180 photos/sec on M4 Max, verified on 146,830 real photos) with optimized pure-Rust SIMD fallback, dedicated worker pool, batched SQLite commits (64/txn), and live throughput/ETA telemetry.
+  - Multi-file roster import (`.txt` / `.csv` w/ filename-inferred groups, idempotent upsert, automatic photo matching), fast `+status = 'ready'` indexed folder browsing (`list_folders` w/ inferred Same Group, Same Session & cross-apparatus reference thumbnails), atomic two-phase swap-safe batch rotation renaming (`apply_folder_reassignments`), and 3-mode safe folder removal (`remove_folder`: `_photofinish/trash`, permanent delete, DB-only).
+  - Complete Order Desk engine (`orders.rs` + `event.rs`): live stats, payment reconciliation, per-item fulfillment, USB copy plan resolution (`<Subject>/<Apparatus>/<filename>`), per-event product catalog & tax/code updates, and RFC-4180 single/multi-event CSV export.
+  - Embedded `axum` 0.8 LAN kiosk HTTP server (`rust-embed` Vue 3 SPA + `/api/status`, `/api/kiosk/showcase` w/ O(k log N) rowid sampling, `/api/subjects` w/ numeric ranking, `/api/subjects/{id}` w/ sport-agnostic `section_label` grouping, `/api/products`, `POST /api/orders` w/ offline `square-commerce-v1://` QR payload, `/photos/thumbnail/{id}`, `/photos/preview/{id}`) with LAN IP detection.
 - **Kiosk Web SPA (`src/kiosk/` → embedded in `crates/photofinish-core/kiosk-dist/`):**
-  - Touch-first Vue 3 + Tailwind v4 SPA served directly from the embedded Axum server on `:4000` (live disk-reload in debug mode, `rust-embed` in release builds).
-  - Home screen with 3-row ambient photo showcase marquee + 0ms instant client-side search (exact bib # → numeric bib prefix → name ranking + session filter).
+  - Touch-first Vue 3 + Tailwind v4 SPA served directly from the embedded Axum server on `:4000` (live disk-reload in debug mode, `rust-embed` in release builds), including custom favicons, Apple Touch Icons, and `manifest.webmanifest` for iPad standalone Home Screen mode.
+  - Home screen with calm 3-row ambient photo showcase marquee (`280s`/`800s`/`340s`) + 0ms instant client-side search (exact bib # → numeric bib prefix → name ranking + session filter).
   - Dedicated Subject Gallery page (`/subject/:id`) with sport-agnostic apparatus/section tabs & grouped sections (e.g. `All · Beam · Floor`), lazy-loaded thumbnail grid, and full-screen touch-swipe/keyboard lightbox with adjacent preview preloading.
   - v3 Pricing Ladder Cart (`/cart`): Single Digital ($25) with automatic **3-photo tipping-point upgrade prompt** → Full Digital ($85) + Prints (5×7–16×20) + **+$10 Instant Dual USB-C/A** add-on toggle.
-  - Checkout (`/checkout`) with conditional shipping address for direct-to-home print drop-shipping + Order Confirmation (`/order/:orderNumber`) with offline SVG Square POS QR code (`qrcode`).
+  - Checkout (`/checkout`) with conditional shipping address for direct-to-home print drop-shipping + Order Confirmation (`/order/:orderNumber`) with Retina PNG Square POS QR code (`qrcode`) and tax breakdown.
 - **Desktop UI (`src/` + `src-tauri/`):**
-  - Event Bundle Manager (Create w/ presets & scaffolding, Open existing bundle, Gather multiple bundles from a parent NAS/season folder).
-  - Card Ingest dashboard (ported & upgraded from `apps/ingest/`, saving reader configs in SQLite, Enter-to-ingest for USB barcode scanners, ingesting directly into the active event).
-  - Roster & Folder Matching UI (multi-file import preview, searchable roster table, unassigned folder list with live thumbnail previews & smart group filtering).
-  - Always-visible LAN Server Status Bar (active event counts, live processing progress bar + `photos/sec` + ETA, manual safety-net Scan, Start/Stop LAN kiosk server + LAN URL).
+  - Custom PhotoFinish icon branding (`BrandMark.vue`, native `.icns`/`.ico`/PNGs) and `additionalWatchFolders` in `tauri.conf.json` so `pnpm tauri dev` auto-rebuilds on `photofinish-core` edits.
+  - **Events:** Create w/ presets & scaffolding, Open existing bundle, Gather multiple bundles from a parent NAS/season folder.
+  - **Card Ingest:** Wide (`≥340px`) reader cards organized into persistent pointer-drag-and-drop groups (`Gym A: Floor → Beam`) & custom labels locked to hardware `reader_id`, Enter-to-ingest for barcode scanners, per-card `⏏ Eject`, `Auto-eject after ingest`, and `⏏ Eject All`.
+  - **Roster & Folders:** Multi-file import preview, searchable roster table, Unassigned & All Folders rotation manager with Same Group / Same Session / All Roster scoping, cross-apparatus reference thumbnails, click-to-zoom lightbox, staged Preview & Confirm modal, and 3-mode Remove Folder modal.
+  - **Orders & USB:** Auto-refreshing Order Desk (5s poll), KPI cards, Square POS QR modal, payment reconciliation, one-click native USB-C/A fulfillment with live MB/s progress + `DCIM/` guard + auto-eject, live Pricing & Tax catalog editor, and single/multi-event CSV export.
+  - **Status Bar:** Active event counts, live processing progress bar + `photos/sec` + ETA, manual safety-net Scan, Start/Stop LAN kiosk server + LAN URL.
 - **Next to build in `apps/photofinish/`:**
-  1. Desktop Order Desk & native one-click USB-C/A fulfillment (reusing hardware engine) + multi-event consolidated CSV export.
-  2. ShootProof Studio API sync module (nested albums, 20–50 worker S3 upload, `zip-bundle`, WHCC/Bay Photo `lab-shipment`).
-  3. Filesystem watcher (`notify`) for manual Finder drops + Windows reader discovery (`hardware/windows.rs`) when needed.
+  1. ShootProof Studio API sync module (`ShootProof Sync` tab: OAuth 2.0, nested albums, 20–50 worker S3 upload, `zip-bundle` digital delivery for Square-paid orders, WHCC/Bay Photo `lab-shipment`).
+  2. Roster & Folders UX ergonomics polish (from real-meet usage).
+  3. Filesystem watcher (`notify`) for manual Finder drops + Windows hardware layer (`hardware/windows.rs`) when needed.
+  4. Finalize macOS bundle identifier (e.g. `com.photofinish.desktop` instead of `.app` suffix) & optional Apple Developer ID notarization before multi-station rollout.
 
 ### Legacy Reference — `server/` (Unproven Elixir Prototype)
 - **Ash Domains & Resources:**
@@ -100,22 +104,8 @@
   - USB order vertical slice (`/viewer/:event_id/competitor/:id/order` — review → checkout → confirmation with order number)
   - Photo serving controllers (`/viewer/photos/thumbnail/:id`, `/viewer/photos/preview/:id`) using `send_file` with 1-year cache headers.
 
-### Built & Working — `apps/ingest/`
-- Multi-reader dashboard polling every 3s, merging online readers with offline persisted configs.
-- Stable hardware reader identity: USB hardware serial number via `ioreg` (macOS), `"sdxc-builtin"` for internal SD slot, `DeviceTreePath` fallback.
-- Per-reader persisted configuration: destination path, photographer initials, camera brand/folder (`DCIM`, etc.), optional folder auto-rename (`105MSDCF` → `Gymnast 05`), optional file auto-rename (`IMG_1234.jpg` → `Gymnast_1234.jpg`), `requireSubfolder` guard.
-- Top-level folder listing with per-folder include toggles and non-blocking JPEG copy with throttled Tauri Channel progress events.
-- **Limitation:** `discover_card_readers` calls macOS `diskutil` directly and `platform/macos.rs` calls `ioreg` — **does not work on Windows yet**.
-
-### Not Built Yet (Key Gaps for Live Meet Readiness)
-1. **Automatic file watcher** — currently requires clicking "Scan" in Admin (no FS watcher GenServer).
-2. **Ingest ↔ Server integration (`/api/*`)** — Tauri app only copies files to disk; no HTTP API endpoints exist yet.
-3. **Full shopping cart & print ordering** — viewer checkout is currently a single-competitor USB vertical slice (no multi-item cart or per-photo print selection).
-4. **Square POS / payment integration** — QR code (`square-commerce-v1://`) and Terminal API are documented in `docs/08-payments.md` & `docs/future/payment-providers.md`, not yet wired into checkout UI.
-5. **Automated fulfillment tooling** — no automated USB drive copy tool or print-lab batch ZIP/CSV export (admin currently marks items fulfilled manually).
-6. **Viewer scale polish** — no pagination or LiveView streams/PubSub auto-updates on the public viewer gallery yet.
-7. **Deployment / multi-location redistribution** — no production release packaging, auto-start appliance config, or cross-platform installer yet.
-8. **Future cloud features** — access codes, R2/B2 upload queue, watermarking, online gallery (`docs/future/`).
+### Legacy Reference — `apps/ingest/` (Superseded by `apps/photofinish/`)
+- Original standalone Tauri 2 card-copying prototype (macOS `diskutil` + `ioreg` serial discovery, folder toggles, auto-rename). All capabilities plus persistent drag-and-drop groups, card ejection, virtual-disk filtering, and direct SQLite indexing now live in `apps/photofinish/`.
 
 ---
 
@@ -127,6 +117,7 @@
   ├── _photofinish/
   │   ├── photofinish.db      # SQLite (WAL) for this event (config, subjects, ingest_batches, photos, orders)
   │   ├── backups/            # Automatic pre-migration online SQLite snapshots (photofinish_v{N}_{ts}.db)
+  │   ├── trash/              # Reversible folder removals from Roster & Folders (never re-scanned)
   │   ├── thumbnails/         # 320px JPEGs ({photo_id}.jpg) — regenerable cache
   │   └── previews/           # 1280px JPEGs ({photo_id}.jpg) — regenerable cache
   └── <configurable folders>/ # e.g. Gymnastics preset: Gym A / Session 1A / Group 2B / Beam / 1059 Iza Z / IMG_001.jpg
