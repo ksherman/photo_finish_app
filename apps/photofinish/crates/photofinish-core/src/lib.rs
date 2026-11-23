@@ -4,6 +4,7 @@ pub mod hardware;
 pub mod id;
 pub mod imaging;
 pub mod preset;
+pub mod roster;
 pub mod server;
 
 use thiserror::Error;

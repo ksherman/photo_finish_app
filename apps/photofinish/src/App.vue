@@ -4,6 +4,7 @@ import { useEventStore } from "@/stores/event";
 import ServerStatusBar from "@/components/ServerStatusBar.vue";
 import EventsView from "@/views/EventsView.vue";
 import IngestView from "@/views/IngestView.vue";
+import RosterAndFoldersView from "@/views/RosterAndFoldersView.vue";
 import PlaceholderView from "@/views/PlaceholderView.vue";
 
 type Tab = "events" | "ingest" | "roster" | "orders" | "shootproof";
@@ -61,16 +62,7 @@ onMounted(() => {
       <main class="flex-1 overflow-y-auto">
         <EventsView v-if="activeTab === 'events'" @opened="activeTab = 'ingest'" />
         <IngestView v-else-if="activeTab === 'ingest'" />
-        <PlaceholderView
-          v-else-if="activeTab === 'roster'"
-          title="Roster Import & Folder Matching"
-          description="Import participant rosters (.txt / .csv), browse the flexible folder tree, and link unassigned card folders to subjects."
-          :items="[
-            'Sport-agnostic roster import (subjects table with configurable display label)',
-            'Side-by-side folder-to-subject matching with optional physical folder rename',
-            'Ingest batch audit view (chronological card order per photographer/reader)',
-          ]"
-        />
+        <RosterAndFoldersView v-else-if="activeTab === 'roster'" />
         <PlaceholderView
           v-else-if="activeTab === 'orders'"
           title="Orders & Instant USB-C/A Fulfillment"

@@ -15,6 +15,10 @@ use crate::id;
 use crate::preset::{
     extract_subject_number, find_preset, parse_relative_location, scaffold_folders, ScaffoldConfig,
 };
+use crate::roster::{
+    natural_sort_key, AssignFolderResult, FolderParentSummary, ImportRosterResult,
+    RosterEntryInput, UnassignedFolder, UnassignedFoldersResponse,
+};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -448,6 +452,378 @@ impl EventBundle {
             group_label: group_label.map(str::to_string),
             team_name: team_name.map(str::to_string),
             photo_count: 0,
+        })
+    }
+
+    /// Bulk-imports subjects (upserting by `number` when present) and immediately
+    /// auto-matches any previously unassigned photo folders whose leading number
+    /// matches a subject in the roster.
+    pub fn import_subjects(&self, entries: &[RosterEntryInput]) -> Result<ImportRosterResult> {
+        let mut conn = self.write_conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+
+        let mut imported_new = 0usize;
+        let mut updated = 0usize;
+
+        {
+            let mut find_by_num = tx.prepare("SELECT id FROM subjects WHERE number = ?1")?;
+            let mut update_stmt = tx.prepare(
+                "UPDATE subjects
+                 SET first_name = ?2, last_name = ?3, display_name = ?4,
+                     group_label = COALESCE(?5, group_label),
+                     team_name = COALESCE(?6, team_name),
+                     external_id = COALESCE(?7, external_id),
+                     is_active = 1, updated_at = ?8
+                 WHERE id = ?1",
+            )?;
+            let mut insert_stmt = tx.prepare(
+                "INSERT INTO subjects (
+                    id, number, first_name, last_name, display_name,
+                    group_label, team_name, external_id, is_active, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
+            )?;
+
+            for entry in entries {
+                let first = entry.first_name.trim();
+                if first.is_empty() {
+                    continue;
+                }
+                let num = entry.number.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                let last = entry.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                let group = entry.group_label.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                let team = entry.team_name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                let ext = entry.external_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                let display_name = build_display_name(num, first, last);
+
+                let existing_id: Option<String> = match num {
+                    Some(n) => find_by_num.query_row([n], |r| r.get(0)).optional()?,
+                    None => None,
+                };
+
+                if let Some(id) = existing_id {
+                    update_stmt.execute(rusqlite::params![
+                        id,
+                        first,
+                        last,
+                        display_name,
+                        group,
+                        team,
+                        ext,
+                        now,
+                    ])?;
+                    updated += 1;
+                } else {
+                    insert_stmt.execute(rusqlite::params![
+                        id::subject_id(),
+                        num,
+                        first,
+                        last,
+                        display_name,
+                        group,
+                        team,
+                        ext,
+                        now,
+                        now,
+                    ])?;
+                    imported_new += 1;
+                }
+            }
+        }
+
+        let auto_matched_photos = auto_match_unassigned_in_tx(&tx, &now)?;
+        tx.commit()?;
+
+        Ok(ImportRosterResult {
+            imported_new,
+            updated,
+            auto_matched_photos,
+        })
+    }
+
+    /// Scans all unassigned photos (`subject_id IS NULL`) and links any folder whose
+    /// `leaf_folder` begins with a matching subject number (e.g. `"105 Julia B"` -> `"105"`).
+    pub fn auto_match_unassigned_photos(&self) -> Result<usize> {
+        let mut conn = self.write_conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+        let count = auto_match_unassigned_in_tx(&tx, &now)?;
+        tx.commit()?;
+        Ok(count)
+    }
+
+    pub fn list_subject_groups(&self) -> Result<Vec<String>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT group_label FROM subjects
+             WHERE is_active = 1 AND group_label IS NOT NULL AND TRIM(group_label) != ''",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut groups: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+        groups.sort_by_key(|g| natural_sort_key(g));
+        Ok(groups)
+    }
+
+    pub fn list_subjects(
+        &self,
+        query: Option<&str>,
+        group_label: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<SubjectRecord>> {
+        let conn = self.read_conn()?;
+        let trimmed = query.unwrap_or("").trim();
+        let pattern = format!("%{}%", trimmed);
+        let group = group_label.map(str::trim).filter(|s| !s.is_empty());
+
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.number, s.first_name, s.last_name, s.display_name,
+                    s.group_label, s.team_name,
+                    COUNT(CASE WHEN p.status = 'ready' THEN p.id END) AS photo_count
+             FROM subjects s
+             LEFT JOIN photos p ON p.subject_id = s.id
+             WHERE s.is_active = 1
+               AND (?1 IS NULL OR s.group_label = ?1)
+               AND (?2 = ''
+                    OR s.display_name LIKE ?3 COLLATE NOCASE
+                    OR COALESCE(s.number, '') LIKE ?3 COLLATE NOCASE
+                    OR COALESCE(s.team_name, '') LIKE ?3 COLLATE NOCASE)
+             GROUP BY s.id
+             LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![group, trimmed, pattern, limit], |r| {
+            Ok(SubjectRecord {
+                id: r.get(0)?,
+                number: r.get(1)?,
+                first_name: r.get(2)?,
+                last_name: r.get(3)?,
+                display_name: r.get(4)?,
+                group_label: r.get(5)?,
+                team_name: r.get(6)?,
+                photo_count: r.get(7)?,
+            })
+        })?;
+        let mut out: Vec<SubjectRecord> = rows.collect::<std::result::Result<_, _>>()?;
+        out.sort_by_key(|s| natural_sort_key(&s.display_name));
+        Ok(out)
+    }
+
+    /// Lists unassigned folders (`subject_id IS NULL`) grouped by their parent folder path,
+    /// including up to 4 sample photo IDs per folder for visual thumbnail matching.
+    pub fn list_unassigned_folders(
+        &self,
+        parent_filter: Option<&str>,
+    ) -> Result<UnassignedFoldersResponse> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT folder_path, COALESCE(leaf_folder, folder_path), COUNT(*)
+             FROM photos
+             WHERE subject_id IS NULL AND folder_path != ''
+             GROUP BY folder_path, leaf_folder",
+        )?;
+        let raw_folders: Vec<(String, String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+
+        let mut parent_map: BTreeMap<String, (usize, i64)> = BTreeMap::new();
+        let mut total_unassigned_photos = 0i64;
+        let mut filtered = Vec::new();
+
+        let filter_norm = parent_filter.map(str::trim).filter(|s| !s.is_empty());
+
+        for (folder_path, leaf_folder, count) in raw_folders {
+            total_unassigned_photos += count;
+            let parent_path = folder_path
+                .rsplit_once('/')
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_default();
+
+            let entry = parent_map.entry(parent_path.clone()).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += count;
+
+            if filter_norm.map(|f| parent_path == f).unwrap_or(true) {
+                filtered.push((folder_path, parent_path, leaf_folder, count));
+            }
+        }
+
+        let mut parents: Vec<FolderParentSummary> = parent_map
+            .into_iter()
+            .map(|(parent_path, (folder_count, photo_count))| FolderParentSummary {
+                parent_path,
+                folder_count,
+                photo_count,
+            })
+            .collect();
+        parents.sort_by_key(|p| natural_sort_key(&p.parent_path));
+
+        filtered.sort_by_key(|(fp, _, _, _)| natural_sort_key(fp));
+
+        let mut sample_stmt = conn.prepare(
+            "SELECT id FROM photos
+             WHERE folder_path = ?1 AND subject_id IS NULL AND status = 'ready'
+             ORDER BY filename ASC
+             LIMIT 4",
+        )?;
+
+        let mut folders = Vec::with_capacity(filtered.len());
+        for (folder_path, parent_path, leaf_folder, photo_count) in filtered {
+            let sample_photo_ids: Vec<String> = sample_stmt
+                .query_map([&folder_path], |r| r.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            folders.push(UnassignedFolder {
+                folder_path,
+                parent_path,
+                leaf_folder,
+                photo_count,
+                sample_photo_ids,
+            });
+        }
+
+        Ok(UnassignedFoldersResponse {
+            parents,
+            folders,
+            total_unassigned_photos,
+        })
+    }
+
+    /// Assigns all unassigned photos in `folder_path` to `subject_id`.
+    /// When `rename_on_disk` is true, physically renames (or safely merges into)
+    /// the folder named after the subject's `display_name` and updates relative paths in SQLite.
+    pub fn assign_folder_to_subject(
+        &self,
+        folder_path: &str,
+        subject_id: &str,
+        rename_on_disk: bool,
+    ) -> Result<AssignFolderResult> {
+        let mut conn = self.write_conn.lock().unwrap();
+        let display_name: String = conn
+            .query_row(
+                "SELECT display_name FROM subjects WHERE id = ?1",
+                [subject_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("Subject {} not found", subject_id)))?;
+
+        let sanitized_name = sanitize_folder_component(&display_name);
+        let (parent_path, current_leaf) = match folder_path.rsplit_once('/') {
+            Some((p, l)) => (p, l),
+            None => ("", folder_path),
+        };
+
+        let target_folder_path = if parent_path.is_empty() {
+            sanitized_name.clone()
+        } else {
+            format!("{}/{}", parent_path, sanitized_name)
+        };
+
+        let mut did_rename = false;
+        let old_abs = self.root.join(folder_path);
+        let new_abs = self.root.join(&target_folder_path);
+
+        if rename_on_disk && current_leaf != sanitized_name && old_abs.is_dir() {
+            if !new_abs.exists() {
+                fs::rename(&old_abs, &new_abs).map_err(|e| {
+                    Error::Io(format!(
+                        "Failed to rename {} -> {}: {}",
+                        old_abs.display(),
+                        new_abs.display(),
+                        e
+                    ))
+                })?;
+                did_rename = true;
+            } else if new_abs.is_dir() {
+                // Target subject folder already exists (e.g. photographer split one athlete across 2 folders):
+                // safely move individual files into target folder and remove empty source folder.
+                for entry in fs::read_dir(&old_abs)
+                    .map_err(|e| Error::Io(format!("{}: {}", old_abs.display(), e)))?
+                    .flatten()
+                {
+                    let src_file = entry.path();
+                    if src_file.is_file() {
+                        let dst_file = new_abs.join(entry.file_name());
+                        if !dst_file.exists() {
+                            fs::rename(&src_file, &dst_file).map_err(|e| {
+                                Error::Io(format!(
+                                    "Failed to move {} -> {}: {}",
+                                    src_file.display(),
+                                    dst_file.display(),
+                                    e
+                                ))
+                            })?;
+                        }
+                    }
+                }
+                let _ = fs::remove_dir(&old_abs);
+                did_rename = true;
+            }
+        }
+
+        let final_folder_path = if did_rename {
+            target_folder_path
+        } else {
+            folder_path.to_string()
+        };
+        let final_leaf = if did_rename {
+            sanitized_name
+        } else {
+            current_leaf.to_string()
+        };
+
+        let now = Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+
+        let photos_updated = if did_rename {
+            let old_prefix = format!("{}/", folder_path);
+            let new_prefix = format!("{}/", final_folder_path);
+            let rows: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, relative_path FROM photos
+                     WHERE folder_path = ?1 AND subject_id IS NULL",
+                )?;
+                let collected = stmt
+                    .query_map([folder_path], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<std::result::Result<_, _>>()?;
+                collected
+            };
+            let mut upd = tx.prepare(
+                "UPDATE photos
+                 SET subject_id = ?2, relative_path = ?3, folder_path = ?4,
+                     leaf_folder = ?5, updated_at = ?6
+                 WHERE id = ?1",
+            )?;
+            let mut count = 0usize;
+            for (pid, rel) in rows {
+                let new_rel = if let Some(rest) = rel.strip_prefix(&old_prefix) {
+                    format!("{}{}", new_prefix, rest)
+                } else {
+                    rel
+                };
+                count += upd.execute(rusqlite::params![
+                    pid,
+                    subject_id,
+                    new_rel,
+                    final_folder_path,
+                    final_leaf,
+                    now,
+                ])?;
+            }
+            count
+        } else {
+            tx.execute(
+                "UPDATE photos SET subject_id = ?2, updated_at = ?3
+                 WHERE folder_path = ?1 AND subject_id IS NULL",
+                rusqlite::params![folder_path, subject_id, now],
+            )?
+        };
+
+        tx.commit()?;
+
+        Ok(AssignFolderResult {
+            photos_updated,
+            new_folder_path: final_folder_path,
+            renamed_on_disk: did_rename,
         })
     }
 
@@ -917,6 +1293,51 @@ fn build_display_name(number: Option<&str>, first_name: &str, last_name: Option<
     }
 }
 
+fn sanitize_folder_component(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn auto_match_unassigned_in_tx(tx: &rusqlite::Transaction<'_>, now: &str) -> Result<usize> {
+    let subject_lookup = load_subject_number_map(tx)?;
+    if subject_lookup.is_empty() {
+        return Ok(0);
+    }
+
+    let unassigned_folders: Vec<(String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT DISTINCT folder_path, leaf_folder FROM photos
+             WHERE subject_id IS NULL AND leaf_folder IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        rows
+    };
+
+    let mut matched_total = 0usize;
+    let mut upd = tx.prepare(
+        "UPDATE photos SET subject_id = ?2, updated_at = ?3
+         WHERE folder_path = ?1 AND subject_id IS NULL",
+    )?;
+
+    for (folder_path, leaf) in unassigned_folders {
+        if let Some(num) = extract_subject_number(&leaf) {
+            if let Some(subject_id) = subject_lookup.get(&num) {
+                matched_total += upd.execute(rusqlite::params![folder_path, subject_id, now])?;
+            }
+        }
+    }
+
+    Ok(matched_total)
+}
+
 fn slugify(input: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
@@ -1041,5 +1462,94 @@ mod tests {
         assert_eq!(gathered[0].photo_counts.ready, 1);
         assert_eq!(gathered[1].name, "IN Level 4 State");
         assert_eq!(gathered[1].subject_label, "Dancer");
+    }
+
+    #[test]
+    fn imports_roster_auto_matches_and_assigns_folders_with_safe_merge() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("xcel-test");
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "Xcel Test".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("XCL".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: None,
+            scaffold: None,
+        })
+        .unwrap();
+
+        // Create photos on disk BEFORE roster exists (one numbered, two camera-renamed)
+        let p1 = root.join("Gym A/Session 1A/Group 1A/Beam/105 Julia B/IMG_1.jpg");
+        let p2 = root.join("Gym A/Session 1A/Group 1A/Beam/Gymnast 05/IMG_2.jpg");
+        let p3 = root.join("Gym A/Session 1A/Group 1A/Beam/Gymnast 06/IMG_3.jpg");
+        for p in [&p1, &p2, &p3] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, b"fakejpg").unwrap();
+        }
+        let scan = bundle.scan_directory().unwrap();
+        assert_eq!(scan.photos_new, 3);
+
+        // Import roster AFTER scan: 105 Julia B should auto-match immediately!
+        let entries = vec![
+            RosterEntryInput {
+                number: Some("105".into()),
+                first_name: "Julia".into(),
+                last_name: Some("B".into()),
+                group_label: Some("Session 1A".into()),
+                team_name: None,
+                external_id: None,
+            },
+            RosterEntryInput {
+                number: Some("143".into()),
+                first_name: "Avery".into(),
+                last_name: Some("W".into()),
+                group_label: Some("Session 1A".into()),
+                team_name: None,
+                external_id: None,
+            },
+        ];
+        let res = bundle.import_subjects(&entries).unwrap();
+        assert_eq!(res.imported_new, 2);
+        assert_eq!(res.updated, 0);
+        assert_eq!(res.auto_matched_photos, 1);
+
+        // Re-importing should upsert without duplicates
+        let res2 = bundle.import_subjects(&entries).unwrap();
+        assert_eq!(res2.imported_new, 0);
+        assert_eq!(res2.updated, 2);
+
+        // Two folders remain unassigned (Gymnast 05 and Gymnast 06)
+        let unassigned = bundle.list_unassigned_folders(None).unwrap();
+        assert_eq!(unassigned.folders.len(), 2);
+        assert_eq!(unassigned.total_unassigned_photos, 2);
+
+        let avery = bundle
+            .list_subjects(Some("143"), None, 10)
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        // Assign Gymnast 05 -> 143 Avery W (physical rename)
+        let a1 = bundle
+            .assign_folder_to_subject("Gym A/Session 1A/Group 1A/Beam/Gymnast 05", &avery.id, true)
+            .unwrap();
+        assert_eq!(a1.photos_updated, 1);
+        assert!(a1.renamed_on_disk);
+        assert!(root.join("Gym A/Session 1A/Group 1A/Beam/143 Avery W/IMG_2.jpg").is_file());
+
+        // Assign Gymnast 06 -> SAME 143 Avery W (safe merge into existing dir!)
+        let a2 = bundle
+            .assign_folder_to_subject("Gym A/Session 1A/Group 1A/Beam/Gymnast 06", &avery.id, true)
+            .unwrap();
+        assert_eq!(a2.photos_updated, 1);
+        assert!(a2.renamed_on_disk);
+        assert!(root.join("Gym A/Session 1A/Group 1A/Beam/143 Avery W/IMG_3.jpg").is_file());
+
+        let after = bundle.list_unassigned_folders(None).unwrap();
+        assert_eq!(after.folders.len(), 0);
     }
 }

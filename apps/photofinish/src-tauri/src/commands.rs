@@ -7,13 +7,17 @@ use tauri::State;
 
 use photofinish_core::db::{LibraryEventEntry, ReaderConfig};
 use photofinish_core::event::{
-    CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, ScanResult,
+    CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, ScanResult, SubjectRecord,
 };
 use photofinish_core::hardware::{
     self, CardReaderInfo, CopyOptions, CopyProgressEvent, DirectoryEntry,
 };
 use photofinish_core::imaging::ProcessingMetrics;
 use photofinish_core::preset::{self, EventPreset};
+use photofinish_core::roster::{
+    self, AssignFolderResult, ImportRosterResult, ParsedRosterFile, RosterEntryInput,
+    UnassignedFoldersResponse,
+};
 use photofinish_core::server::{detect_lan_ip, EmbeddedServer, LanServerStatus};
 
 use crate::AppState;
@@ -118,6 +122,117 @@ pub async fn scan_active_event(state: State<'_, AppState>) -> Result<ScanResult,
 #[tauri::command]
 pub fn get_processing_metrics(state: State<'_, AppState>) -> ProcessingMetrics {
     state.image_pipeline.metrics()
+}
+
+#[tauri::command]
+pub fn parse_roster_files(paths: Vec<String>) -> Result<Vec<ParsedRosterFile>, String> {
+    let mut parsed = Vec::with_capacity(paths.len());
+    for p in paths {
+        parsed.push(roster::parse_roster_file(&PathBuf::from(p)).map_err(|e| e.to_string())?);
+    }
+    Ok(parsed)
+}
+
+#[tauri::command]
+pub fn import_roster(
+    state: State<'_, AppState>,
+    entries: Vec<RosterEntryInput>,
+) -> Result<ImportRosterResult, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle.import_subjects(&entries).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_subject(
+    state: State<'_, AppState>,
+    number: Option<String>,
+    first_name: String,
+    last_name: Option<String>,
+    group_label: Option<String>,
+    team_name: Option<String>,
+) -> Result<SubjectRecord, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .add_subject(
+            number.as_deref(),
+            &first_name,
+            last_name.as_deref(),
+            group_label.as_deref(),
+            team_name.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_subject_groups(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle.list_subject_groups().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_subjects(
+    state: State<'_, AppState>,
+    query: Option<String>,
+    group_label: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<SubjectRecord>, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .list_subjects(query.as_deref(), group_label.as_deref(), limit.unwrap_or(500))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn auto_match_photos(state: State<'_, AppState>) -> Result<usize, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .auto_match_unassigned_photos()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_unassigned_folders(
+    state: State<'_, AppState>,
+    parent_filter: Option<String>,
+) -> Result<UnassignedFoldersResponse, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .list_unassigned_folders(parent_filter.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn assign_folder_to_subject(
+    state: State<'_, AppState>,
+    folder_path: String,
+    subject_id: String,
+    rename_on_disk: bool,
+) -> Result<AssignFolderResult, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .assign_folder_to_subject(&folder_path, &subject_id, rename_on_disk)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

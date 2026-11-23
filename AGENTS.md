@@ -36,7 +36,7 @@
 ## 3. Tech Stack
 
 - **Active Unified App (`apps/photofinish/`):**
-  - **Core (`crates/photofinish-core`):** Rust (Cargo workspace), `rusqlite` (bundled SQLite 3 in WAL mode + online pre-migration backups), `axum` 0.8 (embedded LAN kiosk server), `image` 0.25 + `fast_image_resize` 5 (pure-Rust SIMD NEON JPEG thumbnail/preview pipeline with EXIF orientation), macOS `diskutil`/`ioreg` USB hardware serial discovery.
+  - **Core (`crates/photofinish-core`):** Rust (Cargo workspace), `rusqlite` (bundled SQLite 3 in WAL mode + online pre-migration backups), `axum` 0.8 (embedded LAN kiosk server), macOS native `ImageIO` + `CoreGraphics` hardware JPEG thumbnail/preview pipeline (~170–180 photos/sec on M4 Max) with optimized pure-Rust SIMD fallback (`image` 0.25 + `fast_image_resize` 5, resize-before-EXIF-orient + 1280→320 cascade), batched SQLite commit flusher, macOS `diskutil`/`ioreg` USB hardware serial discovery.
   - **Desktop (`src-tauri/` + `src/`):** Tauri 2 (`photofinish-desktop`) + Vue 3 (Composition API) / TypeScript / Pinia / Tailwind CSS v4 / pnpm.
   - **Target OS Priority:** Apple Silicon macOS (`arm64` / `aarch64-apple-darwin`) first; OS hardware layer isolated under `hardware/` for later Windows support.
 - **Legacy Reference Prototypes (`server/` & `apps/ingest/`):** Elixir/Phoenix 1.8 + Ash 3 + PostgreSQL 18 + Oban + `vix`, plus standalone Tauri ingest prototype.
@@ -53,18 +53,19 @@
   - Forward-only embedded SQLite migration runner with automatic online pre-migration backups (`_photofinish/backups/`) and newer-schema protection (`SchemaTooNew`).
   - Sport-agnostic event presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, configurable folder scaffolding, flexible path-to-tags parser, and chronological `ingest_batches` audit trail.
   - Card reader discovery (macOS `diskutil` + `ioreg` USB hardware serial) and non-blocking copy with folder toggles, folder/file auto-rename, and immediate DB indexing.
-  - Pure-Rust SIMD JPEG thumbnail (320px) + preview (1280px) generator (`image` 0.25 + `fast_image_resize` 5) with EXIF orientation support and bounded background worker pool.
+  - Hybrid JPEG thumbnail (320px) + preview (1280px) pipeline: macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (~180 photos/sec on M4 Max) with optimized pure-Rust SIMD fallback, dedicated worker pool, batched SQLite commits (64/txn), and live throughput/ETA telemetry.
+  - Multi-file roster import (`.txt` / `.csv` with automatic group/session label inference from filenames, idempotent upsert, and automatic photo folder matching) + thumbnail-assisted folder-to-subject matching (with optional safe physical folder rename/merge on disk).
   - Embedded `axum` 0.8 LAN kiosk HTTP server (`/`, `/api/status`, `/api/subjects`, `/api/subjects/{id}/photos`, `/photos/thumbnail/{id}`, `/photos/preview/{id}`) with LAN IP detection.
 - **Desktop UI (`src/` + `src-tauri/`):**
   - Event Bundle Manager (Create w/ presets & scaffolding, Open existing bundle, Gather multiple bundles from a parent NAS/season folder).
-  - Card Ingest dashboard (ported & upgraded from `apps/ingest/`, saving reader configs in SQLite and ingesting directly into the active event).
-  - Always-visible LAN Server Status Bar (active event counts, manual safety-net Scan, Start/Stop LAN kiosk server + LAN URL).
+  - Card Ingest dashboard (ported & upgraded from `apps/ingest/`, saving reader configs in SQLite, Enter-to-ingest for USB barcode scanners, ingesting directly into the active event).
+  - Roster & Folder Matching UI (multi-file import preview, searchable roster table, unassigned folder list with live thumbnail previews & smart group filtering).
+  - Always-visible LAN Server Status Bar (active event counts, live processing progress bar + `photos/sec` + ETA, manual safety-net Scan, Start/Stop LAN kiosk server + LAN URL).
 - **Next to build in `apps/photofinish/`:**
-  1. Roster import (`.txt`/`.csv`) & folder-to-subject matching UI (with optional folder rename).
-  2. Full touch-first Kiosk Vue SPA (embedded via `rust-embed`) with v3 pricing ladder cart (Single Digital + 3-photo upsell → Full Digital + Prints + +$10 Instant USB) and Square QR / Terminal checkout.
-  3. Order desk & native one-click USB-C/A fulfillment (reusing hardware engine) + multi-event consolidated CSV export.
-  4. ShootProof Studio API sync module (nested albums, 20–50 worker S3 upload, `zip-bundle`, WHCC/Bay Photo `lab-shipment`).
-  5. Filesystem watcher (`notify`) for manual Finder drops + Windows reader discovery (`hardware/windows.rs`) when needed.
+  1. Full touch-first Kiosk Vue SPA (embedded via `rust-embed`) with v3 pricing ladder cart (Single Digital + 3-photo upsell → Full Digital + Prints + +$10 Instant USB) and Square QR / Terminal checkout.
+  2. Order desk & native one-click USB-C/A fulfillment (reusing hardware engine) + multi-event consolidated CSV export.
+  3. ShootProof Studio API sync module (nested albums, 20–50 worker S3 upload, `zip-bundle`, WHCC/Bay Photo `lab-shipment`).
+  4. Filesystem watcher (`notify`) for manual Finder drops + Windows reader discovery (`hardware/windows.rs`) when needed.
 
 ### Legacy Reference — `server/` (Unproven Elixir Prototype)
 - **Ash Domains & Resources:**

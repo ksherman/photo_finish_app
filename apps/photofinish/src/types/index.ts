@@ -135,3 +135,63 @@ export interface ProcessingMetrics {
   avgTotalMs: number;
   avgDbFlushMs: number;
 }
+
+export interface SubjectRecord {
+  id: string;
+  number: string | null;
+  firstName: string;
+  lastName: string | null;
+  displayName: string;
+  groupLabel: string | null;
+  teamName: string | null;
+  photoCount: number;
+}
+
+export interface RosterEntryInput {
+  number: string | null;
+  firstName: string;
+  lastName: string | null;
+  groupLabel: string | null;
+  teamName: string | null;
+  externalId: string | null;
+}
+
+export interface ParsedRosterFile {
+  filePath: string;
+  filename: string;
+  defaultGroupLabel: string | null;
+  entries: RosterEntryInput[];
+  warnings: string[];
+}
+
+export interface ImportRosterResult {
+  importedNew: number;
+  updated: number;
+  autoMatchedPhotos: number;
+}
+
+export interface UnassignedFolder {
+  folderPath: string;
+  parentPath: string;
+  leafFolder: string;
+  photoCount: number;
+  samplePhotoIds: string[];
+}
+
+export interface FolderParentSummary {
+  parentPath: string;
+  folderCount: number;
+  photoCount: number;
+}
+
+export interface UnassignedFoldersResponse {
+  parents: FolderParentSummary[];
+  folders: UnassignedFolder[];
+  totalUnassignedPhotos: number;
+}
+
+export interface AssignFolderResult {
+  photosUpdated: number;
+  newFolderPath: string;
+  renamedOnDisk: boolean;
+}
