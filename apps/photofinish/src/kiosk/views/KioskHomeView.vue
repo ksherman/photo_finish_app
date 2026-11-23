@@ -22,17 +22,29 @@ const groups = computed(() => {
 const showcaseRows = computed(() => {
   const ids = store.showcasePhotoIds;
   if (ids.length === 0) return { row1: [] as string[], row2: [] as string[], row3: [] as string[] };
-  const q1 = Math.max(1, Math.floor(ids.length / 4));
-  const q3 = Math.max(1, Math.floor(ids.length / 4));
-  const q2 = Math.max(1, ids.length - q1 - q3);
-  const r1 = ids.slice(0, q1);
-  const r2 = ids.slice(q1, q1 + q2);
-  const r3 = ids.slice(q1 + q2);
-  const repeat = (arr: string[]) => (arr.length ? [...arr, ...arr, ...arr, ...arr] : []);
+  // Distribute across 3 distinct rows and tile each half-track to at least 12 photos
+  // so translating 0% <-> -50% always fills ultra-wide displays seamlessly.
+  const r1: string[] = [];
+  const r2: string[] = [];
+  const r3: string[] = [];
+  ids.forEach((id, i) => {
+    if (i % 3 === 0) r1.push(id);
+    else if (i % 3 === 1) r2.push(id);
+    else r3.push(id);
+  });
+  const buildTrack = (src: string[]) => {
+    const base = src.length > 0 ? src : ids;
+    const half: string[] = [];
+    while (half.length < 12) {
+      half.push(...base);
+    }
+    // Exactly 2 identical halves so translateX(0) <-> translateX(-50%) loops seamlessly
+    return [...half, ...half];
+  };
   return {
-    row1: repeat(r1),
-    row2: repeat(r2.length ? r2 : r1),
-    row3: repeat(r3.length ? r3 : r1),
+    row1: buildTrack(r1),
+    row2: buildTrack(r2),
+    row3: buildTrack(r3),
   };
 });
 
@@ -91,9 +103,12 @@ const subjectLabelLower = computed(() =>
 );
 
 onMounted(() => {
-  // Refresh roster counts in background whenever returning to Home
+  // Refresh roster counts & showcase in background whenever returning to Home
   if (store.activeEvent) {
     store.loadRoster();
+    if (store.showcasePhotoIds.length === 0) {
+      store.loadShowcase();
+    }
   }
 });
 </script>
@@ -103,35 +118,38 @@ onMounted(() => {
     <!-- Ambient 3-Row Photo Showcase Marquee -->
     <div
       v-if="showcaseRows.row1.length > 0"
-      class="absolute inset-0 flex flex-col gap-1.5 opacity-45 pointer-events-none"
+      class="absolute inset-0 flex flex-col gap-1.5 opacity-45 pointer-events-none overflow-hidden"
     >
-      <div class="h-[22vh] overflow-hidden">
+      <div class="h-[22vh] w-full overflow-hidden">
         <div class="kiosk-marquee-left flex gap-1.5 h-full w-max">
           <img
             v-for="(pid, idx) in showcaseRows.row1"
             :key="`r1-${idx}`"
             :src="`/photos/thumbnail/${pid}`"
-            class="h-full w-auto object-cover"
+            decoding="async"
+            class="h-full aspect-[2/3] shrink-0 object-cover bg-slate-800"
           />
         </div>
       </div>
-      <div class="h-[56vh] overflow-hidden">
+      <div class="h-[56vh] w-full overflow-hidden">
         <div class="kiosk-marquee-right flex gap-1.5 h-full w-max">
           <img
             v-for="(pid, idx) in showcaseRows.row2"
             :key="`r2-${idx}`"
             :src="`/photos/preview/${pid}`"
-            class="h-full w-auto object-cover"
+            decoding="async"
+            class="h-full aspect-[2/3] shrink-0 object-cover bg-slate-800"
           />
         </div>
       </div>
-      <div class="h-[22vh] overflow-hidden">
+      <div class="h-[22vh] w-full overflow-hidden">
         <div class="kiosk-marquee-left-slow flex gap-1.5 h-full w-max">
           <img
             v-for="(pid, idx) in showcaseRows.row3"
             :key="`r3-${idx}`"
             :src="`/photos/thumbnail/${pid}`"
-            class="h-full w-auto object-cover"
+            decoding="async"
+            class="h-full aspect-[2/3] shrink-0 object-cover bg-slate-800"
           />
         </div>
       </div>
@@ -255,28 +273,31 @@ onMounted(() => {
 
 <style scoped>
 @keyframes kiosk-left {
-  from {
-    transform: translateX(0);
+  0% {
+    transform: translate3d(0, 0, 0);
   }
-  to {
-    transform: translateX(-50%);
+  100% {
+    transform: translate3d(-50%, 0, 0);
   }
 }
 @keyframes kiosk-right {
-  from {
-    transform: translateX(-50%);
+  0% {
+    transform: translate3d(-50%, 0, 0);
   }
-  to {
-    transform: translateX(0);
+  100% {
+    transform: translate3d(0, 0, 0);
   }
 }
 .kiosk-marquee-left {
-  animation: kiosk-left 180s linear infinite;
+  will-change: transform;
+  animation: kiosk-left 55s linear infinite;
 }
 .kiosk-marquee-right {
-  animation: kiosk-right 260s linear infinite;
+  will-change: transform;
+  animation: kiosk-right 75s linear infinite;
 }
 .kiosk-marquee-left-slow {
-  animation: kiosk-left 220s linear infinite;
+  will-change: transform;
+  animation: kiosk-left 65s linear infinite;
 }
 </style>

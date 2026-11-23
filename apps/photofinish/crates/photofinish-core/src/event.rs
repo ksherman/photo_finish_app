@@ -1239,16 +1239,51 @@ impl EventBundle {
         Ok(row)
     }
 
-    /// Returns a fast random sample of ready photo IDs for the kiosk home marquee.
+    /// Returns a fast random sample of ready photo IDs for the kiosk home marquee
+    /// using O(k log N) rowid probes instead of sorting 150K+ rows with `ORDER BY RANDOM()`.
     pub fn list_showcase_photo_ids(&self, count: i64) -> Result<Vec<String>> {
+        use rand::Rng;
+
         let conn = self.read_conn()?;
+        let target = count.clamp(1, 60) as usize;
+        let max_rowid: i64 = conn
+            .query_row("SELECT COALESCE(MAX(rowid), 0) FROM photos", [], |r| r.get(0))
+            .unwrap_or(0);
+        if max_rowid <= 0 {
+            return Ok(Vec::new());
+        }
+
+        // Small table: direct query is instant
+        if max_rowid <= 500 {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM photos WHERE status = 'ready' ORDER BY RANDOM() LIMIT ?1",
+            )?;
+            let ids: Vec<String> = stmt
+                .query_map([target as i64], |r| r.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            return Ok(ids);
+        }
+
+        // Large table (10K–200K+ photos): probe random rowids via primary B-tree (<1ms!)
+        let mut rng = rand::thread_rng();
         let mut stmt = conn.prepare(
-            "SELECT id FROM photos WHERE status = 'ready' ORDER BY RANDOM() LIMIT ?1",
+            "SELECT id FROM photos WHERE rowid >= ?1 AND status = 'ready' LIMIT 1",
         )?;
-        let ids: Vec<String> = stmt
-            .query_map([count.clamp(1, 60)], |r| r.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let mut seen = HashSet::with_capacity(target);
+        let mut ids = Vec::with_capacity(target);
+        let max_attempts = target * 4;
+        for _ in 0..max_attempts {
+            if ids.len() >= target {
+                break;
+            }
+            let probe = rng.gen_range(1..=max_rowid);
+            if let Ok(Some(id)) = stmt.query_row([probe], |r| r.get::<_, String>(0)).optional() {
+                if seen.insert(id.clone()) {
+                    ids.push(id);
+                }
+            }
+        }
         Ok(ids)
     }
 
