@@ -11,8 +11,12 @@ use crate::db::{
     backups_dir, bundle_dir, event_db_path, is_event_bundle, open_ro_connection,
     open_rw_connection, previews_dir, run_migrations, thumbnails_dir, EVENT_MIGRATIONS,
 };
+use crate::hardware::UsbCopyItem;
 use crate::id;
-use crate::orders::{self, CreateOrderRequest, OrderRecord, ProductRecord};
+use crate::orders::{
+    self, CreateOrderRequest, EventOrderSettingsInput, OrderListResponse, OrderRecord,
+    ProductRecord, ProductUpsertInput, UpdatePaymentRequest, UsbOrderPlan, UsbSubjectBreakdown,
+};
 use crate::preset::{
     extract_subject_number, find_preset, parse_relative_location, scaffold_folders, ScaffoldConfig,
 };
@@ -2020,6 +2024,282 @@ impl EventBundle {
         orders::get_order_by_number(&conn, order_number)
     }
 
+    pub fn list_orders(&self) -> Result<OrderListResponse> {
+        let conn = self.read_conn()?;
+        orders::list_orders(&conn)
+    }
+
+    pub fn update_order_payment(&self, req: &UpdatePaymentRequest) -> Result<OrderRecord> {
+        let mut conn = self.write_conn.lock().unwrap();
+        orders::update_order_payment(&mut conn, req)
+    }
+
+    pub fn update_order_notes(&self, order_id: &str, notes: Option<&str>) -> Result<OrderRecord> {
+        let mut conn = self.write_conn.lock().unwrap();
+        orders::update_order_notes(&mut conn, order_id, notes)
+    }
+
+    pub fn update_order_item_fulfillment(
+        &self,
+        order_id: &str,
+        item_id: &str,
+        fulfillment_status: &str,
+    ) -> Result<OrderRecord> {
+        let mut conn = self.write_conn.lock().unwrap();
+        orders::update_order_item_fulfillment(&mut conn, order_id, item_id, fulfillment_status)
+    }
+
+    pub fn mark_usb_items_fulfilled(&self, order_id: &str) -> Result<usize> {
+        let mut conn = self.write_conn.lock().unwrap();
+        orders::mark_usb_items_fulfilled(&mut conn, order_id)
+    }
+
+    pub fn upsert_product(&self, input: &ProductUpsertInput) -> Result<ProductRecord> {
+        let mut conn = self.write_conn.lock().unwrap();
+        orders::upsert_product(&mut conn, input)
+    }
+
+    pub fn update_event_order_settings(&self, input: &EventOrderSettingsInput) -> Result<EventSummary> {
+        {
+            let mut conn = self.write_conn.lock().unwrap();
+            orders::update_event_order_settings(&mut conn, input)?;
+        }
+        self.summary()
+    }
+
+    /// Resolves all full-resolution original JPEG files that belong on a USB drive for `order_id`,
+    /// organized cleanly as `<Subject Display Name>/<Section (e.g. Beam, Floor)>/<filename>`.
+    pub fn resolve_order_usb_copy_plan(
+        &self,
+        order_id: &str,
+    ) -> Result<(UsbOrderPlan, Vec<UsbCopyItem>)> {
+        let conn = self.read_conn()?;
+        let order = orders::get_order_by_id(&conn, order_id)?
+            .ok_or_else(|| Error::NotFound(format!("Order '{}' not found", order_id)))?;
+
+        let folder_levels = load_folder_levels(&conn).unwrap_or_default();
+        let section_level_key: Option<String> = if folder_levels.len() >= 2 {
+            Some(folder_levels[folder_levels.len() - 2].clone())
+        } else {
+            folder_levels.first().cloned()
+        };
+
+        // Determine which subjects get ALL photos vs individual selected photos
+        let mut full_subject_ids: Vec<String> = Vec::new();
+        let mut single_photo_ids: Vec<(String, Option<String>)> = Vec::new();
+        let mut usb_fallback_subject_ids: Vec<String> = Vec::new();
+
+        for item in &order.items {
+            match item.product_type.as_str() {
+                "full_digital" => {
+                    if let Some(ref sid) = item.subject_id {
+                        if !full_subject_ids.contains(sid) {
+                            full_subject_ids.push(sid.clone());
+                        }
+                    }
+                }
+                "single_digital" => {
+                    if let Some(ref pid) = item.photo_id {
+                        single_photo_ids.push((pid.clone(), item.subject_display_name.clone()));
+                    }
+                }
+                "usb_addon" => {
+                    if let Some(ref sid) = item.subject_id {
+                        if !usb_fallback_subject_ids.contains(sid) {
+                            usb_fallback_subject_ids.push(sid.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // If an order has a usb_addon for a subject without an explicit full_digital or single_digital
+        // item for that subject, include all photos for that subject as well.
+        let single_subject_set: HashSet<String> = order
+            .items
+            .iter()
+            .filter(|i| i.product_type == "single_digital")
+            .filter_map(|i| i.subject_id.clone())
+            .collect();
+        for sid in usb_fallback_subject_ids {
+            if !full_subject_ids.contains(&sid) && !single_subject_set.contains(&sid) {
+                full_subject_ids.push(sid);
+            }
+        }
+
+        let mut seen_photo_ids: HashSet<String> = HashSet::new();
+        let mut copy_items: Vec<UsbCopyItem> = Vec::new();
+        let mut subject_groups: BTreeMap<String, (usize, u64, BTreeMap<String, usize>)> =
+            BTreeMap::new();
+        let mut missing_files = 0usize;
+
+        let extract_section = |folder_path: &str, tags_json: &str| -> String {
+            let tags: BTreeMap<String, String> =
+                serde_json::from_str(tags_json).unwrap_or_default();
+            section_level_key
+                .as_ref()
+                .and_then(|k| tags.get(k))
+                .cloned()
+                .or_else(|| {
+                    folder_path
+                        .rsplit_once('/')
+                        .and_then(|(parent, _)| parent.rsplit('/').next())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "Photos".to_string())
+        };
+
+        let mut photo_by_subject_stmt = conn.prepare(
+            "SELECT p.id, p.relative_path, p.folder_path, p.filename, p.tags_json,
+                    COALESCE(p.file_size_bytes, 0), COALESCE(s.display_name, 'Photos')
+             FROM photos p
+             LEFT JOIN subjects s ON s.id = p.subject_id
+             WHERE p.subject_id = ?1 AND +p.status = 'ready'
+             ORDER BY p.folder_path ASC, p.filename ASC",
+        )?;
+
+        for sid in &full_subject_ids {
+            let rows = photo_by_subject_stmt.query_map([sid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            })?;
+            for row in rows {
+                let (pid, rel_path, folder_path, filename, tags_json, db_size, subject_name) = row?;
+                if !seen_photo_ids.insert(pid) {
+                    continue;
+                }
+                let src_abs = self.root.join(&rel_path);
+                let size_bytes = match fs::metadata(&src_abs) {
+                    Ok(m) if m.is_file() => m.len(),
+                    _ => {
+                        missing_files += 1;
+                        continue;
+                    }
+                };
+                let effective_size = if size_bytes > 0 {
+                    size_bytes
+                } else {
+                    db_size.max(0) as u64
+                };
+                let section = extract_section(&folder_path, &tags_json);
+                let dest_rel = format!(
+                    "{}/{}/{}",
+                    sanitize_folder_component(&subject_name),
+                    sanitize_folder_component(&section),
+                    sanitize_folder_component(&filename)
+                );
+                copy_items.push(UsbCopyItem {
+                    source_abs_path: src_abs,
+                    dest_rel_path: dest_rel,
+                    file_size_bytes: effective_size,
+                });
+                let entry = subject_groups
+                    .entry(subject_name)
+                    .or_insert_with(|| (0, 0, BTreeMap::new()));
+                entry.0 += 1;
+                entry.1 += effective_size;
+                *entry.2.entry(section).or_insert(0) += 1;
+            }
+        }
+
+        let mut single_stmt = conn.prepare(
+            "SELECT p.id, p.relative_path, p.folder_path, p.filename, p.tags_json,
+                    COALESCE(p.file_size_bytes, 0), s.display_name
+             FROM photos p
+             LEFT JOIN subjects s ON s.id = p.subject_id
+             WHERE p.id = ?1",
+        )?;
+
+        for (pid, fallback_subject) in single_photo_ids {
+            if !seen_photo_ids.insert(pid.clone()) {
+                continue;
+            }
+            let row = single_stmt
+                .query_row([&pid], |r| {
+                    Ok((
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, i64>(5)?,
+                        r.get::<_, Option<String>>(6)?,
+                    ))
+                })
+                .optional()?;
+            let Some((rel_path, folder_path, filename, tags_json, db_size, db_subject)) = row else {
+                missing_files += 1;
+                continue;
+            };
+            let src_abs = self.root.join(&rel_path);
+            let size_bytes = match fs::metadata(&src_abs) {
+                Ok(m) if m.is_file() => m.len(),
+                _ => {
+                    missing_files += 1;
+                    continue;
+                }
+            };
+            let effective_size = if size_bytes > 0 {
+                size_bytes
+            } else {
+                db_size.max(0) as u64
+            };
+            let subject_name = db_subject
+                .or(fallback_subject)
+                .unwrap_or_else(|| "Selected Photos".to_string());
+            let section = extract_section(&folder_path, &tags_json);
+            let dest_rel = format!(
+                "{}/{}/{}",
+                sanitize_folder_component(&subject_name),
+                sanitize_folder_component(&section),
+                sanitize_folder_component(&filename)
+            );
+            copy_items.push(UsbCopyItem {
+                source_abs_path: src_abs,
+                dest_rel_path: dest_rel,
+                file_size_bytes: effective_size,
+            });
+            let entry = subject_groups
+                .entry(subject_name)
+                .or_insert_with(|| (0, 0, BTreeMap::new()));
+            entry.0 += 1;
+            entry.1 += effective_size;
+            *entry.2.entry(section).or_insert(0) += 1;
+        }
+
+        let total_photos = copy_items.len();
+        let total_bytes: u64 = copy_items.iter().map(|i| i.file_size_bytes).sum();
+        let subjects: Vec<UsbSubjectBreakdown> = subject_groups
+            .into_iter()
+            .map(|(subject_label, (photo_count, total_bytes, sec_map))| UsbSubjectBreakdown {
+                subject_label,
+                photo_count,
+                total_bytes,
+                sections: sec_map.into_iter().collect(),
+            })
+            .collect();
+
+        Ok((
+            UsbOrderPlan {
+                order_id: order.id,
+                order_number: order.order_number,
+                total_photos,
+                total_bytes,
+                subjects,
+                missing_files,
+            },
+            copy_items,
+        ))
+    }
+
     pub fn list_subject_photos(&self, subject_id: &str) -> Result<Vec<PhotoRecord>> {
         let conn = self.read_conn()?;
         let folder_levels = load_folder_levels(&conn).unwrap_or_default();
@@ -2675,5 +2955,155 @@ mod tests {
         let rescan = bundle.scan_directory().unwrap();
         assert_eq!(rescan.photos_new, 1);
         assert_eq!(rescan.photos_found, 1);
+    }
+
+    #[test]
+    fn order_desk_payment_usb_fulfillment_pricing_and_csv_export() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("orders-meet");
+        let usb_dir = dir.path().join("mock-usb-drive");
+
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "State Finals".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("STF".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: Some(850),
+            scaffold: None,
+        })
+        .unwrap();
+
+        let sub = bundle
+            .add_subject(Some("105"), "Julia", Some("B"), Some("Session 1A"), None)
+            .unwrap();
+
+        let p_beam = root.join("Gym A/Session 1A/Group 1A/Beam/105 Julia B/IMG_1001.jpg");
+        let p_floor = root.join("Gym A/Session 1A/Group 1A/Floor/105 Julia B/IMG_2002.jpg");
+        for (p, data) in [(&p_beam, b"beam-orig".as_slice()), (&p_floor, b"floor-orig".as_slice())] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, data).unwrap();
+        }
+        let scan = bundle.scan_directory().unwrap();
+        for job in &scan.pending_jobs {
+            bundle
+                .mark_photo_ready(
+                    &job.photo_id,
+                    &format!("_photofinish/thumbnails/{}.jpg", job.photo_id),
+                    &format!("_photofinish/previews/{}.jpg", job.photo_id),
+                    1200,
+                    800,
+                )
+                .unwrap();
+        }
+
+        // Update pricing + settings
+        let products = bundle.list_products(true).unwrap();
+        let full_prod = products.iter().find(|p| p.product_type == "full_digital").unwrap();
+        let usb_prod = products.iter().find(|p| p.product_type == "usb_addon").unwrap();
+
+        bundle
+            .upsert_product(&ProductUpsertInput {
+                id: Some(full_prod.id.clone()),
+                product_type: full_prod.product_type.clone(),
+                name: full_prod.name.clone(),
+                size: None,
+                price_cents: 9000,
+                is_available: true,
+                display_order: full_prod.display_order,
+            })
+            .unwrap();
+        let updated_summary = bundle
+            .update_event_order_settings(&EventOrderSettingsInput {
+                order_code: "FIN".into(),
+                station_code: "B".into(),
+                tax_rate_basis_points: 700,
+            })
+            .unwrap();
+        assert_eq!(updated_summary.order_code, "FIN");
+        assert_eq!(updated_summary.tax_rate_basis_points, 700);
+
+        // Place order with Full Digital ($90) + USB Add-On ($10) = $100 subtotal + $7 tax = $107
+        let order = bundle
+            .place_order(CreateOrderRequest {
+                customer_name: "Joe Franklin".into(),
+                customer_email: Some("joe@example.com".into()),
+                customer_phone: Some("555-1234".into()),
+                shipping_address: None,
+                notes: Some("Pick up at desk".into()),
+                items: vec![
+                    crate::orders::CreateOrderItemInput {
+                        product_id: full_prod.id.clone(),
+                        subject_id: Some(sub.id.clone()),
+                        photo_id: None,
+                        quantity: 1,
+                    },
+                    crate::orders::CreateOrderItemInput {
+                        product_id: usb_prod.id.clone(),
+                        subject_id: Some(sub.id.clone()),
+                        photo_id: None,
+                        quantity: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(order.order_number, "FIN-B0001");
+        assert_eq!(order.total_cents, 10700);
+
+        // Stats before payment
+        let before = bundle.list_orders().unwrap();
+        assert_eq!(before.stats.pending_payment_count, 1);
+        assert_eq!(before.stats.pending_usb_count, 1);
+        assert_eq!(before.stats.gross_paid_cents, 0);
+
+        // Mark Paid
+        let paid = bundle
+            .update_order_payment(&UpdatePaymentRequest {
+                order_id: order.id.clone(),
+                payment_status: "paid".into(),
+                payment_method: Some("square_qr".into()),
+                payment_reference: Some("SQ-9876".into()),
+                notes: None,
+            })
+            .unwrap();
+        assert_eq!(paid.payment_status, "paid");
+        assert!(paid.paid_at.is_some());
+
+        // Resolve USB plan & copy files to mock USB drive
+        let (plan, copy_items) = bundle.resolve_order_usb_copy_plan(&order.id).unwrap();
+        assert_eq!(plan.total_photos, 2);
+        assert_eq!(plan.missing_files, 0);
+        assert_eq!(plan.subjects.len(), 1);
+        assert_eq!(plan.subjects[0].subject_label, "105 Julia B");
+
+        let (copied_count, _, _) =
+            crate::hardware::copy_order_files_to_usb(&usb_dir, &copy_items, |_| {}).unwrap();
+        assert_eq!(copied_count, 2);
+        assert_eq!(
+            fs::read(usb_dir.join("105 Julia B/Beam/IMG_1001.jpg")).unwrap(),
+            b"beam-orig"
+        );
+        assert_eq!(
+            fs::read(usb_dir.join("105 Julia B/Floor/IMG_2002.jpg")).unwrap(),
+            b"floor-orig"
+        );
+
+        let marked = bundle.mark_usb_items_fulfilled(&order.id).unwrap();
+        assert_eq!(marked, 1);
+
+        let after = bundle.list_orders().unwrap();
+        assert_eq!(after.stats.paid_count, 1);
+        assert_eq!(after.stats.pending_usb_count, 0);
+        assert_eq!(after.stats.gross_paid_cents, 10700);
+
+        // CSV Export verification
+        let csv = orders::format_orders_csv(&[("State Finals".into(), after.orders)]);
+        assert!(csv.contains("FIN-B0001"));
+        assert!(csv.contains("Joe Franklin"));
+        assert!(csv.contains("105 Julia B"));
+        assert!(csv.contains("107.00"));
     }
 }

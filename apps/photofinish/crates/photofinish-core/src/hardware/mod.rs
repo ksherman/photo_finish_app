@@ -40,6 +40,51 @@ pub struct CopyProgressEvent {
     pub percentage: f32,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbDriveInfo {
+    pub disk_id: String,
+    pub volume_name: String,
+    pub mount_point: String,
+    pub bus_protocol: String,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    /// True if the volume has a top-level `DCIM/` directory (camera SD card warning).
+    pub has_dcim: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsbCopyItem {
+    pub source_abs_path: PathBuf,
+    pub dest_rel_path: String,
+    pub file_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbCopyProgressEvent {
+    pub total_files: u32,
+    pub copied_files: u32,
+    pub total_bytes: u64,
+    pub copied_bytes: u64,
+    pub current_file: String,
+    pub mb_per_sec: f64,
+    pub percentage: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbCopyResult {
+    pub destination_dir: String,
+    pub files_copied: usize,
+    pub bytes_copied: u64,
+    pub elapsed_secs: f64,
+    pub mb_per_sec: f64,
+    pub ejected: bool,
+    pub eject_warning: Option<String>,
+    pub items_marked_fulfilled: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct CopyOptions {
     pub source_path: PathBuf,
@@ -60,6 +105,131 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>> {
     {
         Ok(Vec::new())
     }
+}
+
+pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::discover_usb_drives()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+pub fn eject_drive(disk_id: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::eject_drive(disk_id)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = disk_id;
+        Err(Error::Io("Drive ejection is not implemented on this OS yet".into()))
+    }
+}
+
+/// Copies a resolved list of order photos onto a destination USB drive or folder,
+/// emitting throttled progress telemetry with live MB/s write speed.
+pub fn copy_order_files_to_usb<F>(
+    destination_dir: &Path,
+    items: &[UsbCopyItem],
+    mut on_progress: F,
+) -> Result<(usize, u64, f64)>
+where
+    F: FnMut(UsbCopyProgressEvent),
+{
+    if !destination_dir.exists() {
+        fs::create_dir_all(destination_dir).map_err(|e| {
+            Error::Io(format!(
+                "Destination '{}' could not be created: {}",
+                destination_dir.display(),
+                e
+            ))
+        })?;
+    }
+    if !destination_dir.is_dir() {
+        return Err(Error::InvalidInput(format!(
+            "Destination '{}' is not a directory",
+            destination_dir.display()
+        )));
+    }
+
+    let total_files = items.len() as u32;
+    let total_bytes: u64 = items.iter().map(|i| i.file_size_bytes).sum();
+    let started = std::time::Instant::now();
+    let mut last_emit = std::time::Instant::now();
+    let mut copied_files = 0u32;
+    let mut copied_bytes = 0u64;
+
+    for item in items {
+        let mut dest_path = destination_dir.join(&item.dest_rel_path);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| Error::Io(format!("{}: {}", parent.display(), e)))?;
+        }
+
+        // Avoid silent overwrites if two photos somehow collide on the same destination path
+        if dest_path.exists() {
+            let stem = dest_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "photo".into());
+            let ext = dest_path
+                .extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let parent = dest_path.parent().unwrap_or(destination_dir).to_path_buf();
+            for n in 2..10_000 {
+                let candidate = parent.join(format!("{}_{}{}", stem, n, ext));
+                if !candidate.exists() {
+                    dest_path = candidate;
+                    break;
+                }
+            }
+        }
+
+        let bytes = fs::copy(&item.source_abs_path, &dest_path).map_err(|e| {
+            Error::Io(format!(
+                "Failed to copy {} -> {}: {}",
+                item.source_abs_path.display(),
+                dest_path.display(),
+                e
+            ))
+        })?;
+
+        copied_files += 1;
+        copied_bytes += bytes;
+
+        if copied_files == total_files || last_emit.elapsed().as_millis() >= 80 {
+            let elapsed = started.elapsed().as_secs_f64().max(0.001);
+            let mb_per_sec = (copied_bytes as f64 / (1024.0 * 1024.0)) / elapsed;
+            let percentage = if total_bytes > 0 {
+                ((copied_bytes as f64 / total_bytes as f64) * 100.0).min(100.0) as f32
+            } else if total_files > 0 {
+                (copied_files as f32 / total_files as f32) * 100.0
+            } else {
+                100.0
+            };
+            on_progress(UsbCopyProgressEvent {
+                total_files,
+                copied_files,
+                total_bytes,
+                copied_bytes,
+                current_file: dest_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                mb_per_sec,
+                percentage,
+            });
+            last_emit = std::time::Instant::now();
+        }
+    }
+
+    let elapsed_secs = started.elapsed().as_secs_f64().max(0.001);
+    Ok((copied_files as usize, copied_bytes, elapsed_secs))
 }
 
 pub fn list_directory(path: &Path) -> Result<Vec<DirectoryEntry>> {

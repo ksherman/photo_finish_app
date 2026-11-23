@@ -92,6 +92,18 @@ pub fn run() {
             commands::save_reader_config,
             commands::clear_reader_configs,
             commands::ingest_from_reader,
+            commands::list_orders,
+            commands::update_order_payment,
+            commands::update_order_notes,
+            commands::update_order_item_fulfillment,
+            commands::list_event_products,
+            commands::upsert_event_product,
+            commands::update_event_order_settings,
+            commands::discover_usb_drives,
+            commands::eject_usb_drive,
+            commands::get_order_usb_plan,
+            commands::copy_order_to_usb,
+            commands::export_orders_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PhotoFinish");

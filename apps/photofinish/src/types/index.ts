@@ -257,3 +257,133 @@ export interface RemoveFolderResult {
   mode: RemoveFolderMode;
   trashedTo: string | null;
 }
+
+export interface ProductRecord {
+  id: string;
+  productType: "single_digital" | "full_digital" | "usb_addon" | "print" | "custom" | string;
+  name: string;
+  size: string | null;
+  priceCents: number;
+  isAvailable: boolean;
+  displayOrder: number;
+}
+
+export interface ShippingAddress {
+  street: string;
+  street2: string | null;
+  city: string;
+  state: string;
+  zip: string;
+}
+
+export interface OrderItemRecord {
+  id: string;
+  orderId: string;
+  productId: string | null;
+  subjectId: string | null;
+  subjectDisplayName: string | null;
+  photoId: string | null;
+  photoFilename: string | null;
+  productType: string;
+  productName: string;
+  productSize: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  lineTotalCents: number;
+  fulfillmentStatus: "pending" | "fulfilled" | string;
+  fulfilledAt: string | null;
+}
+
+export interface OrderRecord {
+  id: string;
+  orderNumber: string;
+  stationCode: string;
+  customerName: string;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  shippingAddress: ShippingAddress | null;
+  subtotalCents: number;
+  taxRateBasisPoints: number;
+  taxCents: number;
+  totalCents: number;
+  paymentStatus: "pending" | "paid" | "refunded" | string;
+  paymentMethod: string | null;
+  paymentReference: string | null;
+  paidAt: string | null;
+  notes: string | null;
+  createdAt: string;
+  items: OrderItemRecord[];
+  squarePosUrl: string;
+}
+
+export interface OrderStats {
+  totalOrders: number;
+  pendingPaymentCount: number;
+  paidCount: number;
+  refundedCount: number;
+  pendingUsbCount: number;
+  pendingFulfillmentCount: number;
+  grossPaidCents: number;
+  subtotalPaidCents: number;
+  taxPaidCents: number;
+  pendingRevenueCents: number;
+}
+
+export interface OrderListResponse {
+  stats: OrderStats;
+  orders: OrderRecord[];
+}
+
+export interface UsbDriveInfo {
+  diskId: string;
+  volumeName: string;
+  mountPoint: string;
+  busProtocol: string;
+  totalBytes: number;
+  freeBytes: number;
+  hasDcim: boolean;
+}
+
+export interface UsbSubjectBreakdown {
+  subjectLabel: string;
+  photoCount: number;
+  totalBytes: number;
+  sections: [string, number][];
+}
+
+export interface UsbOrderPlan {
+  orderId: string;
+  orderNumber: string;
+  totalPhotos: number;
+  totalBytes: number;
+  subjects: UsbSubjectBreakdown[];
+  missingFiles: number;
+}
+
+export interface UsbCopyProgressEvent {
+  totalFiles: number;
+  copiedFiles: number;
+  totalBytes: number;
+  copiedBytes: number;
+  currentFile: string;
+  mbPerSec: number;
+  percentage: number;
+}
+
+export interface UsbCopyResult {
+  destinationDir: string;
+  filesCopied: number;
+  bytesCopied: number;
+  elapsedSecs: number;
+  mbPerSec: number;
+  ejected: boolean;
+  ejectWarning: string | null;
+  itemsMarkedFulfilled: number;
+}
+
+export interface CsvExportResult {
+  outputPath: string;
+  eventCount: number;
+  orderCount: number;
+  itemRowCount: number;
+}

@@ -10,9 +10,14 @@ use photofinish_core::event::{
     CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, ScanResult, SubjectRecord,
 };
 use photofinish_core::hardware::{
-    self, CardReaderInfo, CopyOptions, CopyProgressEvent, DirectoryEntry,
+    self, CardReaderInfo, CopyOptions, CopyProgressEvent, DirectoryEntry, UsbCopyProgressEvent,
+    UsbCopyResult, UsbDriveInfo,
 };
 use photofinish_core::imaging::ProcessingMetrics;
+use photofinish_core::orders::{
+    self, EventOrderSettingsInput, OrderListResponse, OrderRecord, ProductRecord,
+    ProductUpsertInput, UpdatePaymentRequest, UsbOrderPlan,
+};
 use photofinish_core::preset::{self, EventPreset};
 use photofinish_core::roster::{
     self, AssignFolderResult, BatchReassignResult, FolderReassignmentInput, ImportRosterResult,
@@ -481,4 +486,281 @@ pub async fn ingest_from_reader(
         copied_count,
         queued_count,
     })
+}
+
+// =========================================================================
+// Orders, Pricing Catalog, Instant USB-C/A Fulfillment & CSV Export
+// =========================================================================
+
+#[tauri::command]
+pub async fn list_orders(state: State<'_, AppState>) -> Result<OrderListResponse, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || bundle.list_orders().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn update_order_payment(
+    state: State<'_, AppState>,
+    request: UpdatePaymentRequest,
+) -> Result<OrderRecord, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .update_order_payment(&request)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn update_order_notes(
+    state: State<'_, AppState>,
+    order_id: String,
+    notes: Option<String>,
+) -> Result<OrderRecord, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .update_order_notes(&order_id, notes.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn update_order_item_fulfillment(
+    state: State<'_, AppState>,
+    order_id: String,
+    item_id: String,
+    fulfillment_status: String,
+) -> Result<OrderRecord, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .update_order_item_fulfillment(&order_id, &item_id, &fulfillment_status)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn list_event_products(state: State<'_, AppState>) -> Result<Vec<ProductRecord>, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle.list_products(true).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn upsert_event_product(
+    state: State<'_, AppState>,
+    input: ProductUpsertInput,
+) -> Result<ProductRecord, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle.upsert_product(&input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_event_order_settings(
+    state: State<'_, AppState>,
+    input: EventOrderSettingsInput,
+) -> Result<EventSummary, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .update_event_order_settings(&input)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>, String> {
+    tauri::async_runtime::spawn_blocking(hardware::discover_usb_drives)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn eject_usb_drive(disk_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || hardware::eject_drive(&disk_id))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_order_usb_plan(
+    state: State<'_, AppState>,
+    order_id: String,
+) -> Result<UsbOrderPlan, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .resolve_order_usb_copy_plan(&order_id)
+            .map(|(plan, _)| plan)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyOrderToUsbRequest {
+    pub order_id: String,
+    pub destination_dir: String,
+    pub eject_disk_id: Option<String>,
+    pub auto_mark_fulfilled: bool,
+}
+
+#[tauri::command]
+pub async fn copy_order_to_usb(
+    state: State<'_, AppState>,
+    request: CopyOrderToUsbRequest,
+    on_progress: Channel<UsbCopyProgressEvent>,
+) -> Result<UsbCopyResult, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<UsbCopyResult, String> {
+        let (_plan, copy_items) = bundle
+            .resolve_order_usb_copy_plan(&request.order_id)
+            .map_err(|e| e.to_string())?;
+
+        if copy_items.is_empty() {
+            return Err("No ready digital photos found to copy for this order".to_string());
+        }
+
+        let dest_path = PathBuf::from(&request.destination_dir);
+        let (files_copied, bytes_copied, elapsed_secs) =
+            hardware::copy_order_files_to_usb(&dest_path, &copy_items, |ev| {
+                let _ = on_progress.send(ev);
+            })
+            .map_err(|e| e.to_string())?;
+
+        let items_marked_fulfilled = if request.auto_mark_fulfilled {
+            bundle
+                .mark_usb_items_fulfilled(&request.order_id)
+                .map_err(|e| e.to_string())?
+        } else {
+            0
+        };
+
+        let mut ejected = false;
+        let mut eject_warning = None;
+        if let Some(ref disk_id) = request.eject_disk_id {
+            if !disk_id.trim().is_empty() {
+                match hardware::eject_drive(disk_id) {
+                    Ok(()) => ejected = true,
+                    Err(e) => eject_warning = Some(e.to_string()),
+                }
+            }
+        }
+
+        let mb_per_sec = (bytes_copied as f64 / (1024.0 * 1024.0)) / elapsed_secs.max(0.001);
+
+        Ok(UsbCopyResult {
+            destination_dir: request.destination_dir,
+            files_copied,
+            bytes_copied,
+            elapsed_secs,
+            mb_per_sec,
+            ejected,
+            eject_warning,
+            items_marked_fulfilled,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvExportResult {
+    pub output_path: String,
+    pub event_count: usize,
+    pub order_count: usize,
+    pub item_row_count: usize,
+}
+
+#[tauri::command]
+pub async fn export_orders_csv(
+    state: State<'_, AppState>,
+    output_path: String,
+    all_library_events: bool,
+) -> Result<CsvExportResult, String> {
+    let active = state.active_event.get();
+    let app_db = Arc::clone(&state.app_db);
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<CsvExportResult, String> {
+        let mut collected: Vec<(String, Vec<OrderRecord>)> = Vec::new();
+
+        if all_library_events {
+            let entries = app_db.list_library_events().map_err(|e| e.to_string())?;
+            for entry in entries {
+                if !entry.exists_on_disk {
+                    continue;
+                }
+                if let Ok(bundle) = EventBundle::open(&entry.root_path) {
+                    if let (Ok(summary), Ok(res)) = (bundle.summary(), bundle.list_orders()) {
+                        collected.push((summary.name, res.orders));
+                    }
+                }
+            }
+        } else {
+            let bundle = active.ok_or_else(|| "No active event open".to_string())?;
+            let summary = bundle.summary().map_err(|e| e.to_string())?;
+            let res = bundle.list_orders().map_err(|e| e.to_string())?;
+            collected.push((summary.name, res.orders));
+        }
+
+        let event_count = collected.len();
+        let order_count: usize = collected.iter().map(|(_, o)| o.len()).sum();
+        let item_row_count: usize = collected
+            .iter()
+            .flat_map(|(_, o)| o.iter())
+            .map(|o| o.items.len())
+            .sum();
+
+        let csv = orders::format_orders_csv(&collected);
+        std::fs::write(&output_path, csv)
+            .map_err(|e| format!("Failed to write CSV to {}: {}", output_path, e))?;
+
+        Ok(CsvExportResult {
+            output_path,
+            event_count,
+            order_count,
+            item_row_count,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

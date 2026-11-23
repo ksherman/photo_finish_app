@@ -6,6 +6,7 @@ import BrandMark from "@/components/BrandMark.vue";
 import EventsView from "@/views/EventsView.vue";
 import IngestView from "@/views/IngestView.vue";
 import RosterAndFoldersView from "@/views/RosterAndFoldersView.vue";
+import OrdersView from "@/views/OrdersView.vue";
 import PlaceholderView from "@/views/PlaceholderView.vue";
 
 type Tab = "events" | "ingest" | "roster" | "orders" | "shootproof";
@@ -60,17 +61,7 @@ onMounted(() => {
         <EventsView v-if="activeTab === 'events'" @opened="activeTab = 'ingest'" />
         <IngestView v-else-if="activeTab === 'ingest'" />
         <RosterAndFoldersView v-else-if="activeTab === 'roster'" />
-        <PlaceholderView
-          v-else-if="activeTab === 'orders'"
-          title="Orders & Instant USB-C/A Fulfillment"
-          description="Manage on-site kiosk orders, Square QR / Terminal payments, and one-click USB drive copying."
-          :items="[
-            'v3 Pricing Ladder: Single Digital ($25) with 3-photo tipping-point upgrade → Full Digital + Prints + +$10 Dual USB-C/A',
-            'Offline Square POS QR checkout + optional Square Terminal API',
-            'Native high-speed USB drive detection & one-click order copy + eject',
-            'Multi-event consolidated CSV export across gathered event bundles',
-          ]"
-        />
+        <OrdersView v-else-if="activeTab === 'orders'" />
         <PlaceholderView
           v-else
           title="ShootProof Studio API Sync"
