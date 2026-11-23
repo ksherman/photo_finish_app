@@ -1,5 +1,10 @@
 
 .DS_Store
-test-ingest
-test-images
+.vscode/
+as-built/
+order_form.png
+test-ingest/
+test-images/
+test-xcel/
+
 
