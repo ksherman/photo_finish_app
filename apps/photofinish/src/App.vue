@@ -1,0 +1,99 @@
+<script setup lang="ts">
+import { ref, onMounted } from "vue";
+import { useEventStore } from "@/stores/event";
+import ServerStatusBar from "@/components/ServerStatusBar.vue";
+import EventsView from "@/views/EventsView.vue";
+import IngestView from "@/views/IngestView.vue";
+import PlaceholderView from "@/views/PlaceholderView.vue";
+
+type Tab = "events" | "ingest" | "roster" | "orders" | "shootproof";
+
+const activeTab = ref<Tab>("events");
+const eventStore = useEventStore();
+
+const navItems: { id: Tab; label: string }[] = [
+  { id: "events", label: "Events" },
+  { id: "ingest", label: "Card Ingest" },
+  { id: "roster", label: "Roster & Folders" },
+  { id: "orders", label: "Orders & USB" },
+  { id: "shootproof", label: "ShootProof Sync" },
+];
+
+onMounted(() => {
+  eventStore.bootstrap();
+});
+</script>
+
+<template>
+  <div class="min-h-screen flex bg-slate-100">
+    <!-- Sidebar -->
+    <aside class="w-56 bg-slate-900 text-slate-200 flex flex-col flex-shrink-0">
+      <div class="px-5 py-5 border-b border-slate-800">
+        <div class="text-lg font-bold tracking-tight text-white">PhotoFinish</div>
+        <div class="text-xs text-slate-400">Unified Event Station</div>
+      </div>
+
+      <nav class="p-3 space-y-1 flex-1">
+        <button
+          v-for="item in navItems"
+          :key="item.id"
+          @click="activeTab = item.id"
+          class="w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+          :class="
+            activeTab === item.id
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+          "
+        >
+          {{ item.label }}
+        </button>
+      </nav>
+
+      <div class="p-4 border-t border-slate-800 text-xs text-slate-500">
+        Portable SQLite Bundle Architecture
+      </div>
+    </aside>
+
+    <!-- Main Area -->
+    <div class="flex-1 flex flex-col min-w-0">
+      <ServerStatusBar />
+
+      <main class="flex-1 overflow-y-auto">
+        <EventsView v-if="activeTab === 'events'" @opened="activeTab = 'ingest'" />
+        <IngestView v-else-if="activeTab === 'ingest'" />
+        <PlaceholderView
+          v-else-if="activeTab === 'roster'"
+          title="Roster Import & Folder Matching"
+          description="Import participant rosters (.txt / .csv), browse the flexible folder tree, and link unassigned card folders to subjects."
+          :items="[
+            'Sport-agnostic roster import (subjects table with configurable display label)',
+            'Side-by-side folder-to-subject matching with optional physical folder rename',
+            'Ingest batch audit view (chronological card order per photographer/reader)',
+          ]"
+        />
+        <PlaceholderView
+          v-else-if="activeTab === 'orders'"
+          title="Orders & Instant USB-C/A Fulfillment"
+          description="Manage on-site kiosk orders, Square QR / Terminal payments, and one-click USB drive copying."
+          :items="[
+            'v3 Pricing Ladder: Single Digital ($25) with 3-photo tipping-point upgrade → Full Digital + Prints + +$10 Dual USB-C/A',
+            'Offline Square POS QR checkout + optional Square Terminal API',
+            'Native high-speed USB drive detection & one-click order copy + eject',
+            'Multi-event consolidated CSV export across gathered event bundles',
+          ]"
+        />
+        <PlaceholderView
+          v-else
+          title="ShootProof Studio API Sync"
+          description="Pivot on-site apparatus folders into subject-sorted online galleries and automate digital zip & lab print fulfillment."
+          :items="[
+            'Auto-create Event → Area → Subject albums via ShootProof Studio API',
+            '20–50 concurrent S3 photo upload workers with resumable progress in photofinish.db',
+            'Automated zip-bundle delivery for paid digital orders',
+            'Push on-site print orders directly to WHCC / Bay Photo drop-ship',
+          ]"
+        />
+      </main>
+    </div>
+  </div>
+</template>
