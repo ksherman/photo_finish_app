@@ -195,3 +195,65 @@ export interface AssignFolderResult {
   newFolderPath: string;
   renamedOnDisk: boolean;
 }
+
+export interface FolderItem {
+  folderPath: string;
+  parentPath: string;
+  leafFolder: string;
+  photoCount: number;
+  unassignedCount: number;
+  assignedSubjectId: string | null;
+  assignedSubjectName: string | null;
+  assignedSubjectNumber: string | null;
+  isMixed: boolean;
+  samplePhotoIds: string[];
+}
+
+export interface FolderLocationSummary {
+  parentPath: string;
+  folderCount: number;
+  photoCount: number;
+  unassignedFolderCount: number;
+  unassignedPhotoCount: number;
+}
+
+export interface ListFoldersResponse {
+  locations: FolderLocationSummary[];
+  folders: FolderItem[];
+  totalUnassignedPhotos: number;
+  totalUnassignedFolders: number;
+  detectedSessionGroup: string | null;
+  detectedGroupPrefix: string | null;
+  sameGroupSubjectIds: string[];
+  subjectSamplePhotos: Record<string, string>;
+}
+
+export interface FolderReassignmentInput {
+  folderPath: string;
+  targetSubjectId: string | null;
+}
+
+export interface FolderChangeResultItem {
+  oldFolderPath: string;
+  newFolderPath: string;
+  targetSubjectId: string | null;
+  targetSubjectName: string | null;
+  photosUpdated: number;
+  action: "renamed" | "swapped" | "merged" | "reassigned" | "unassigned" | string;
+}
+
+export interface BatchReassignResult {
+  foldersUpdated: number;
+  photosUpdated: number;
+  renamedOnDisk: boolean;
+  changes: FolderChangeResultItem[];
+}
+
+export type RemoveFolderMode = "trash" | "delete_disk" | "db_only";
+
+export interface RemoveFolderResult {
+  folderPath: string;
+  photosRemoved: number;
+  mode: RemoveFolderMode;
+  trashedTo: string | null;
+}

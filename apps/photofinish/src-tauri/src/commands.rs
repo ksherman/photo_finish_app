@@ -15,7 +15,8 @@ use photofinish_core::hardware::{
 use photofinish_core::imaging::ProcessingMetrics;
 use photofinish_core::preset::{self, EventPreset};
 use photofinish_core::roster::{
-    self, AssignFolderResult, ImportRosterResult, ParsedRosterFile, RosterEntryInput,
+    self, AssignFolderResult, BatchReassignResult, FolderReassignmentInput, ImportRosterResult,
+    ListFoldersResponse, ParsedRosterFile, RemoveFolderMode, RemoveFolderResult, RosterEntryInput,
     UnassignedFoldersResponse,
 };
 use photofinish_core::server::{detect_lan_ip, EmbeddedServer, LanServerStatus};
@@ -232,6 +233,56 @@ pub fn assign_folder_to_subject(
         .ok_or_else(|| "No active event open".to_string())?;
     bundle
         .assign_folder_to_subject(&folder_path, &subject_id, rename_on_disk)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_folders(
+    state: State<'_, AppState>,
+    parent_filter: Option<String>,
+    only_unassigned: bool,
+    context_parent: Option<String>,
+) -> Result<ListFoldersResponse, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .list_folders(
+            parent_filter.as_deref(),
+            only_unassigned,
+            context_parent.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn apply_folder_reassignments(
+    state: State<'_, AppState>,
+    changes: Vec<FolderReassignmentInput>,
+    rename_on_disk: bool,
+) -> Result<BatchReassignResult, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .apply_folder_reassignments(&changes, rename_on_disk)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn remove_folder(
+    state: State<'_, AppState>,
+    folder_path: String,
+    mode: RemoveFolderMode,
+) -> Result<RemoveFolderResult, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    bundle
+        .remove_folder(&folder_path, mode)
         .map_err(|e| e.to_string())
 }
 

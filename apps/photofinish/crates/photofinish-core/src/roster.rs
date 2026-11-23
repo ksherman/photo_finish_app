@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -65,6 +66,88 @@ pub struct AssignFolderResult {
     pub photos_updated: usize,
     pub new_folder_path: String,
     pub renamed_on_disk: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderItem {
+    pub folder_path: String,
+    pub parent_path: String,
+    pub leaf_folder: String,
+    pub photo_count: i64,
+    pub unassigned_count: i64,
+    pub assigned_subject_id: Option<String>,
+    pub assigned_subject_name: Option<String>,
+    pub assigned_subject_number: Option<String>,
+    pub is_mixed: bool,
+    pub sample_photo_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderLocationSummary {
+    pub parent_path: String,
+    pub folder_count: usize,
+    pub photo_count: i64,
+    pub unassigned_folder_count: usize,
+    pub unassigned_photo_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListFoldersResponse {
+    pub locations: Vec<FolderLocationSummary>,
+    pub folders: Vec<FolderItem>,
+    pub total_unassigned_photos: i64,
+    pub total_unassigned_folders: usize,
+    pub detected_session_group: Option<String>,
+    pub detected_group_prefix: Option<String>,
+    pub same_group_subject_ids: Vec<String>,
+    pub subject_sample_photos: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderReassignmentInput {
+    pub folder_path: String,
+    pub target_subject_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderChangeResultItem {
+    pub old_folder_path: String,
+    pub new_folder_path: String,
+    pub target_subject_id: Option<String>,
+    pub target_subject_name: Option<String>,
+    pub photos_updated: usize,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReassignResult {
+    pub folders_updated: usize,
+    pub photos_updated: usize,
+    pub renamed_on_disk: bool,
+    pub changes: Vec<FolderChangeResultItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoveFolderMode {
+    Trash,
+    DeleteDisk,
+    DbOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveFolderResult {
+    pub folder_path: String,
+    pub photos_removed: usize,
+    pub mode: RemoveFolderMode,
+    pub trashed_to: Option<String>,
 }
 
 /// Parses a `.txt` or `.csv` roster file into structured `RosterEntryInput` rows.

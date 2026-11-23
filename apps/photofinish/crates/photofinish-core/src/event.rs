@@ -17,8 +17,10 @@ use crate::preset::{
     extract_subject_number, find_preset, parse_relative_location, scaffold_folders, ScaffoldConfig,
 };
 use crate::roster::{
-    natural_sort_key, AssignFolderResult, FolderParentSummary, ImportRosterResult,
-    RosterEntryInput, UnassignedFolder, UnassignedFoldersResponse,
+    natural_sort_key, AssignFolderResult, BatchReassignResult, FolderChangeResultItem, FolderItem,
+    FolderLocationSummary, FolderParentSummary, FolderReassignmentInput, ImportRosterResult,
+    ListFoldersResponse, RemoveFolderMode, RemoveFolderResult, RosterEntryInput, UnassignedFolder,
+    UnassignedFoldersResponse,
 };
 use crate::{Error, Result};
 
@@ -591,10 +593,9 @@ impl EventBundle {
                     OR s.display_name LIKE ?3 COLLATE NOCASE
                     OR COALESCE(s.number, '') LIKE ?3 COLLATE NOCASE
                     OR COALESCE(s.team_name, '') LIKE ?3 COLLATE NOCASE)
-             GROUP BY s.id
-             LIMIT ?4",
+             GROUP BY s.id",
         )?;
-        let rows = stmt.query_map(rusqlite::params![group, trimmed, pattern, limit], |r| {
+        let rows = stmt.query_map(rusqlite::params![group, trimmed, pattern], |r| {
             Ok(SubjectRecord {
                 id: r.get(0)?,
                 number: r.get(1)?,
@@ -607,8 +608,715 @@ impl EventBundle {
             })
         })?;
         let mut out: Vec<SubjectRecord> = rows.collect::<std::result::Result<_, _>>()?;
-        out.sort_by_key(|s| natural_sort_key(&s.display_name));
+        out.sort_by_key(|s| {
+            let numeric_bib = s
+                .number
+                .as_deref()
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(u64::MAX);
+            (numeric_bib, natural_sort_key(&s.display_name))
+        });
+        if limit > 0 && (out.len() as i64) > limit {
+            out.truncate(limit as usize);
+        }
         Ok(out)
+    }
+
+    /// Lists photo folders (either unassigned-only or all folders within a location),
+    /// along with location summaries, inferred session & group roster context, and
+    /// cross-apparatus reference thumbnails for subjects in the detected group/session.
+    pub fn list_folders(
+        &self,
+        parent_filter: Option<&str>,
+        only_unassigned: bool,
+        context_parent: Option<&str>,
+    ) -> Result<ListFoldersResponse> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.folder_path,
+                    COALESCE(p.leaf_folder, p.folder_path),
+                    COUNT(*) AS photo_count,
+                    SUM(CASE WHEN p.subject_id IS NULL THEN 1 ELSE 0 END) AS unassigned_count,
+                    COUNT(DISTINCT p.subject_id) AS distinct_subjects,
+                    MIN(p.subject_id) AS any_subject_id,
+                    MIN(s.display_name) AS any_subject_name,
+                    MIN(s.number) AS any_subject_number
+             FROM photos p
+             LEFT JOIN subjects s ON s.id = p.subject_id
+             WHERE p.folder_path != ''
+             GROUP BY p.folder_path",
+        )?;
+
+        struct RawFolderRow {
+            folder_path: String,
+            parent_path: String,
+            leaf_folder: String,
+            photo_count: i64,
+            unassigned_count: i64,
+            distinct_subjects: i64,
+            assigned_subject_id: Option<String>,
+            assigned_subject_name: Option<String>,
+            assigned_subject_number: Option<String>,
+        }
+
+        let raw_rows: Vec<RawFolderRow> = stmt
+            .query_map([], |r| {
+                let folder_path: String = r.get(0)?;
+                let parent_path = folder_path
+                    .rsplit_once('/')
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_default();
+                Ok(RawFolderRow {
+                    folder_path,
+                    parent_path,
+                    leaf_folder: r.get(1)?,
+                    photo_count: r.get(2)?,
+                    unassigned_count: r.get(3)?,
+                    distinct_subjects: r.get(4)?,
+                    assigned_subject_id: r.get(5)?,
+                    assigned_subject_name: r.get(6)?,
+                    assigned_subject_number: r.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+
+        let mut loc_map: BTreeMap<String, FolderLocationSummary> = BTreeMap::new();
+        let mut total_unassigned_photos = 0i64;
+        let mut total_unassigned_folders = 0usize;
+
+        let filter_norm = parent_filter.map(str::trim).filter(|s| !s.is_empty());
+        let mut selected_rows: Vec<RawFolderRow> = Vec::new();
+
+        for row in raw_rows {
+            let has_unassigned = row.unassigned_count > 0;
+            if has_unassigned {
+                total_unassigned_photos += row.unassigned_count;
+                total_unassigned_folders += 1;
+            }
+
+            let loc = loc_map
+                .entry(row.parent_path.clone())
+                .or_insert_with(|| FolderLocationSummary {
+                    parent_path: row.parent_path.clone(),
+                    folder_count: 0,
+                    photo_count: 0,
+                    unassigned_folder_count: 0,
+                    unassigned_photo_count: 0,
+                });
+            loc.folder_count += 1;
+            loc.photo_count += row.photo_count;
+            if has_unassigned {
+                loc.unassigned_folder_count += 1;
+                loc.unassigned_photo_count += row.unassigned_count;
+            }
+
+            if only_unassigned && !has_unassigned {
+                continue;
+            }
+            if let Some(f) = filter_norm {
+                if row.parent_path != f {
+                    continue;
+                }
+            }
+            selected_rows.push(row);
+        }
+
+        let mut locations: Vec<FolderLocationSummary> = loc_map.into_values().collect();
+        locations.sort_by_key(|l| natural_sort_key(&l.parent_path));
+
+        selected_rows.sort_by_key(|r| natural_sort_key(&r.folder_path));
+
+        // Guard against rendering thousands of folder thumbnail cards at once if viewing
+        // all folders without a location filter.
+        if !only_unassigned && filter_norm.is_none() && selected_rows.len() > 200 {
+            selected_rows.truncate(200);
+        }
+
+        let mut sample_stmt = conn.prepare(
+            "SELECT id FROM photos
+             WHERE folder_path = ?1 AND status = 'ready'
+             ORDER BY filename ASC
+             LIMIT 4",
+        )?;
+
+        let mut folders = Vec::with_capacity(selected_rows.len());
+        for row in selected_rows {
+            let sample_photo_ids: Vec<String> = sample_stmt
+                .query_map([&row.folder_path], |r| r.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            let is_mixed = row.distinct_subjects > 1
+                || (row.distinct_subjects == 1 && row.unassigned_count > 0);
+            let (assigned_subject_id, assigned_subject_name, assigned_subject_number) =
+                if row.distinct_subjects == 1 && !is_mixed {
+                    (
+                        row.assigned_subject_id,
+                        row.assigned_subject_name,
+                        row.assigned_subject_number,
+                    )
+                } else {
+                    (None, None, None)
+                };
+            folders.push(FolderItem {
+                folder_path: row.folder_path,
+                parent_path: row.parent_path,
+                leaf_folder: row.leaf_folder,
+                photo_count: row.photo_count,
+                unassigned_count: row.unassigned_count,
+                assigned_subject_id,
+                assigned_subject_name,
+                assigned_subject_number,
+                is_mixed,
+                sample_photo_ids,
+            });
+        }
+
+        // Determine active context location for smart "Same Group" / "Same Session" scoping.
+        let effective_context_parent: Option<String> = context_parent
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| filter_norm.map(str::to_string))
+            .or_else(|| folders.first().map(|f| f.parent_path.clone()).filter(|s| !s.is_empty()));
+
+        let mut detected_session_group: Option<String> = None;
+        let mut detected_group_prefix: Option<String> = None;
+        let mut same_group_subject_ids: Vec<String> = Vec::new();
+        let mut subject_sample_photos: BTreeMap<String, String> = BTreeMap::new();
+
+        if let Some(ref ctx_parent) = effective_context_parent {
+            // 1. Match roster group_label (e.g. "Session 10A") by exact path segment first,
+            //    so "Session 1" never falsely matches "Session 10A".
+            let all_groups = self.list_subject_groups()?;
+            let segments: Vec<&str> = ctx_parent.split('/').collect();
+            detected_session_group = all_groups
+                .iter()
+                .find(|g| segments.iter().any(|seg| seg.eq_ignore_ascii_case(g)))
+                .cloned();
+
+            // 2. Group ancestor prefix (one level above apparatus/section, e.g.
+            //    "Gym A/Session 10A/Group 1A/Beam" -> "Gym A/Session 10A/Group 1A").
+            if let Some((ancestor, _)) = ctx_parent.rsplit_once('/') {
+                if !ancestor.is_empty() {
+                    detected_group_prefix = Some(ancestor.to_string());
+                    let range_start = format!("{}/", ancestor);
+                    let range_end = format!("{}0", ancestor); // ASCII '0' = '/' + 1 for B-tree range scan
+                    let mut grp_stmt = conn.prepare(
+                        "SELECT DISTINCT subject_id FROM photos
+                         WHERE folder_path >= ?1 AND folder_path < ?2
+                           AND subject_id IS NOT NULL",
+                    )?;
+                    same_group_subject_ids = grp_stmt
+                        .query_map(rusqlite::params![range_start, range_end], |r| {
+                            r.get::<_, String>(0)
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+                }
+            }
+
+            // 3. Collect 1 reference thumbnail per subject in Same Group and Same Session,
+            //    preferring a ready photo OUTSIDE `ctx_parent` (e.g. Floor when fixing Beam!).
+            let mut candidate_subject_ids: HashSet<String> =
+                same_group_subject_ids.iter().cloned().collect();
+            if let Some(ref sess) = detected_session_group {
+                let mut sess_stmt = conn.prepare(
+                    "SELECT id FROM subjects WHERE is_active = 1 AND group_label = ?1 LIMIT 250",
+                )?;
+                for id_res in sess_stmt.query_map([sess], |r| r.get::<_, String>(0))? {
+                    if let Ok(sid) = id_res {
+                        candidate_subject_ids.insert(sid);
+                    }
+                }
+            }
+
+            let ctx_prefix_start = format!("{}/", ctx_parent);
+            let ctx_prefix_end = format!("{}0", ctx_parent);
+            let mut other_photo_stmt = conn.prepare(
+                "SELECT id FROM photos
+                 WHERE subject_id = ?1 AND status = 'ready'
+                   AND NOT (folder_path >= ?2 AND folder_path < ?3)
+                 ORDER BY filename ASC
+                 LIMIT 1",
+            )?;
+            let mut any_photo_stmt = conn.prepare(
+                "SELECT id FROM photos
+                 WHERE subject_id = ?1 AND status = 'ready'
+                 ORDER BY filename ASC
+                 LIMIT 1",
+            )?;
+
+            for sid in candidate_subject_ids {
+                let pic = other_photo_stmt
+                    .query_row(
+                        rusqlite::params![&sid, &ctx_prefix_start, &ctx_prefix_end],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .or_else(|| {
+                        any_photo_stmt
+                            .query_row([&sid], |r| r.get::<_, String>(0))
+                            .optional()
+                            .ok()
+                            .flatten()
+                    });
+                if let Some(pid) = pic {
+                    subject_sample_photos.insert(sid, pid);
+                }
+            }
+        }
+
+        Ok(ListFoldersResponse {
+            locations,
+            folders,
+            total_unassigned_photos,
+            total_unassigned_folders,
+            detected_session_group,
+            detected_group_prefix,
+            same_group_subject_ids,
+            subject_sample_photos,
+        })
+    }
+
+    /// Atomically applies one or more folder reassignments/renames/swaps/merges.
+    ///
+    /// Uses a two-phase swap-safe staging rename on disk (`.pf_swap_*`) and a two-phase
+    /// `relative_path` update inside a single SQLite transaction so cyclic rotation shifts
+    /// (e.g. A -> B, B -> C, C -> A) never collide, never mix athletes' photos, and never
+    /// violate `UNIQUE(relative_path)`.
+    pub fn apply_folder_reassignments(
+        &self,
+        inputs: &[FolderReassignmentInput],
+        rename_on_disk: bool,
+    ) -> Result<BatchReassignResult> {
+        if inputs.is_empty() {
+            return Ok(BatchReassignResult {
+                folders_updated: 0,
+                photos_updated: 0,
+                renamed_on_disk: false,
+                changes: Vec::new(),
+            });
+        }
+
+        let mut conn = self.write_conn.lock().unwrap();
+
+        struct PlannedMove {
+            old_folder_path: String,
+            parent_path: String,
+            target_subject_id: Option<String>,
+            target_subject_name: Option<String>,
+            target_folder_path: String,
+            target_leaf: String,
+            will_rename_disk: bool,
+            action: String,
+        }
+
+        let mut seen_old = HashSet::new();
+        let mut plans = Vec::with_capacity(inputs.len());
+
+        for input in inputs {
+            let old_fp = validate_event_rel_folder(&input.folder_path)?;
+            if !seen_old.insert(old_fp.clone()) {
+                return Err(Error::InvalidInput(format!(
+                    "Duplicate source folder '{}' in batch",
+                    old_fp
+                )));
+            }
+            let (parent_path, old_leaf) = match old_fp.rsplit_once('/') {
+                Some((p, l)) => (p.to_string(), l.to_string()),
+                None => (String::new(), old_fp.clone()),
+            };
+
+            let (target_subject_name, target_leaf, target_folder_path, will_rename_disk) =
+                match input.target_subject_id.as_deref() {
+                    Some(sid) => {
+                        let display_name: String = conn
+                            .query_row(
+                                "SELECT display_name FROM subjects WHERE id = ?1",
+                                [sid],
+                                |r| r.get(0),
+                            )
+                            .optional()?
+                            .ok_or_else(|| Error::NotFound(format!("Subject {} not found", sid)))?;
+                        let sanitized = sanitize_folder_component(&display_name);
+                        if sanitized.is_empty() {
+                            return Err(Error::InvalidInput(format!(
+                                "Subject '{}' produces an empty folder name",
+                                display_name
+                            )));
+                        }
+                        let target_fp = if parent_path.is_empty() {
+                            sanitized.clone()
+                        } else {
+                            format!("{}/{}", parent_path, sanitized)
+                        };
+                        let old_abs = self.root.join(&old_fp);
+                        let will_rename = rename_on_disk && target_fp != old_fp && old_abs.is_dir();
+                        (
+                            Some(display_name),
+                            if will_rename { sanitized } else { old_leaf.clone() },
+                            if will_rename { target_fp } else { old_fp.clone() },
+                            will_rename,
+                        )
+                    }
+                    None => (None, old_leaf.clone(), old_fp.clone(), false),
+                };
+
+            plans.push(PlannedMove {
+                old_folder_path: old_fp,
+                parent_path,
+                target_subject_id: input.target_subject_id.clone(),
+                target_subject_name,
+                target_folder_path,
+                target_leaf,
+                will_rename_disk,
+                action: String::new(),
+            });
+        }
+
+        // Classify each action accurately (swapped vs renamed vs merged vs reassigned vs unassigned)
+        let moving_away: HashSet<String> = plans
+            .iter()
+            .filter(|p| p.will_rename_disk)
+            .map(|p| p.old_folder_path.clone())
+            .collect();
+        let mut target_counts: HashMap<String, usize> = HashMap::new();
+        for p in &plans {
+            if p.will_rename_disk {
+                *target_counts.entry(p.target_folder_path.clone()).or_insert(0) += 1;
+            }
+        }
+        for p in &mut plans {
+            p.action = if p.target_subject_id.is_none() {
+                "unassigned".to_string()
+            } else if !p.will_rename_disk {
+                "reassigned".to_string()
+            } else if target_counts.get(&p.target_folder_path).copied().unwrap_or(0) > 1 {
+                "merged".to_string()
+            } else if moving_away.contains(&p.target_folder_path) {
+                "swapped".to_string()
+            } else if self.root.join(&p.target_folder_path).exists() {
+                "merged".to_string()
+            } else {
+                "renamed".to_string()
+            };
+        }
+
+        // Snapshot all affected photo rows BEFORE modifying SQLite or disk so swapped folder
+        // paths never cross-contaminate.
+        struct PhotoSnap {
+            id: String,
+            filename: String,
+            tags_json: String,
+        }
+        let mut photos_by_plan: Vec<Vec<PhotoSnap>> = Vec::with_capacity(plans.len());
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, filename, tags_json FROM photos WHERE folder_path = ?1",
+            )?;
+            for p in &plans {
+                let rows = stmt
+                    .query_map([&p.old_folder_path], |r| {
+                        Ok(PhotoSnap {
+                            id: r.get(0)?,
+                            filename: r.get(1)?,
+                            tags_json: r.get(2)?,
+                        })
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                photos_by_plan.push(rows);
+            }
+        }
+
+        let batch_nonce = id::generate("swp_");
+        let mut any_disk_rename = false;
+        let mut file_renames_by_plan: Vec<HashMap<String, String>> =
+            vec![HashMap::new(); plans.len()];
+
+        // Phase 1 on disk: move every renaming folder to a unique hidden staging folder in its parent.
+        let mut staged: Vec<(usize, PathBuf, PathBuf)> = Vec::new();
+        for (idx, p) in plans.iter().enumerate() {
+            if !p.will_rename_disk {
+                continue;
+            }
+            let old_abs = self.root.join(&p.old_folder_path);
+            let parent_abs = if p.parent_path.is_empty() {
+                self.root.clone()
+            } else {
+                self.root.join(&p.parent_path)
+            };
+            let staging_abs = parent_abs.join(format!(".pf_swap_{}_{}", batch_nonce, idx));
+            if let Err(e) = fs::rename(&old_abs, &staging_abs) {
+                // Roll back anything already moved in Phase 1
+                for (_, st, orig) in staged.into_iter().rev() {
+                    let _ = fs::rename(&st, &orig);
+                }
+                return Err(Error::Io(format!(
+                    "Failed to stage rename {} -> {}: {}",
+                    old_abs.display(),
+                    staging_abs.display(),
+                    e
+                )));
+            }
+            staged.push((idx, staging_abs, old_abs));
+        }
+
+        // Phase 2 on disk: move each staged folder into its final destination (or safely merge files).
+        for (idx, staging_abs, _old_abs) in staged {
+            let p = &plans[idx];
+            let target_abs = self.root.join(&p.target_folder_path);
+            if !target_abs.exists() {
+                fs::rename(&staging_abs, &target_abs).map_err(|e| {
+                    Error::Io(format!(
+                        "Failed to finalize rename {} -> {}: {}",
+                        staging_abs.display(),
+                        target_abs.display(),
+                        e
+                    ))
+                })?;
+            } else if target_abs.is_dir() {
+                for entry in fs::read_dir(&staging_abs)
+                    .map_err(|e| Error::Io(format!("{}: {}", staging_abs.display(), e)))?
+                    .flatten()
+                {
+                    let src_file = entry.path();
+                    if src_file.is_file() {
+                        let orig_name = entry.file_name().to_string_lossy().to_string();
+                        let final_name = unique_filename_in_dir(&target_abs, &orig_name);
+                        let dst_file = target_abs.join(&final_name);
+                        fs::rename(&src_file, &dst_file).map_err(|e| {
+                            Error::Io(format!(
+                                "Failed to merge {} -> {}: {}",
+                                src_file.display(),
+                                dst_file.display(),
+                                e
+                            ))
+                        })?;
+                        if final_name != orig_name {
+                            file_renames_by_plan[idx].insert(orig_name, final_name);
+                        }
+                    }
+                }
+                let _ = fs::remove_dir(&staging_abs);
+            } else {
+                return Err(Error::Io(format!(
+                    "Target path {} already exists as a file",
+                    target_abs.display()
+                )));
+            }
+            any_disk_rename = true;
+        }
+
+        // Phase 3 in SQLite: two-pass atomic transaction so UNIQUE(relative_path) never conflicts.
+        let folder_levels = load_folder_levels(&conn)?;
+        let now = Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+
+        {
+            let mut temp_stmt =
+                tx.prepare("UPDATE photos SET relative_path = ?2 WHERE id = ?1")?;
+            for (idx, p) in plans.iter().enumerate() {
+                if !p.will_rename_disk {
+                    continue;
+                }
+                for photo in &photos_by_plan[idx] {
+                    let tmp_rel = format!("__pf_swap__/{}/{}", batch_nonce, photo.id);
+                    temp_stmt.execute(rusqlite::params![photo.id, tmp_rel])?;
+                }
+            }
+        }
+
+        let mut total_photos_updated = 0usize;
+        let mut change_results = Vec::with_capacity(plans.len());
+
+        {
+            let mut full_upd = tx.prepare(
+                "UPDATE photos
+                 SET subject_id = ?2, relative_path = ?3, folder_path = ?4,
+                     leaf_folder = ?5, filename = ?6, tags_json = ?7, updated_at = ?8
+                 WHERE id = ?1",
+            )?;
+            let mut subj_upd = tx.prepare(
+                "UPDATE photos SET subject_id = ?2, updated_at = ?3 WHERE id = ?1",
+            )?;
+
+            for (idx, p) in plans.iter().enumerate() {
+                let mut count = 0usize;
+                for photo in &photos_by_plan[idx] {
+                    if p.will_rename_disk {
+                        let new_filename = file_renames_by_plan[idx]
+                            .get(&photo.filename)
+                            .cloned()
+                            .unwrap_or_else(|| photo.filename.clone());
+                        let new_rel = if p.target_folder_path.is_empty() {
+                            new_filename.clone()
+                        } else {
+                            format!("{}/{}", p.target_folder_path, new_filename)
+                        };
+                        let mut merged_tags: BTreeMap<String, String> =
+                            serde_json::from_str(&photo.tags_json).unwrap_or_default();
+                        let parsed = parse_relative_location(&new_rel, &folder_levels);
+                        for (k, v) in parsed.tags {
+                            merged_tags.insert(k, v);
+                        }
+                        let new_tags_json = serde_json::to_string(&merged_tags)?;
+                        count += full_upd.execute(rusqlite::params![
+                            photo.id,
+                            p.target_subject_id,
+                            new_rel,
+                            p.target_folder_path,
+                            p.target_leaf,
+                            new_filename,
+                            new_tags_json,
+                            now,
+                        ])?;
+                    } else {
+                        count += subj_upd.execute(rusqlite::params![
+                            photo.id,
+                            p.target_subject_id,
+                            now,
+                        ])?;
+                    }
+                }
+                total_photos_updated += count;
+                change_results.push(FolderChangeResultItem {
+                    old_folder_path: p.old_folder_path.clone(),
+                    new_folder_path: p.target_folder_path.clone(),
+                    target_subject_id: p.target_subject_id.clone(),
+                    target_subject_name: p.target_subject_name.clone(),
+                    photos_updated: count,
+                    action: p.action.clone(),
+                });
+            }
+        }
+
+        tx.commit()?;
+
+        Ok(BatchReassignResult {
+            folders_updated: plans.len(),
+            photos_updated: total_photos_updated,
+            renamed_on_disk: any_disk_rename,
+            changes: change_results,
+        })
+    }
+
+    /// Removes a photo folder from the event database (and cached thumbnails/previews),
+    /// and either moves the original folder to `_photofinish/trash/` (reversible and never
+    /// re-scanned), permanently deletes it from disk, or leaves originals untouched on disk.
+    pub fn remove_folder(
+        &self,
+        folder_path: &str,
+        mode: RemoveFolderMode,
+    ) -> Result<RemoveFolderResult> {
+        let rel_folder = validate_event_rel_folder(folder_path)?;
+        let mut conn = self.write_conn.lock().unwrap();
+
+        struct DelPhoto {
+            relative_path: String,
+            thumb: Option<String>,
+            preview: Option<String>,
+        }
+
+        let photos: Vec<DelPhoto> = {
+            let mut stmt = conn.prepare(
+                "SELECT relative_path, thumbnail_rel_path, preview_rel_path
+                 FROM photos WHERE folder_path = ?1",
+            )?;
+            let rows = stmt
+                .query_map([&rel_folder], |r| {
+                    Ok(DelPhoto {
+                        relative_path: r.get(0)?,
+                        thumb: r.get(1)?,
+                        preview: r.get(2)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let tx = conn.transaction()?;
+        let photos_removed = tx.execute("DELETE FROM photos WHERE folder_path = ?1", [&rel_folder])?;
+        tx.commit()?;
+
+        // Clean up cached thumbnails & previews inside `_photofinish/`
+        for p in &photos {
+            if let Some(ref t) = p.thumb {
+                let _ = fs::remove_file(self.root.join(t));
+            }
+            if let Some(ref pr) = p.preview {
+                let _ = fs::remove_file(self.root.join(pr));
+            }
+        }
+
+        let old_abs = self.root.join(&rel_folder);
+        let mut trashed_to: Option<String> = None;
+
+        match mode {
+            RemoveFolderMode::DbOnly => {}
+            RemoveFolderMode::Trash => {
+                if old_abs.exists() {
+                    let mut trash_rel = format!("_photofinish/trash/{}", rel_folder);
+                    let mut trash_abs = self.root.join(&trash_rel);
+                    if trash_abs.exists() {
+                        let ts = Utc::now().format("%Y%m%d_%H%M%S");
+                        trash_rel = format!("_photofinish/trash/{}_{}", rel_folder, ts);
+                        trash_abs = self.root.join(&trash_rel);
+                    }
+                    if old_abs.is_dir() && !dir_has_subdirectories(&old_abs) {
+                        if let Some(parent) = trash_abs.parent() {
+                            fs::create_dir_all(parent).map_err(|e| {
+                                Error::Io(format!("Failed to create trash dir {}: {}", parent.display(), e))
+                            })?;
+                        }
+                        fs::rename(&old_abs, &trash_abs).map_err(|e| {
+                            Error::Io(format!(
+                                "Failed to move {} to trash {}: {}",
+                                old_abs.display(),
+                                trash_abs.display(),
+                                e
+                            ))
+                        })?;
+                    } else {
+                        fs::create_dir_all(&trash_abs).map_err(|e| {
+                            Error::Io(format!("Failed to create trash dir {}: {}", trash_abs.display(), e))
+                        })?;
+                        for p in &photos {
+                            let src = self.root.join(&p.relative_path);
+                            if src.is_file() {
+                                if let Some(fname) = src.file_name() {
+                                    let dst = trash_abs.join(fname);
+                                    let _ = fs::rename(&src, &dst);
+                                }
+                            }
+                        }
+                        let _ = fs::remove_dir(&old_abs);
+                    }
+                    trashed_to = Some(trash_rel);
+                }
+            }
+            RemoveFolderMode::DeleteDisk => {
+                if old_abs.is_dir() && !dir_has_subdirectories(&old_abs) {
+                    fs::remove_dir_all(&old_abs).map_err(|e| {
+                        Error::Io(format!("Failed to delete {}: {}", old_abs.display(), e))
+                    })?;
+                } else {
+                    for p in &photos {
+                        let src = self.root.join(&p.relative_path);
+                        if src.is_file() {
+                            let _ = fs::remove_file(&src);
+                        }
+                    }
+                    let _ = fs::remove_dir(&old_abs);
+                }
+            }
+        }
+
+        Ok(RemoveFolderResult {
+            folder_path: rel_folder,
+            photos_removed,
+            mode,
+            trashed_to,
+        })
     }
 
     /// Lists unassigned folders (`subject_id IS NULL`) grouped by their parent folder path,
@@ -1460,6 +2168,59 @@ fn sanitize_folder_component(name: &str) -> String {
         .to_string()
 }
 
+fn validate_event_rel_folder(folder_path: &str) -> Result<String> {
+    let norm = folder_path.trim().replace('\\', "/");
+    let norm = norm.trim_matches('/').to_string();
+    if norm.is_empty() {
+        return Err(Error::InvalidInput("Folder path cannot be empty".into()));
+    }
+    for seg in norm.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return Err(Error::InvalidInput(format!(
+                "Invalid folder path '{}'",
+                folder_path
+            )));
+        }
+    }
+    if norm == "_photofinish" || norm.starts_with("_photofinish/") {
+        return Err(Error::InvalidInput(
+            "Cannot modify internal _photofinish directory".into(),
+        ));
+    }
+    Ok(norm)
+}
+
+fn dir_has_subdirectories(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+}
+
+fn unique_filename_in_dir(dir: &Path, filename: &str) -> String {
+    if !dir.join(filename).exists() {
+        return filename.to_string();
+    }
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| filename.to_string());
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for n in 2..10_000 {
+        let candidate = format!("{}_{}{}", stem, n, ext);
+        if !dir.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    format!("{}_{}{}", stem, id::generate("dup_"), ext)
+}
+
 fn auto_match_unassigned_in_tx(tx: &rusqlite::Transaction<'_>, now: &str) -> Result<usize> {
     let subject_lookup = load_subject_number_map(tx)?;
     if subject_lookup.is_empty() {
@@ -1707,5 +2468,202 @@ mod tests {
 
         let after = bundle.list_unassigned_folders(None).unwrap();
         assert_eq!(after.folders.len(), 0);
+    }
+
+    #[test]
+    fn batch_reassign_handles_cyclic_rotation_swap_and_safe_merge_with_collision() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("rotation-swap");
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "Rotation Swap Test".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("ROT".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: None,
+            scaffold: None,
+        })
+        .unwrap();
+
+        let sub_a = bundle
+            .add_subject(Some("105"), "Julia", Some("B"), Some("Session 10A"), None)
+            .unwrap();
+        let sub_b = bundle
+            .add_subject(Some("107"), "Reece", Some("C"), Some("Session 10A"), None)
+            .unwrap();
+        let sub_c = bundle
+            .add_subject(Some("117"), "Faith", Some("M"), Some("Session 10A"), None)
+            .unwrap();
+
+        // Create 3 Beam folders (out of order!) + 1 Floor folder for Julia (to verify group detection & cross-apparatus sample photo)
+        let files = [
+            ("Gym A/Session 10A/Group 1A/Beam/105 Julia B/IMG_001.jpg", b"actually-reece".as_slice()),
+            ("Gym A/Session 10A/Group 1A/Beam/107 Reece C/IMG_001.jpg", b"actually-faith".as_slice()),
+            ("Gym A/Session 10A/Group 1A/Beam/117 Faith M/IMG_001.jpg", b"actually-julia".as_slice()),
+            ("Gym A/Session 10A/Group 1A/Floor/105 Julia B/FLR_001.jpg", b"julia-floor".as_slice()),
+        ];
+        for (rel, bytes) in files {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, bytes).unwrap();
+        }
+        let scan = bundle.scan_directory().unwrap();
+        assert_eq!(scan.photos_new, 4);
+        for job in &scan.pending_jobs {
+            bundle
+                .mark_photo_ready(
+                    &job.photo_id,
+                    &format!("_photofinish/thumbnails/{}.jpg", job.photo_id),
+                    &format!("_photofinish/previews/{}.jpg", job.photo_id),
+                    800,
+                    600,
+                )
+                .unwrap();
+        }
+
+        // Verify list_folders detects Session 10A, Group 1A, and cross-apparatus sample photo for Julia
+        let listed = bundle
+            .list_folders(Some("Gym A/Session 10A/Group 1A/Beam"), false, None)
+            .unwrap();
+        assert_eq!(listed.folders.len(), 3);
+        assert_eq!(listed.detected_session_group.as_deref(), Some("Session 10A"));
+        assert_eq!(
+            listed.detected_group_prefix.as_deref(),
+            Some("Gym A/Session 10A/Group 1A")
+        );
+        assert_eq!(listed.same_group_subject_ids.len(), 3);
+        // Julia's reference sample photo should come from Floor (outside Beam!)
+        let julia_sample_id = listed.subject_sample_photos.get(&sub_a.id).unwrap();
+        let julia_floor_job = scan
+            .pending_jobs
+            .iter()
+            .find(|j| j.relative_path.contains("FLR_001.jpg"))
+            .unwrap();
+        assert_eq!(julia_sample_id, &julia_floor_job.photo_id);
+
+        // Cyclic 3-way swap on Beam: 105 -> 107, 107 -> 117, 117 -> 105
+        let res = bundle
+            .apply_folder_reassignments(
+                &[
+                    FolderReassignmentInput {
+                        folder_path: "Gym A/Session 10A/Group 1A/Beam/105 Julia B".into(),
+                        target_subject_id: Some(sub_b.id.clone()),
+                    },
+                    FolderReassignmentInput {
+                        folder_path: "Gym A/Session 10A/Group 1A/Beam/107 Reece C".into(),
+                        target_subject_id: Some(sub_c.id.clone()),
+                    },
+                    FolderReassignmentInput {
+                        folder_path: "Gym A/Session 10A/Group 1A/Beam/117 Faith M".into(),
+                        target_subject_id: Some(sub_a.id.clone()),
+                    },
+                ],
+                true,
+            )
+            .unwrap();
+        assert_eq!(res.folders_updated, 3);
+        assert_eq!(res.photos_updated, 3);
+        assert!(res.renamed_on_disk);
+        assert!(res.changes.iter().all(|c| c.action == "swapped"));
+
+        // Verify exact file contents landed in the right folders on disk with ZERO mixing!
+        assert_eq!(
+            fs::read(root.join("Gym A/Session 10A/Group 1A/Beam/107 Reece C/IMG_001.jpg")).unwrap(),
+            b"actually-reece"
+        );
+        assert_eq!(
+            fs::read(root.join("Gym A/Session 10A/Group 1A/Beam/117 Faith M/IMG_001.jpg")).unwrap(),
+            b"actually-faith"
+        );
+        assert_eq!(
+            fs::read(root.join("Gym A/Session 10A/Group 1A/Beam/105 Julia B/IMG_001.jpg")).unwrap(),
+            b"actually-julia"
+        );
+
+        // Now add an unassigned extra folder with colliding filename IMG_001.jpg and merge into 105 Julia B
+        let extra = root.join("Gym A/Session 10A/Group 1A/Beam/Extra/IMG_001.jpg");
+        fs::create_dir_all(extra.parent().unwrap()).unwrap();
+        fs::write(&extra, b"julia-extra").unwrap();
+        bundle.scan_directory().unwrap();
+
+        let merge_res = bundle
+            .apply_folder_reassignments(
+                &[FolderReassignmentInput {
+                    folder_path: "Gym A/Session 10A/Group 1A/Beam/Extra".into(),
+                    target_subject_id: Some(sub_a.id.clone()),
+                }],
+                true,
+            )
+            .unwrap();
+        assert_eq!(merge_res.changes[0].action, "merged");
+        assert_eq!(
+            fs::read(root.join("Gym A/Session 10A/Group 1A/Beam/105 Julia B/IMG_001.jpg")).unwrap(),
+            b"actually-julia"
+        );
+        assert_eq!(
+            fs::read(root.join("Gym A/Session 10A/Group 1A/Beam/105 Julia B/IMG_001_2.jpg"))
+                .unwrap(),
+            b"julia-extra"
+        );
+    }
+
+    #[test]
+    fn remove_folder_supports_trash_permanent_delete_and_db_only() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("remove-folder-test");
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "Remove Folder Test".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("REM".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: None,
+            scaffold: None,
+        })
+        .unwrap();
+
+        let f_trash = root.join("Gym B/Session 2B/Group 1B/Beam/Delete/IMG_1.jpg");
+        let f_perm = root.join("Gym B/Session 2B/Group 1B/Beam/Junk/IMG_2.jpg");
+        let f_db = root.join("Gym B/Session 2B/Group 1B/Beam/KeepDisk/IMG_3.jpg");
+        for p in [&f_trash, &f_perm, &f_db] {
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, b"jpgdata").unwrap();
+        }
+        let scan = bundle.scan_directory().unwrap();
+        assert_eq!(scan.photos_new, 3);
+
+        // 1. Trash mode: moves out of event tree into _photofinish/trash, never re-scanned!
+        let r1 = bundle
+            .remove_folder("Gym B/Session 2B/Group 1B/Beam/Delete", RemoveFolderMode::Trash)
+            .unwrap();
+        assert_eq!(r1.photos_removed, 1);
+        assert!(!f_trash.exists());
+        let trashed_path = root.join(r1.trashed_to.unwrap());
+        assert!(trashed_path.join("IMG_1.jpg").is_file());
+
+        // 2. Permanent delete mode: removed from disk & DB
+        let r2 = bundle
+            .remove_folder("Gym B/Session 2B/Group 1B/Beam/Junk", RemoveFolderMode::DeleteDisk)
+            .unwrap();
+        assert_eq!(r2.photos_removed, 1);
+        assert!(!f_perm.parent().unwrap().exists());
+
+        // 3. DB-only mode: removed from DB, remains on disk
+        let r3 = bundle
+            .remove_folder("Gym B/Session 2B/Group 1B/Beam/KeepDisk", RemoveFolderMode::DbOnly)
+            .unwrap();
+        assert_eq!(r3.photos_removed, 1);
+        assert!(f_db.is_file());
+
+        // Re-scanning only re-discovers KeepDisk (1 photo), NEVER Delete (trashed) or Junk (deleted)!
+        let rescan = bundle.scan_directory().unwrap();
+        assert_eq!(rescan.photos_new, 1);
+        assert_eq!(rescan.photos_found, 1);
     }
 }
