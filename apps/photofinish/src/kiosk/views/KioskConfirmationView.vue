@@ -10,11 +10,12 @@ const props = defineProps<{
 
 const store = useKioskStore();
 const order = ref<KioskOrder | null>(null);
-const qrSvg = ref<string>("");
+const qrDataUrl = ref<string>("");
 const loading = ref(true);
 
 async function loadOrder() {
   loading.value = true;
+  qrDataUrl.value = "";
   try {
     if (store.lastOrder?.orderNumber === props.orderNumber) {
       order.value = store.lastOrder;
@@ -25,10 +26,10 @@ async function loadOrder() {
       }
     }
     if (order.value?.squarePosUrl) {
-      qrSvg.value = await QRCode.toString(order.value.squarePosUrl, {
-        type: "svg",
-        margin: 1,
-        width: 220,
+      qrDataUrl.value = await QRCode.toDataURL(order.value.squarePosUrl, {
+        margin: 2,
+        width: 440,
+        errorCorrectionLevel: "M",
       });
     }
   } finally {
@@ -67,8 +68,17 @@ watch(() => props.orderNumber, loadOrder);
       </div>
 
       <!-- Offline Square POS QR Code -->
-      <div class="bg-slate-50 rounded-2xl border border-slate-200 p-5 inline-flex flex-col items-center space-y-2">
-        <div v-if="qrSvg" v-html="qrSvg" class="w-52 h-52 bg-white p-2 rounded-xl border border-slate-200" />
+      <div class="bg-slate-50 rounded-2xl border border-slate-200 p-6 flex flex-col items-center gap-3">
+        <div
+          v-if="qrDataUrl"
+          class="bg-white p-3 rounded-2xl border border-slate-200 shadow-xs inline-flex items-center justify-center"
+        >
+          <img
+            :src="qrDataUrl"
+            alt="Square POS Checkout QR Code"
+            class="w-52 h-52 block"
+          />
+        </div>
         <p class="text-sm font-semibold text-slate-800">
           Show this QR code or order # at the checkout desk
         </p>
@@ -77,7 +87,7 @@ watch(() => props.orderNumber, loadOrder);
         </p>
       </div>
 
-      <!-- Compact Item Summary -->
+      <!-- Compact Item & Tax Summary -->
       <div class="text-left border-t border-slate-200 pt-4 space-y-1.5 text-sm">
         <div v-for="item in order.items" :key="item.id" class="flex justify-between text-slate-600">
           <span class="truncate pr-3">
@@ -85,6 +95,10 @@ watch(() => props.orderNumber, loadOrder);
             <span v-if="item.subjectDisplayName" class="text-slate-400">— {{ item.subjectDisplayName }}</span>
           </span>
           <span class="font-mono font-semibold text-slate-800">{{ formatCents(item.lineTotalCents) }}</span>
+        </div>
+        <div class="flex justify-between text-slate-500 pt-2 border-t border-slate-100">
+          <span>Tax ({{ (order.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
+          <span class="font-mono">{{ formatCents(order.taxCents) }}</span>
         </div>
       </div>
 
