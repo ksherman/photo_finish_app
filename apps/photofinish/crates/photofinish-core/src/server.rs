@@ -6,6 +6,7 @@ use axum::{Json, Router};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
