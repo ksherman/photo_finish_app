@@ -290,14 +290,14 @@ onMounted(() => {
 }
 .kiosk-marquee-left {
   will-change: transform;
-  animation: kiosk-left 90s linear infinite;
+  animation: kiosk-left 280s linear infinite;
 }
 .kiosk-marquee-right {
   will-change: transform;
-  animation: kiosk-right 220s linear infinite;
+  animation: kiosk-right 800s linear infinite;
 }
 .kiosk-marquee-left-slow {
   will-change: transform;
-  animation: kiosk-left 110s linear infinite;
+  animation: kiosk-left 340s linear infinite;
 }
 </style>
