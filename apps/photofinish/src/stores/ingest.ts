@@ -5,6 +5,7 @@ import type {
   CopyProgressEvent,
   IngestResult,
   ReaderConfig,
+  ReaderLayoutUpdate,
 } from "@/types";
 
 interface CopyState {
@@ -23,6 +24,7 @@ export const useIngestStore = defineStore("ingest", {
   state: () => ({
     cardReaders: [] as CardReaderInfo[],
     readerConfigs: {} as Record<string, ReaderConfig>,
+    groupOrder: [] as string[],
     copyStates: {} as Record<string, CopyState>,
   }),
 
@@ -45,22 +47,137 @@ export const useIngestStore = defineStore("ingest", {
 
   actions: {
     async loadReaderConfigs() {
-      const list = await invoke<ReaderConfig[]>("list_reader_configs");
+      const [list, savedGroupsJson] = await Promise.all([
+        invoke<ReaderConfig[]>("list_reader_configs"),
+        invoke<string | null>("get_app_setting", { key: "reader_group_order" }).catch(() => null),
+      ]);
       const map: Record<string, ReaderConfig> = {};
       for (const cfg of list) {
         map[cfg.readerId] = cfg;
       }
       this.readerConfigs = map;
+
+      let parsedGroups: string[] = [];
+      if (savedGroupsJson) {
+        try {
+          const arr = JSON.parse(savedGroupsJson);
+          if (Array.isArray(arr)) {
+            parsedGroups = arr.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+          }
+        } catch {
+          parsedGroups = [];
+        }
+      }
+      // Ensure any group referenced by a saved reader config is present in groupOrder
+      const merged = [...parsedGroups];
+      for (const cfg of list) {
+        const g = cfg.groupName?.trim();
+        if (g && !merged.includes(g)) {
+          merged.push(g);
+        }
+      }
+      this.groupOrder = merged;
+    },
+
+    async saveGroupOrder(groups: string[]) {
+      const clean: string[] = [];
+      for (const g of groups) {
+        const t = g.trim();
+        if (t && !clean.includes(t)) clean.push(t);
+      }
+      this.groupOrder = clean;
+      await invoke("set_app_setting", {
+        key: "reader_group_order",
+        value: JSON.stringify(clean),
+      });
+    },
+
+    async addGroup(name: string) {
+      const trimmed = name.trim();
+      if (!trimmed || this.groupOrder.includes(trimmed)) return;
+      await this.saveGroupOrder([...this.groupOrder, trimmed]);
+    },
+
+    async renameGroup(oldName: string, newName: string) {
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === oldName) return;
+      const updates: ReaderLayoutUpdate[] = [];
+      for (const cfg of Object.values(this.readerConfigs)) {
+        if ((cfg.groupName || "") === oldName) {
+          updates.push({
+            readerId: cfg.readerId,
+            groupName: trimmed,
+            sortOrder: cfg.sortOrder,
+          });
+        }
+      }
+      if (updates.length > 0) {
+        await this.saveReaderLayout(updates);
+      }
+      const nextOrder = this.groupOrder.map((g) => (g === oldName ? trimmed : g));
+      await this.saveGroupOrder(nextOrder);
+    },
+
+    async removeGroup(name: string) {
+      const updates: ReaderLayoutUpdate[] = [];
+      for (const cfg of Object.values(this.readerConfigs)) {
+        if ((cfg.groupName || "") === name) {
+          updates.push({
+            readerId: cfg.readerId,
+            groupName: null,
+            sortOrder: cfg.sortOrder,
+          });
+        }
+      }
+      if (updates.length > 0) {
+        await this.saveReaderLayout(updates);
+      }
+      await this.saveGroupOrder(this.groupOrder.filter((g) => g !== name));
+    },
+
+    async moveGroup(name: string, delta: -1 | 1) {
+      const idx = this.groupOrder.indexOf(name);
+      const target = idx + delta;
+      if (idx < 0 || target < 0 || target >= this.groupOrder.length) return;
+      const next = [...this.groupOrder];
+      const [moved] = next.splice(idx, 1);
+      next.splice(target, 0, moved);
+      await this.saveGroupOrder(next);
     },
 
     async saveReaderConfig(config: ReaderConfig) {
       await invoke("save_reader_config", { config });
       this.readerConfigs[config.readerId] = { ...config };
+      const g = config.groupName?.trim();
+      if (g && !this.groupOrder.includes(g)) {
+        await this.saveGroupOrder([...this.groupOrder, g]);
+      }
+    },
+
+    async saveReaderLayout(updates: ReaderLayoutUpdate[]) {
+      // Optimistically update local store so drag-and-drop feels instantaneous
+      for (const u of updates) {
+        const existing = this.readerConfigs[u.readerId];
+        if (existing) {
+          this.readerConfigs[u.readerId] = {
+            ...existing,
+            groupName: u.groupName?.trim() || null,
+            sortOrder: u.sortOrder,
+          };
+        }
+      }
+      await invoke("save_reader_layout", { updates });
+    },
+
+    async deleteReaderConfig(readerId: string) {
+      await invoke("delete_reader_config", { readerId });
+      delete this.readerConfigs[readerId];
     },
 
     async clearAllConfigs() {
       await invoke("clear_reader_configs");
       this.readerConfigs = {};
+      await this.saveGroupOrder([]);
     },
 
     async discoverReaders() {

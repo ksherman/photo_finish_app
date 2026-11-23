@@ -5,14 +5,29 @@ import { useEventStore } from "@/stores/event";
 import { useIngestStore } from "@/stores/ingest";
 import ReaderDashboardCard from "@/components/ReaderDashboardCard.vue";
 import ReaderSetupModal from "@/components/ReaderSetupModal.vue";
-import type { CardReaderInfo } from "@/types";
+import type { CardReaderInfo, ReaderLayoutUpdate } from "@/types";
 
 const eventStore = useEventStore();
 const ingestStore = useIngestStore();
 
 const configuringReader = ref<CardReaderInfo | null>(null);
+const configuringDefaultGroup = ref<string | null>(null);
 const isEjectingAll = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+// Group creation & inline rename state
+const showNewGroupInput = ref(false);
+const newGroupName = ref("");
+const renamingGroup = ref<string | null>(null);
+const renameGroupDraft = ref("");
+
+// Pointer-based drag-and-drop state (works reliably in macOS WKWebView regardless of Tauri OS file-drop)
+const draggingReader = ref<CardReaderInfo | null>(null);
+const dragX = ref(0);
+const dragY = ref(0);
+const hoverGroup = ref<string | null>(null);
+const hoverTargetReaderId = ref<string | null>(null);
+const hoverDropSide = ref<"left" | "right" | null>(null);
 
 const onlineReaders = computed(() =>
   ingestStore.cardReaders.filter((r) => r.volume_name !== "Offline" && Boolean(r.disk_id))
@@ -21,6 +36,260 @@ const onlineReaders = computed(() =>
 const anyReaderCopying = computed(() =>
   onlineReaders.value.some((r) => ingestStore.getCopyState(r.reader_id).isCopying)
 );
+
+/// Merge live online readers with persisted offline reader configs, preserving stable
+/// `(groupName, sortOrder)` slots so cards NEVER jump around when pulling an SD card out!
+const allReaders = computed<CardReaderInfo[]>(() => {
+  const readers = [...ingestStore.cardReaders];
+  for (const [readerId, cfg] of Object.entries(ingestStore.readerConfigs)) {
+    if (!readers.some((r) => r.reader_id === readerId)) {
+      readers.push({
+        reader_id: readerId,
+        display_name: cfg.displayName,
+        mount_point: "Not Connected",
+        volume_name: "Offline",
+        bus_protocol: "Unknown",
+        is_internal: false,
+        disk_id: "",
+        file_count: 0,
+        folder_count: 0,
+      });
+    }
+  }
+  return readers;
+});
+
+function sortReadersInBucket(list: CardReaderInfo[]): CardReaderInfo[] {
+  return [...list].sort((a, b) => {
+    const cfgA = ingestStore.readerConfigs[a.reader_id];
+    const cfgB = ingestStore.readerConfigs[b.reader_id];
+    // Configured readers come first in their exact locked sortOrder; unconfigured follow
+    if (Boolean(cfgA) !== Boolean(cfgB)) return cfgA ? -1 : 1;
+    if (cfgA && cfgB && cfgA.sortOrder !== cfgB.sortOrder) {
+      return cfgA.sortOrder - cfgB.sortOrder;
+    }
+    const labelA = cfgA?.customLabel || a.display_name;
+    const labelB = cfgB?.customLabel || b.display_name;
+    return labelA.localeCompare(labelB, undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+interface ReaderGroupSection {
+  name: string;
+  readers: CardReaderInfo[];
+  onlineCount: number;
+}
+
+const namedGroups = computed<ReaderGroupSection[]>(() => {
+  return ingestStore.groupOrder.map((groupName) => {
+    const bucket = sortReadersInBucket(
+      allReaders.value.filter((r) => {
+        const cfg = ingestStore.readerConfigs[r.reader_id];
+        return (cfg?.groupName || null) === groupName;
+      })
+    );
+    const onlineCount = bucket.filter((r) => r.volume_name !== "Offline").length;
+    return { name: groupName, readers: bucket, onlineCount };
+  });
+});
+
+const ungroupedReaders = computed<CardReaderInfo[]>(() => {
+  return sortReadersInBucket(
+    allReaders.value.filter((r) => {
+      const cfg = ingestStore.readerConfigs[r.reader_id];
+      const g = cfg?.groupName?.trim() || "";
+      return !g || !ingestStore.groupOrder.includes(g);
+    })
+  );
+});
+
+const draggingLabel = computed(() => {
+  if (!draggingReader.value) return "";
+  const cfg = ingestStore.readerConfigs[draggingReader.value.reader_id];
+  return cfg?.customLabel?.trim() || draggingReader.value.display_name;
+});
+
+async function createGroup() {
+  const name = newGroupName.value.trim();
+  if (!name) return;
+  await ingestStore.addGroup(name);
+  newGroupName.value = "";
+  showNewGroupInput.value = false;
+}
+
+function startRenameGroup(name: string) {
+  renamingGroup.value = name;
+  renameGroupDraft.value = name;
+}
+
+async function commitRenameGroup(oldName: string) {
+  const next = renameGroupDraft.value.trim();
+  renamingGroup.value = null;
+  if (next && next !== oldName) {
+    await ingestStore.renameGroup(oldName, next);
+  }
+}
+
+async function confirmRemoveGroup(name: string) {
+  const sec = namedGroups.value.find((g) => g.name === name);
+  const count = sec?.readers.length || 0;
+  if (count > 0) {
+    const ok = await ask(
+      `Remove group "${name}"? Its ${count} reader(s) will stay saved and move to Ungrouped.`,
+      { title: "Remove Group", kind: "warning" }
+    );
+    if (!ok) return;
+  }
+  await ingestStore.removeGroup(name);
+}
+
+async function nudgeReaderInList(
+  bucket: CardReaderInfo[],
+  groupName: string | null,
+  readerId: string,
+  delta: -1 | 1
+) {
+  const configured = bucket.filter((r) => Boolean(ingestStore.readerConfigs[r.reader_id]));
+  const idx = configured.findIndex((r) => r.reader_id === readerId);
+  const target = idx + delta;
+  if (idx < 0 || target < 0 || target >= configured.length) return;
+  const reordered = [...configured];
+  const [moved] = reordered.splice(idx, 1);
+  reordered.splice(target, 0, moved);
+
+  const updates: ReaderLayoutUpdate[] = reordered.map((r, i) => ({
+    readerId: r.reader_id,
+    groupName,
+    sortOrder: i,
+  }));
+  await ingestStore.saveReaderLayout(updates);
+}
+
+// =========================================================================
+// Pointer Drag-and-Drop (Reorder Left-to-Right & Move Across Groups)
+// =========================================================================
+
+function startDrag(reader: CardReaderInfo, event: PointerEvent) {
+  draggingReader.value = reader;
+  dragX.value = event.clientX;
+  dragY.value = event.clientY;
+  hoverGroup.value = null;
+  hoverTargetReaderId.value = null;
+  hoverDropSide.value = null;
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", cleanupDrag);
+}
+
+function onPointerMove(e: PointerEvent) {
+  if (!draggingReader.value) return;
+  dragX.value = e.clientX;
+  dragY.value = e.clientY;
+
+  const els = document.elementsFromPoint(e.clientX, e.clientY);
+  let foundGroup: string | null = null;
+  let foundCardEl: HTMLElement | null = null;
+
+  for (const el of els) {
+    if (!foundCardEl && el instanceof HTMLElement && el.dataset.dropReaderId) {
+      if (el.dataset.dropReaderId !== draggingReader.value.reader_id) {
+        foundCardEl = el;
+      }
+    }
+    if (foundGroup === null && el instanceof HTMLElement && el.dataset.dropGroup !== undefined) {
+      foundGroup = el.dataset.dropGroup;
+    }
+  }
+
+  hoverGroup.value = foundGroup;
+  if (foundCardEl && foundCardEl.dataset.dropReaderId) {
+    const rect = foundCardEl.getBoundingClientRect();
+    hoverTargetReaderId.value = foundCardEl.dataset.dropReaderId;
+    hoverDropSide.value = e.clientX < rect.left + rect.width / 2 ? "left" : "right";
+  } else {
+    hoverTargetReaderId.value = null;
+    hoverDropSide.value = null;
+  }
+}
+
+async function onPointerUp() {
+  const dragged = draggingReader.value;
+  const targetGroupRaw = hoverGroup.value;
+  const targetCardId = hoverTargetReaderId.value;
+  const dropSide = hoverDropSide.value;
+  cleanupDrag();
+
+  if (!dragged || targetGroupRaw === null) return;
+
+  const targetGroup: string | null = targetGroupRaw === "" ? null : targetGroupRaw;
+  const draggedCfg = ingestStore.readerConfigs[dragged.reader_id];
+
+  // If dragging an unconfigured reader into a named group, open setup pre-filled with that group!
+  if (!draggedCfg) {
+    configuringDefaultGroup.value = targetGroup;
+    configuringReader.value = dragged;
+    return;
+  }
+
+  const sourceGroup: string | null = draggedCfg.groupName?.trim() || null;
+
+  // Build ordered configured reader IDs for the destination bucket (excluding dragged)
+  const destBucketIds = sortReadersInBucket(
+    allReaders.value.filter((r) => {
+      const cfg = ingestStore.readerConfigs[r.reader_id];
+      if (!cfg || r.reader_id === dragged.reader_id) return false;
+      const g = cfg.groupName?.trim() || null;
+      return g === targetGroup;
+    })
+  ).map((r) => r.reader_id);
+
+  let insertIndex = destBucketIds.length;
+  if (targetCardId) {
+    const idx = destBucketIds.indexOf(targetCardId);
+    if (idx >= 0) {
+      insertIndex = dropSide === "left" ? idx : idx + 1;
+    }
+  }
+  destBucketIds.splice(insertIndex, 0, dragged.reader_id);
+
+  const updates: ReaderLayoutUpdate[] = destBucketIds.map((id, idx) => ({
+    readerId: id,
+    groupName: targetGroup,
+    sortOrder: idx,
+  }));
+
+  // Re-index remaining readers in source group if moved across groups
+  if (sourceGroup !== targetGroup) {
+    const srcBucketIds = sortReadersInBucket(
+      allReaders.value.filter((r) => {
+        const cfg = ingestStore.readerConfigs[r.reader_id];
+        if (!cfg || r.reader_id === dragged.reader_id) return false;
+        const g = cfg.groupName?.trim() || null;
+        return g === sourceGroup;
+      })
+    ).map((r) => r.reader_id);
+    srcBucketIds.forEach((id, idx) => {
+      updates.push({ readerId: id, groupName: sourceGroup, sortOrder: idx });
+    });
+  }
+
+  await ingestStore.saveReaderLayout(updates);
+}
+
+function cleanupDrag() {
+  draggingReader.value = null;
+  hoverGroup.value = null;
+  hoverTargetReaderId.value = null;
+  hoverDropSide.value = null;
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  window.removeEventListener("pointercancel", cleanupDrag);
+}
+
+function openConfigure(reader: CardReaderInfo, defaultGroup: string | null = null) {
+  configuringDefaultGroup.value = defaultGroup;
+  configuringReader.value = reader;
+}
 
 async function ejectAllCards() {
   if (isEjectingAll.value || anyReaderCopying.value) return;
@@ -38,31 +307,6 @@ async function ejectAllCards() {
   }
 }
 
-const displayedReaders = computed<CardReaderInfo[]>(() => {
-  const readers = [...ingestStore.cardReaders];
-  for (const [readerId, cfg] of Object.entries(ingestStore.readerConfigs)) {
-    if (!readers.some((r) => r.reader_id === readerId)) {
-      readers.push({
-        reader_id: readerId,
-        display_name: cfg.displayName,
-        mount_point: "Not Connected",
-        volume_name: "Offline",
-        bus_protocol: "Unknown",
-        is_internal: false,
-        disk_id: "",
-        file_count: 0,
-        folder_count: 0,
-      });
-    }
-  }
-  return readers.sort((a, b) => {
-    const aOnline = a.volume_name !== "Offline";
-    const bOnline = b.volume_name !== "Offline";
-    if (aOnline !== bOnline) return aOnline ? -1 : 1;
-    return a.display_name.localeCompare(b.display_name);
-  });
-});
-
 onMounted(async () => {
   await Promise.all([ingestStore.loadReaderConfigs(), ingestStore.discoverReaders()]);
   pollTimer = setInterval(async () => {
@@ -75,10 +319,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
+  cleanupDrag();
 });
 
 async function confirmResetConfigs() {
-  const ok = await ask("Clear all persisted card reader configurations?", {
+  const ok = await ask("Clear all persisted card reader configurations and groups?", {
     title: "Reset Reader Configs",
     kind: "warning",
   });
@@ -89,15 +334,47 @@ async function confirmResetConfigs() {
 </script>
 
 <template>
-  <div class="max-w-7xl mx-auto p-6 space-y-6">
+  <div class="max-w-[1600px] mx-auto p-6 space-y-6">
+    <!-- Top Header -->
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
         <h1 class="text-2xl font-bold text-slate-900">Card Ingest</h1>
         <p class="text-sm text-slate-500 mt-0.5">
-          Copies JPEGs straight into the active Event Bundle, logs the card batch, and queues thumbnails immediately.
+          Organize card readers by group (e.g. Gym A: Floor → Beam) via drag-and-drop. Layouts stay locked to each physical USB reader ID.
         </p>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-2.5">
+        <div v-if="showNewGroupInput" class="flex items-center gap-1.5 bg-white border border-blue-300 rounded-lg p-1 shadow-xs">
+          <input
+            v-model="newGroupName"
+            @keydown.enter.prevent="createGroup"
+            @keydown.escape="showNewGroupInput = false"
+            type="text"
+            placeholder="e.g. Gym A"
+            autofocus
+            class="w-36 px-2 py-1 text-sm focus:outline-none"
+          />
+          <button
+            @click="createGroup"
+            class="px-2.5 py-1 text-xs font-semibold rounded bg-blue-600 text-white hover:bg-blue-700"
+          >
+            Add
+          </button>
+          <button
+            @click="showNewGroupInput = false"
+            class="px-1.5 py-1 text-xs text-slate-400 hover:text-slate-600"
+          >
+            &times;
+          </button>
+        </div>
+        <button
+          v-else
+          @click="showNewGroupInput = true"
+          class="px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+        >
+          + New Group
+        </button>
+
         <button
           v-if="onlineReaders.length > 1"
           @click="ejectAllCards"
@@ -113,11 +390,11 @@ async function confirmResetConfigs() {
           Refresh Readers
         </button>
         <button
-          v-if="Object.keys(ingestStore.readerConfigs).length > 0"
+          v-if="Object.keys(ingestStore.readerConfigs).length > 0 || ingestStore.groupOrder.length > 0"
           @click="confirmResetConfigs"
           class="px-3 py-1.5 text-sm text-red-600 hover:underline"
         >
-          Reset Configs
+          Reset All
         </button>
       </div>
     </div>
@@ -129,22 +406,166 @@ async function confirmResetConfigs() {
       Open or create an Event Bundle in the <strong>Events</strong> tab before ingesting memory cards.
     </div>
 
-    <div
-      v-if="displayedReaders.length > 0"
-      class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5"
-    >
-      <ReaderDashboardCard
-        v-for="reader in displayedReaders"
-        :key="reader.reader_id"
-        :reader="reader"
-        @configure="configuringReader = $event"
-      />
+    <!-- ================= NAMED GROUPS (e.g. Gym A, Gym B) ================= -->
+    <div v-if="namedGroups.length > 0" class="space-y-5">
+      <section
+        v-for="(group, gIdx) in namedGroups"
+        :key="group.name"
+        :data-drop-group="group.name"
+        class="rounded-2xl border-2 p-4 space-y-3.5 transition-all"
+        :class="
+          draggingReader && hoverGroup === group.name
+            ? 'border-indigo-500 bg-indigo-50/50 ring-2 ring-indigo-200'
+            : 'border-slate-200/90 bg-slate-50/60'
+        "
+      >
+        <!-- Group Header -->
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5">
+            <template v-if="renamingGroup === group.name">
+              <input
+                v-model="renameGroupDraft"
+                @keydown.enter.prevent="commitRenameGroup(group.name)"
+                @keydown.escape="renamingGroup = null"
+                @blur="commitRenameGroup(group.name)"
+                type="text"
+                autofocus
+                class="border border-blue-400 rounded-md px-2.5 py-0.5 text-base font-bold text-slate-900 bg-white"
+              />
+            </template>
+            <template v-else>
+              <h2 class="text-base font-bold text-slate-800">{{ group.name }}</h2>
+              <button
+                @click="startRenameGroup(group.name)"
+                title="Rename group"
+                class="text-xs text-slate-400 hover:text-slate-700 px-1.5 py-0.5 rounded hover:bg-slate-200/60"
+              >
+                Rename
+              </button>
+            </template>
+
+            <span class="px-2 py-0.5 text-xs font-medium rounded-full bg-white border border-slate-200 text-slate-600">
+              {{ group.onlineCount }}/{{ group.readers.length }} card{{ group.readers.length === 1 ? '' : 's' }} ready
+            </span>
+          </div>
+
+          <div class="flex items-center gap-1">
+            <button
+              v-if="namedGroups.length > 1"
+              @click="ingestStore.moveGroup(group.name, -1)"
+              :disabled="gIdx === 0"
+              title="Move group up"
+              class="px-2 py-1 text-xs rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-30"
+            >
+              &uarr;
+            </button>
+            <button
+              v-if="namedGroups.length > 1"
+              @click="ingestStore.moveGroup(group.name, 1)"
+              :disabled="gIdx === namedGroups.length - 1"
+              title="Move group down"
+              class="px-2 py-1 text-xs rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-30"
+            >
+              &darr;
+            </button>
+            <button
+              @click="confirmRemoveGroup(group.name)"
+              title="Remove group"
+              class="px-2 py-1 text-xs rounded text-slate-400 hover:text-red-600 hover:bg-red-50"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+
+        <!-- Reader Cards Grid (generous >= 340px card width!) -->
+        <div
+          v-if="group.readers.length > 0"
+          class="grid gap-5"
+          style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));"
+        >
+          <ReaderDashboardCard
+            v-for="(reader, rIdx) in group.readers"
+            :key="reader.reader_id"
+            :reader="reader"
+            :can-move-left="Boolean(ingestStore.readerConfigs[reader.reader_id]) && rIdx > 0"
+            :can-move-right="
+              Boolean(ingestStore.readerConfigs[reader.reader_id]) &&
+              rIdx + 1 < group.readers.filter((x) => Boolean(ingestStore.readerConfigs[x.reader_id])).length
+            "
+            :is-dragging="draggingReader?.reader_id === reader.reader_id"
+            :drop-side="hoverTargetReaderId === reader.reader_id ? hoverDropSide : null"
+            @configure="openConfigure($event, group.name)"
+            @drag-start="startDrag"
+            @move-left="nudgeReaderInList(group.readers, group.name, $event.reader_id, -1)"
+            @move-right="nudgeReaderInList(group.readers, group.name, $event.reader_id, 1)"
+          />
+        </div>
+
+        <div
+          v-else
+          class="rounded-xl border border-dashed border-slate-300 bg-white/70 p-6 text-center text-xs text-slate-500"
+        >
+          Drag a card reader here (using its <strong>⋮⋮</strong> grip) or assign <strong>{{ group.name }}</strong> in Edit Config.
+        </div>
+      </section>
     </div>
 
-    <div v-else class="bg-white rounded-xl border border-slate-200 p-14 text-center">
+    <!-- ================= UNGROUPED / NEW READERS ================= -->
+    <section
+      v-if="ungroupedReaders.length > 0 || (draggingReader && namedGroups.length > 0)"
+      data-drop-group=""
+      class="rounded-2xl transition-all"
+      :class="
+        namedGroups.length > 0
+          ? draggingReader && hoverGroup === ''
+            ? 'border-2 border-indigo-500 bg-indigo-50/50 ring-2 ring-indigo-200 p-4 space-y-3.5'
+            : 'border-2 border-dashed border-slate-200 p-4 space-y-3.5'
+          : 'space-y-3.5'
+      "
+    >
+      <div v-if="namedGroups.length > 0" class="flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-slate-600">
+          Ungrouped / New Readers ({{ ungroupedReaders.length }})
+        </h2>
+        <span class="text-xs text-slate-400">Drag into any group above or configure directly</span>
+      </div>
+
+      <div
+        v-if="ungroupedReaders.length > 0"
+        class="grid gap-5"
+        style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));"
+      >
+        <ReaderDashboardCard
+          v-for="(reader, rIdx) in ungroupedReaders"
+          :key="reader.reader_id"
+          :reader="reader"
+          :can-move-left="Boolean(ingestStore.readerConfigs[reader.reader_id]) && rIdx > 0"
+          :can-move-right="
+            Boolean(ingestStore.readerConfigs[reader.reader_id]) &&
+            rIdx + 1 < ungroupedReaders.filter((x) => Boolean(ingestStore.readerConfigs[x.reader_id])).length
+          "
+          :is-dragging="draggingReader?.reader_id === reader.reader_id"
+          :drop-side="hoverTargetReaderId === reader.reader_id ? hoverDropSide : null"
+          @configure="openConfigure($event, null)"
+          @drag-start="startDrag"
+          @move-left="nudgeReaderInList(ungroupedReaders, null, $event.reader_id, -1)"
+          @move-right="nudgeReaderInList(ungroupedReaders, null, $event.reader_id, 1)"
+        />
+      </div>
+      <div v-else class="py-4 text-center text-xs text-slate-400">
+        Drop here to remove reader from its group
+      </div>
+    </section>
+
+    <!-- Empty State -->
+    <div
+      v-if="allReaders.length === 0 && namedGroups.length === 0"
+      class="bg-white rounded-xl border border-slate-200 p-14 text-center"
+    >
       <h3 class="text-lg font-medium text-slate-900">No Card Readers Detected</h3>
       <p class="text-sm text-slate-500 mt-1">
-        Connect a USB card reader or insert an SD card to begin ingesting.
+        Connect a USB card reader or insert an SD card to begin ingesting, or click <strong>+ New Group</strong> to pre-create Gym groups.
       </p>
       <button
         @click="ingestStore.discoverReaders()"
@@ -154,6 +575,20 @@ async function confirmResetConfigs() {
       </button>
     </div>
 
+    <!-- Floating Drag Preview Pill -->
+    <div
+      v-if="draggingReader"
+      class="fixed z-50 pointer-events-none px-3.5 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold shadow-2xl flex items-center gap-2 -translate-x-1/2 -translate-y-1/2"
+      :style="{ left: `${dragX}px`, top: `${dragY}px` }"
+    >
+      <span>⋮⋮</span>
+      <span>{{ draggingLabel }}</span>
+      <span v-if="hoverGroup" class="text-xs px-1.5 py-0.5 rounded bg-white/20">
+        &rarr; {{ hoverGroup }}
+      </span>
+    </div>
+
+    <!-- Reader Setup Modal -->
     <div
       v-if="configuringReader"
       class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm"
@@ -162,6 +597,7 @@ async function confirmResetConfigs() {
       <div class="w-full max-w-lg" @click.stop>
         <ReaderSetupModal
           :reader="configuringReader"
+          :default-group="configuringDefaultGroup"
           @close="configuringReader = null"
           @saved="configuringReader = null"
         />

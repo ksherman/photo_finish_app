@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use photofinish_core::db::{LibraryEventEntry, ReaderConfig};
+use photofinish_core::db::{LibraryEventEntry, ReaderConfig, ReaderLayoutUpdate};
 use photofinish_core::event::{
     CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, ScanResult, SubjectRecord,
 };
@@ -399,6 +399,45 @@ pub fn clear_reader_configs(state: State<'_, AppState>) -> Result<(), String> {
     state
         .app_db
         .clear_reader_configs()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_reader_layout(
+    state: State<'_, AppState>,
+    updates: Vec<ReaderLayoutUpdate>,
+) -> Result<(), String> {
+    state
+        .app_db
+        .save_reader_layout(&updates)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_reader_config(
+    state: State<'_, AppState>,
+    reader_id: String,
+) -> Result<(), String> {
+    state
+        .app_db
+        .delete_reader_config(&reader_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_app_setting(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    state.app_db.get_setting(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_app_setting(
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    state
+        .app_db
+        .set_setting(&key, &value)
         .map_err(|e| e.to_string())
 }
 

@@ -188,7 +188,7 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>> {
                     get_usb_serial_for_disk(&disk.device_identifier)
                 };
 
-                let reader_id = if is_internal {
+                let mut reader_id = if is_internal {
                     "sdxc-builtin".to_string()
                 } else if let Some(ref serial) = usb_serial {
                     serial.clone()
@@ -198,6 +198,17 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>> {
                         .clone()
                         .unwrap_or_else(|| disk.device_identifier.clone())
                 };
+
+                // Guard against multi-slot hubs or identical low-cost readers reporting
+                // the same USB serial string: append the physical DeviceTreePath/disk ID
+                // if this reader_id is already taken by another slot in this scan.
+                if readers.iter().any(|r: &CardReaderInfo| r.reader_id == reader_id) {
+                    let disambiguator = disk_info
+                        .device_tree_path
+                        .clone()
+                        .unwrap_or_else(|| disk.device_identifier.clone());
+                    reader_id = format!("{}@{}", reader_id, disambiguator);
+                }
 
                 let display_name = if is_internal {
                     format!("Built-in {} Reader", bus_protocol)

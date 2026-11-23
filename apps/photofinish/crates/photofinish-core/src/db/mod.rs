@@ -31,11 +31,18 @@ pub const EVENT_MIGRATIONS: &[Migration] = &[Migration {
     sql: include_str!("migrations/0001_event_initial.sql"),
 }];
 
-pub const APP_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "0001_app_initial",
-    sql: include_str!("migrations/0001_app_initial.sql"),
-}];
+pub const APP_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "0001_app_initial",
+        sql: include_str!("migrations/0001_app_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "0002_app_reader_layout",
+        sql: include_str!("migrations/0002_app_reader_layout.sql"),
+    },
+];
 
 pub fn bundle_dir(event_root: &Path) -> PathBuf {
     event_root.join(BUNDLE_DIR_NAME)
@@ -168,6 +175,12 @@ pub struct LibraryEventEntry {
 pub struct ReaderConfig {
     pub reader_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub custom_label: Option<String>,
+    #[serde(default)]
+    pub group_name: Option<String>,
+    #[serde(default)]
+    pub sort_order: i64,
     pub destination: String,
     pub photographer: String,
     pub camera_brand: String,
@@ -177,6 +190,14 @@ pub struct ReaderConfig {
     pub file_rename_prefix: Option<String>,
     pub require_subfolder: bool,
     pub current_order: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReaderLayoutUpdate {
+    pub reader_id: String,
+    pub group_name: Option<String>,
+    pub sort_order: i64,
 }
 
 pub struct AppDb {
@@ -242,25 +263,29 @@ impl AppDb {
     pub fn list_reader_configs(&self) -> Result<Vec<ReaderConfig>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT reader_id, display_name, destination, photographer, camera_brand,
+            "SELECT reader_id, display_name, custom_label, group_name, sort_order,
+                    destination, photographer, camera_brand,
                     camera_folder_path, rename_prefix, auto_rename, file_rename_prefix,
                     require_subfolder, current_order
              FROM reader_configs
-             ORDER BY display_name ASC",
+             ORDER BY COALESCE(group_name, '') ASC, sort_order ASC, display_name ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ReaderConfig {
                 reader_id: row.get(0)?,
                 display_name: row.get(1)?,
-                destination: row.get(2)?,
-                photographer: row.get(3)?,
-                camera_brand: row.get(4)?,
-                camera_folder_path: row.get(5)?,
-                rename_prefix: row.get(6)?,
-                auto_rename: row.get::<_, i64>(7)? != 0,
-                file_rename_prefix: row.get(8)?,
-                require_subfolder: row.get::<_, i64>(9)? != 0,
-                current_order: row.get::<_, u32>(10)?,
+                custom_label: row.get(2)?,
+                group_name: row.get(3)?,
+                sort_order: row.get(4)?,
+                destination: row.get(5)?,
+                photographer: row.get(6)?,
+                camera_brand: row.get(7)?,
+                camera_folder_path: row.get(8)?,
+                rename_prefix: row.get(9)?,
+                auto_rename: row.get::<_, i64>(10)? != 0,
+                file_rename_prefix: row.get(11)?,
+                require_subfolder: row.get::<_, i64>(12)? != 0,
+                current_order: row.get::<_, u32>(13)?,
             })
         })?;
         let mut configs = Vec::new();
@@ -273,14 +298,28 @@ impl AppDb {
     pub fn save_reader_config(&self, cfg: &ReaderConfig) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
+        let clean_label = cfg
+            .custom_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let clean_group = cfg
+            .group_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         conn.execute(
             "INSERT INTO reader_configs (
-                reader_id, display_name, destination, photographer, camera_brand,
+                reader_id, display_name, custom_label, group_name, sort_order,
+                destination, photographer, camera_brand,
                 camera_folder_path, rename_prefix, auto_rename, file_rename_prefix,
                 require_subfolder, current_order, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(reader_id) DO UPDATE SET
                 display_name = excluded.display_name,
+                custom_label = excluded.custom_label,
+                group_name = excluded.group_name,
+                sort_order = excluded.sort_order,
                 destination = excluded.destination,
                 photographer = excluded.photographer,
                 camera_brand = excluded.camera_brand,
@@ -294,6 +333,9 @@ impl AppDb {
             rusqlite::params![
                 cfg.reader_id,
                 cfg.display_name,
+                clean_label,
+                clean_group,
+                cfg.sort_order,
                 cfg.destination,
                 cfg.photographer,
                 cfg.camera_brand,
@@ -306,6 +348,35 @@ impl AppDb {
                 now,
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn save_reader_layout(&self, updates: &[ReaderLayoutUpdate]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE reader_configs
+                 SET group_name = ?2, sort_order = ?3, updated_at = ?4
+                 WHERE reader_id = ?1",
+            )?;
+            for u in updates {
+                let clean_group = u
+                    .group_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                stmt.execute(rusqlite::params![u.reader_id, clean_group, u.sort_order, now])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_reader_config(&self, reader_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM reader_configs WHERE reader_id = ?1", [reader_id])?;
         Ok(())
     }
 
@@ -406,5 +477,61 @@ mod tests {
                 app_version: 1
             }
         ));
+    }
+
+    #[test]
+    fn app_db_persists_reader_groups_labels_and_sort_order() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("photofinish_app.db");
+        let app_db = AppDb::open(&db_path).unwrap();
+
+        let make_cfg = |id: &str, label: &str, group: &str, order: i64| ReaderConfig {
+            reader_id: id.into(),
+            display_name: "External USB Reader".into(),
+            custom_label: Some(label.into()),
+            group_name: Some(group.into()),
+            sort_order: order,
+            destination: format!("{}/{}", group, label),
+            photographer: "KDS".into(),
+            camera_brand: "sony".into(),
+            camera_folder_path: "DCIM".into(),
+            rename_prefix: "Gymnast".into(),
+            auto_rename: true,
+            file_rename_prefix: None,
+            require_subfolder: false,
+            current_order: 1,
+        };
+
+        app_db.save_reader_config(&make_cfg("USB-2", "Beam", "Gym A", 1)).unwrap();
+        app_db.save_reader_config(&make_cfg("USB-1", "Floor", "Gym A", 0)).unwrap();
+
+        let list = app_db.list_reader_configs().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].reader_id, "USB-1");
+        assert_eq!(list[0].custom_label.as_deref(), Some("Floor"));
+        assert_eq!(list[1].reader_id, "USB-2");
+        assert_eq!(list[1].custom_label.as_deref(), Some("Beam"));
+
+        // Reorder & move USB-2 to Gym B
+        app_db
+            .save_reader_layout(&[
+                ReaderLayoutUpdate {
+                    reader_id: "USB-2".into(),
+                    group_name: Some("Gym B".into()),
+                    sort_order: 0,
+                },
+                ReaderLayoutUpdate {
+                    reader_id: "USB-1".into(),
+                    group_name: Some("Gym A".into()),
+                    sort_order: 0,
+                },
+            ])
+            .unwrap();
+        let after = app_db.list_reader_configs().unwrap();
+        assert_eq!(after[0].group_name.as_deref(), Some("Gym A"));
+        assert_eq!(after[1].group_name.as_deref(), Some("Gym B"));
+
+        app_db.delete_reader_config("USB-2").unwrap();
+        assert_eq!(app_db.list_reader_configs().unwrap().len(), 1);
     }
 }

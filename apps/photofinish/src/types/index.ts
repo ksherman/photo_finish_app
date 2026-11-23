@@ -97,6 +97,9 @@ export interface CopyProgressEvent {
 export interface ReaderConfig {
   readerId: string;
   displayName: string;
+  customLabel?: string | null;
+  groupName?: string | null;
+  sortOrder: number;
   destination: string;
   photographer: string;
   cameraBrand: string;
@@ -106,6 +109,12 @@ export interface ReaderConfig {
   fileRenamePrefix?: string | null;
   requireSubfolder: boolean;
   currentOrder: number;
+}
+
+export interface ReaderLayoutUpdate {
+  readerId: string;
+  groupName: string | null;
+  sortOrder: number;
 }
 
 export interface IngestResult {
