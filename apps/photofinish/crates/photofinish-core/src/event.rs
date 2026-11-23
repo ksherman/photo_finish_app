@@ -12,6 +12,7 @@ use crate::db::{
     open_rw_connection, previews_dir, run_migrations, thumbnails_dir, EVENT_MIGRATIONS,
 };
 use crate::id;
+use crate::orders::{self, CreateOrderRequest, OrderRecord, ProductRecord};
 use crate::preset::{
     extract_subject_number, find_preset, parse_relative_location, scaffold_folders, ScaffoldConfig,
 };
@@ -93,6 +94,9 @@ pub struct PhotoRecord {
     pub preview_rel_path: Option<String>,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    /// Sport-agnostic grouping section (e.g. "Beam"/"Floor" for gymnastics, "Routine" for dance).
+    pub section_label: String,
+    pub tags: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1142,6 +1146,7 @@ impl EventBundle {
     pub fn search_subjects(&self, query: &str, limit: i64) -> Result<Vec<SubjectRecord>> {
         let conn = self.read_conn()?;
         let trimmed = query.trim();
+        let lower_q = trimmed.to_lowercase();
         let pattern = format!("%{}%", trimmed);
         let mut stmt = conn.prepare(
             "SELECT s.id, s.number, s.first_name, s.last_name, s.display_name,
@@ -1153,45 +1158,159 @@ impl EventBundle {
                AND (?1 = ''
                     OR s.display_name LIKE ?2 COLLATE NOCASE
                     OR COALESCE(s.number, '') LIKE ?2 COLLATE NOCASE
-                    OR COALESCE(s.team_name, '') LIKE ?2 COLLATE NOCASE)
-             GROUP BY s.id
-             ORDER BY s.display_name ASC
-             LIMIT ?3",
+                    OR COALESCE(s.team_name, '') LIKE ?2 COLLATE NOCASE
+                    OR COALESCE(s.group_label, '') LIKE ?2 COLLATE NOCASE)
+             GROUP BY s.id",
         )?;
-        let rows = stmt.query_map(rusqlite::params![trimmed, pattern, limit], |r| {
-            Ok(SubjectRecord {
-                id: r.get(0)?,
-                number: r.get(1)?,
-                first_name: r.get(2)?,
-                last_name: r.get(3)?,
-                display_name: r.get(4)?,
-                group_label: r.get(5)?,
-                team_name: r.get(6)?,
-                photo_count: r.get(7)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
+        let mut out: Vec<SubjectRecord> = stmt
+            .query_map(rusqlite::params![trimmed, pattern], |r| {
+                Ok(SubjectRecord {
+                    id: r.get(0)?,
+                    number: r.get(1)?,
+                    first_name: r.get(2)?,
+                    last_name: r.get(3)?,
+                    display_name: r.get(4)?,
+                    group_label: r.get(5)?,
+                    team_name: r.get(6)?,
+                    photo_count: r.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+
+        // Rank by relevance (exact number -> number prefix -> name prefix -> other)
+        // and tie-break by natural numeric ordering (e.g. 105 before 1000).
+        out.sort_by_key(|s| {
+            let rank: u8 = if lower_q.is_empty() {
+                0
+            } else {
+                let num_l = s.number.as_deref().unwrap_or("").to_lowercase();
+                let first_l = s.first_name.to_lowercase();
+                let last_l = s.last_name.as_deref().unwrap_or("").to_lowercase();
+                if num_l == lower_q {
+                    0
+                } else if num_l.starts_with(&lower_q) {
+                    1
+                } else if first_l.starts_with(&lower_q) || last_l.starts_with(&lower_q) {
+                    2
+                } else {
+                    3
+                }
+            };
+            let numeric_bib = s
+                .number
+                .as_deref()
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(u64::MAX);
+            (rank, numeric_bib, natural_sort_key(&s.display_name))
+        });
+
+        if limit > 0 && (out.len() as i64) > limit {
+            out.truncate(limit as usize);
         }
         Ok(out)
     }
 
-    pub fn list_subject_photos(&self, subject_id: &str) -> Result<Vec<PhotoRecord>> {
+    pub fn get_subject(&self, subject_id: &str) -> Result<Option<SubjectRecord>> {
+        let conn = self.read_conn()?;
+        let row = conn
+            .query_row(
+                "SELECT s.id, s.number, s.first_name, s.last_name, s.display_name,
+                        s.group_label, s.team_name,
+                        COUNT(CASE WHEN p.status = 'ready' THEN p.id END) AS photo_count
+                 FROM subjects s
+                 LEFT JOIN photos p ON p.subject_id = s.id
+                 WHERE s.id = ?1
+                 GROUP BY s.id",
+                [subject_id],
+                |r| {
+                    Ok(SubjectRecord {
+                        id: r.get(0)?,
+                        number: r.get(1)?,
+                        first_name: r.get(2)?,
+                        last_name: r.get(3)?,
+                        display_name: r.get(4)?,
+                        group_label: r.get(5)?,
+                        team_name: r.get(6)?,
+                        photo_count: r.get(7)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Returns a fast random sample of ready photo IDs for the kiosk home marquee.
+    pub fn list_showcase_photo_ids(&self, count: i64) -> Result<Vec<String>> {
         let conn = self.read_conn()?;
         let mut stmt = conn.prepare(
+            "SELECT id FROM photos WHERE status = 'ready' ORDER BY RANDOM() LIMIT ?1",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map([count.clamp(1, 60)], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
+    pub fn list_products(&self, include_unavailable: bool) -> Result<Vec<ProductRecord>> {
+        let conn = self.read_conn()?;
+        orders::list_products(&conn, include_unavailable)
+    }
+
+    pub fn place_order(&self, req: CreateOrderRequest) -> Result<OrderRecord> {
+        let mut conn = self.write_conn.lock().unwrap();
+        orders::place_order(&mut conn, req)
+    }
+
+    pub fn get_order_by_number(&self, order_number: &str) -> Result<Option<OrderRecord>> {
+        let conn = self.read_conn()?;
+        orders::get_order_by_number(&conn, order_number)
+    }
+
+    pub fn list_subject_photos(&self, subject_id: &str) -> Result<Vec<PhotoRecord>> {
+        let conn = self.read_conn()?;
+        let folder_levels = load_folder_levels(&conn).unwrap_or_default();
+        // Choose the level directly above "Subject" (e.g. "Apparatus" in gymnastics,
+        // "Routine" in dance, "Group" in simple) for sport-agnostic section tabs.
+        let section_level_key: Option<String> = if folder_levels.len() >= 2 {
+            Some(folder_levels[folder_levels.len() - 2].clone())
+        } else {
+            folder_levels.first().cloned()
+        };
+
+        let mut stmt = conn.prepare(
             "SELECT id, subject_id, relative_path, folder_path, leaf_folder,
-                    filename, status, thumbnail_rel_path, preview_rel_path, width, height
+                    filename, status, thumbnail_rel_path, preview_rel_path,
+                    width, height, tags_json
              FROM photos
              WHERE subject_id = ?1 AND status = 'ready'
              ORDER BY folder_path ASC, filename ASC",
         )?;
         let rows = stmt.query_map([subject_id], |r| {
+            let folder_path: String = r.get(3)?;
+            let tags_json: String = r.get(11)?;
+            let tags: BTreeMap<String, String> =
+                serde_json::from_str(&tags_json).unwrap_or_default();
+
+            let section_label = section_level_key
+                .as_ref()
+                .and_then(|k| tags.get(k))
+                .cloned()
+                .or_else(|| {
+                    // Fallback: parent folder immediately above the subject folder
+                    folder_path
+                        .rsplit_once('/')
+                        .and_then(|(parent, _)| parent.rsplit('/').next())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "Photos".to_string());
+
             Ok(PhotoRecord {
                 id: r.get(0)?,
                 subject_id: r.get(1)?,
                 relative_path: r.get(2)?,
-                folder_path: r.get(3)?,
+                folder_path,
                 leaf_folder: r.get(4)?,
                 filename: r.get(5)?,
                 status: r.get(6)?,
@@ -1199,6 +1318,8 @@ impl EventBundle {
                 preview_rel_path: r.get(8)?,
                 width: r.get(9)?,
                 height: r.get(10)?,
+                section_label,
+                tags,
             })
         })?;
         let mut out = Vec::new();

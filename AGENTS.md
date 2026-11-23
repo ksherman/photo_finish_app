@@ -55,17 +55,22 @@
   - Card reader discovery (macOS `diskutil` + `ioreg` USB hardware serial) and non-blocking copy with folder toggles, folder/file auto-rename, and immediate DB indexing.
   - Hybrid JPEG thumbnail (320px) + preview (1280px) pipeline: macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (~180 photos/sec on M4 Max) with optimized pure-Rust SIMD fallback, dedicated worker pool, batched SQLite commits (64/txn), and live throughput/ETA telemetry.
   - Multi-file roster import (`.txt` / `.csv` with automatic group/session label inference from filenames, idempotent upsert, and automatic photo folder matching) + thumbnail-assisted folder-to-subject matching (with optional safe physical folder rename/merge on disk).
-  - Embedded `axum` 0.8 LAN kiosk HTTP server (`/`, `/api/status`, `/api/subjects`, `/api/subjects/{id}/photos`, `/photos/thumbnail/{id}`, `/photos/preview/{id}`) with LAN IP detection.
+  - Embedded `axum` 0.8 LAN kiosk HTTP server (`rust-embed` Vue 3 SPA + `/api/status`, `/api/kiosk/showcase`, `/api/subjects` w/ numeric ranking, `/api/subjects/{id}` w/ sport-agnostic `section_label` grouping, `/api/products`, `POST /api/orders` w/ offline `square-commerce-v1://` QR payload, `/photos/thumbnail/{id}`, `/photos/preview/{id}`) with LAN IP detection.
+- **Kiosk Web SPA (`src/kiosk/` → embedded in `crates/photofinish-core/kiosk-dist/`):**
+  - Touch-first Vue 3 + Tailwind v4 SPA served directly from the embedded Axum server on `:4000` (live disk-reload in debug mode, `rust-embed` in release builds).
+  - Home screen with 3-row ambient photo showcase marquee + 0ms instant client-side search (exact bib # → numeric bib prefix → name ranking + session filter).
+  - Dedicated Subject Gallery page (`/subject/:id`) with sport-agnostic apparatus/section tabs & grouped sections (e.g. `All · Beam · Floor`), lazy-loaded thumbnail grid, and full-screen touch-swipe/keyboard lightbox with adjacent preview preloading.
+  - v3 Pricing Ladder Cart (`/cart`): Single Digital ($25) with automatic **3-photo tipping-point upgrade prompt** → Full Digital ($85) + Prints (5×7–16×20) + **+$10 Instant Dual USB-C/A** add-on toggle.
+  - Checkout (`/checkout`) with conditional shipping address for direct-to-home print drop-shipping + Order Confirmation (`/order/:orderNumber`) with offline SVG Square POS QR code (`qrcode`).
 - **Desktop UI (`src/` + `src-tauri/`):**
   - Event Bundle Manager (Create w/ presets & scaffolding, Open existing bundle, Gather multiple bundles from a parent NAS/season folder).
   - Card Ingest dashboard (ported & upgraded from `apps/ingest/`, saving reader configs in SQLite, Enter-to-ingest for USB barcode scanners, ingesting directly into the active event).
   - Roster & Folder Matching UI (multi-file import preview, searchable roster table, unassigned folder list with live thumbnail previews & smart group filtering).
   - Always-visible LAN Server Status Bar (active event counts, live processing progress bar + `photos/sec` + ETA, manual safety-net Scan, Start/Stop LAN kiosk server + LAN URL).
 - **Next to build in `apps/photofinish/`:**
-  1. Full touch-first Kiosk Vue SPA (embedded via `rust-embed`) with v3 pricing ladder cart (Single Digital + 3-photo upsell → Full Digital + Prints + +$10 Instant USB) and Square QR / Terminal checkout.
-  2. Order desk & native one-click USB-C/A fulfillment (reusing hardware engine) + multi-event consolidated CSV export.
-  3. ShootProof Studio API sync module (nested albums, 20–50 worker S3 upload, `zip-bundle`, WHCC/Bay Photo `lab-shipment`).
-  4. Filesystem watcher (`notify`) for manual Finder drops + Windows reader discovery (`hardware/windows.rs`) when needed.
+  1. Desktop Order Desk & native one-click USB-C/A fulfillment (reusing hardware engine) + multi-event consolidated CSV export.
+  2. ShootProof Studio API sync module (nested albums, 20–50 worker S3 upload, `zip-bundle`, WHCC/Bay Photo `lab-shipment`).
+  3. Filesystem watcher (`notify`) for manual Finder drops + Windows reader discovery (`hardware/windows.rs`) when needed.
 
 ### Legacy Reference — `server/` (Unproven Elixir Prototype)
 - **Ash Domains & Resources:**

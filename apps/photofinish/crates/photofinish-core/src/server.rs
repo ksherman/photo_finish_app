@@ -1,16 +1,23 @@
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::http::{header, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
-use crate::event::{EventBundle, EventSummary};
+use crate::event::{EventBundle, EventSummary, PhotoRecord, SubjectRecord};
+use crate::orders::{CreateOrderRequest, ProductRecord};
 use crate::{Error, Result};
+
+#[derive(Embed)]
+#[folder = "kiosk-dist/"]
+struct KioskAssets;
 
 #[derive(Clone, Default)]
 pub struct SharedActiveEvent {
@@ -105,12 +112,17 @@ impl Drop for EmbeddedServer {
 
 pub fn build_router(active_event: SharedActiveEvent) -> Router {
     Router::new()
-        .route("/", get(kiosk_index))
         .route("/api/status", get(api_status))
+        .route("/api/kiosk/showcase", get(api_showcase))
         .route("/api/subjects", get(api_search_subjects))
+        .route("/api/subjects/{id}", get(api_subject_detail))
         .route("/api/subjects/{id}/photos", get(api_subject_photos))
+        .route("/api/products", get(api_products))
+        .route("/api/orders", post(api_place_order))
+        .route("/api/orders/{order_number}", get(api_get_order))
         .route("/photos/thumbnail/{id}", get(serve_thumbnail))
         .route("/photos/preview/{id}", get(serve_preview))
+        .fallback(serve_kiosk_spa)
         .layer(CorsLayer::permissive())
         .with_state(active_event)
 }
@@ -132,6 +144,20 @@ async fn api_status(State(active): State<SharedActiveEvent>) -> impl IntoRespons
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowcaseResponse {
+    photo_ids: Vec<String>,
+}
+
+async fn api_showcase(State(active): State<SharedActiveEvent>) -> Response {
+    let Some(bundle) = active.get() else {
+        return Json(ShowcaseResponse { photo_ids: vec![] }).into_response();
+    };
+    let photo_ids = bundle.list_showcase_photo_ids(24).unwrap_or_default();
+    Json(ShowcaseResponse { photo_ids }).into_response()
+}
+
 #[derive(Deserialize)]
 struct SearchParams {
     #[serde(default)]
@@ -141,7 +167,7 @@ struct SearchParams {
 }
 
 fn default_limit() -> i64 {
-    25
+    5000
 }
 
 async fn api_search_subjects(
@@ -151,10 +177,50 @@ async fn api_search_subjects(
     let Some(bundle) = active.get() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
     };
-    match bundle.search_subjects(&params.q, params.limit.clamp(1, 100)) {
+    match bundle.search_subjects(&params.q, params.limit.clamp(1, 10_000)) {
         Ok(subjects) => Json(subjects).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubjectDetailResponse {
+    subject: SubjectRecord,
+    photos: Vec<PhotoRecord>,
+    sections: Vec<String>,
+}
+
+async fn api_subject_detail(
+    State(active): State<SharedActiveEvent>,
+    AxumPath(subject_id): AxumPath<String>,
+) -> Response {
+    let Some(bundle) = active.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
+    };
+    let subject = match bundle.get_subject(&subject_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Subject not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let photos = match bundle.list_subject_photos(&subject_id) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let mut sections: Vec<String> = Vec::new();
+    for p in &photos {
+        if !sections.contains(&p.section_label) {
+            sections.push(p.section_label.clone());
+        }
+    }
+
+    Json(SubjectDetailResponse {
+        subject,
+        photos,
+        sections,
+    })
+    .into_response()
 }
 
 async fn api_subject_photos(
@@ -166,6 +232,85 @@ async fn api_subject_photos(
     };
     match bundle.list_subject_photos(&subject_id) {
         Ok(photos) => Json(photos).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProductsResponse {
+    products: Vec<ProductRecord>,
+    tax_rate_basis_points: i64,
+    subject_label: String,
+    event_name: String,
+}
+
+async fn api_products(State(active): State<SharedActiveEvent>) -> Response {
+    let Some(bundle) = active.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
+    };
+    let summary = match bundle.summary() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let products = match bundle.list_products(false) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    Json(ProductsResponse {
+        products,
+        tax_rate_basis_points: summary.tax_rate_basis_points,
+        subject_label: summary.subject_label,
+        event_name: summary.name,
+    })
+    .into_response()
+}
+
+#[derive(Serialize)]
+struct ApiErrorBody {
+    error: String,
+}
+
+async fn api_place_order(
+    State(active): State<SharedActiveEvent>,
+    Json(req): Json<CreateOrderRequest>,
+) -> Response {
+    let Some(bundle) = active.get() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiErrorBody {
+                error: "No active event open".into(),
+            }),
+        )
+            .into_response();
+    };
+    match bundle.place_order(req) {
+        Ok(order) => (StatusCode::CREATED, Json(order)).into_response(),
+        Err(Error::InvalidInput(msg)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiErrorBody { error: msg }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiErrorBody {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_get_order(
+    State(active): State<SharedActiveEvent>,
+    AxumPath(order_number): AxumPath<String>,
+) -> Response {
+    let Some(bundle) = active.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
+    };
+    match bundle.get_order_by_number(&order_number) {
+        Ok(Some(order)) => Json(order).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Order not found").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -208,85 +353,78 @@ async fn serve_derivative(active: SharedActiveEvent, photo_id: &str, preview: bo
     }
 }
 
-/// Lightweight built-in kiosk landing page served to iPads on the venue LAN.
-/// Will be replaced with the compiled Vue Kiosk SPA embedded via rust-embed.
-async fn kiosk_index(State(active): State<SharedActiveEvent>) -> Html<String> {
-    let title = active
-        .get()
-        .and_then(|b| b.summary().ok())
-        .map(|s| format!("{} — PhotoFinish Kiosk", s.name))
-        .unwrap_or_else(|| "PhotoFinish Kiosk".to_string());
+/// Serves the compiled Vue Kiosk SPA (embedded via `rust-embed` in release builds,
+/// and reading fresh `kiosk-dist/` files from disk first in debug builds for instant UI iteration).
+async fn serve_kiosk_spa(uri: Uri) -> Response {
+    let raw_path = uri.path().trim_start_matches('/');
+    if raw_path.starts_with("api/") || raw_path.starts_with("photos/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
-    Html(format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{title}</title>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; background: #0f172a; color: #f8fafc; }}
-    .wrap {{ max-width: 780px; margin: 48px auto; padding: 24px; }}
-    .card {{ background: #1e293b; border-radius: 16px; padding: 28px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }}
-    input {{ width: 100%; padding: 14px 18px; border-radius: 999px; border: 2px solid #334155; background: #0f172a; color: #fff; font-size: 18px; box-sizing: border-box; }}
-    ul {{ list-style: none; padding: 0; margin: 16px 0 0; }}
-    li {{ padding: 12px 16px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; cursor: pointer; }}
-    li:hover {{ background: #334155; border-radius: 8px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 20px; }}
-    .grid img {{ width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 8px; background: #334155; }}
-    .muted {{ color: #94a3b8; font-size: 14px; }}
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <h1 style="margin:0 0 6px">{title}</h1>
-      <p class="muted" id="meta">Connecting to local PhotoFinish server...</p>
-      <input id="q" type="search" placeholder="Search by name or number..." autocomplete="off" />
-      <ul id="results"></ul>
-      <div id="gallery" class="grid"></div>
-    </div>
-  </div>
-  <script>
-    const q = document.getElementById('q');
-    const results = document.getElementById('results');
-    const gallery = document.getElementById('gallery');
-    const meta = document.getElementById('meta');
+    let candidate = if raw_path.is_empty() {
+        "index.html"
+    } else {
+        raw_path
+    };
 
-    fetch('/api/status').then(r => r.json()).then(data => {{
-      if (data.activeEvent) {{
-        meta.textContent = `${{data.activeEvent.photoCounts.ready}} photos ready • Search by ${{data.activeEvent.subjectLabel.toLowerCase()}}`;
-      }} else {{
-        meta.textContent = 'Waiting for operator to open an event...';
-      }}
-    }});
+    if let Some(resp) = read_kiosk_asset(candidate).await {
+        return resp;
+    }
 
-    let timer;
-    q.addEventListener('input', () => {{
-      clearTimeout(timer);
-      timer = setTimeout(async () => {{
-        const val = q.value.trim();
-        gallery.innerHTML = '';
-        if (!val) {{ results.innerHTML = ''; return; }}
-        const list = await fetch('/api/subjects?q=' + encodeURIComponent(val)).then(r => r.json());
-        results.innerHTML = list.map(s =>
-          `<li data-id="${{s.id}}"><span><strong>${{s.displayName}}</strong></span><span class="muted">${{s.photoCount}} photos</span></li>`
-        ).join('') || '<li class="muted">No matches found</li>';
-      }}, 200);
-    }});
+    // SPA client-side route fallback (e.g. /subject/sub_xxx, /cart, /checkout, /order/XLR-A0001)
+    if let Some(resp) = read_kiosk_asset("index.html").await {
+        return resp;
+    }
 
-    results.addEventListener('click', async (e) => {{
-      const li = e.target.closest('li[data-id]');
-      if (!li) return;
-      const photos = await fetch(`/api/subjects/${{li.dataset.id}}/photos`).then(r => r.json());
-      gallery.innerHTML = photos.map(p =>
-        `<a href="/photos/preview/${{p.id}}" target="_blank"><img src="/photos/thumbnail/${{p.id}}" loading="lazy" /></a>`
-      ).join('') || '<p class="muted">No ready photos yet</p>';
-    }});
-  </script>
-</body>
-</html>"#
-    ))
+    (StatusCode::NOT_FOUND, "Kiosk UI bundle not found").into_response()
+}
+
+async fn read_kiosk_asset(rel_path: &str) -> Option<Response> {
+    if rel_path.contains("..") {
+        return None;
+    }
+    let mime = mime_guess::from_path(rel_path)
+        .first_or_octet_stream()
+        .to_string();
+    let cache = if rel_path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+
+    // In debug builds, check the live kiosk-dist directory first so `pnpm build:kiosk`
+    // updates the LAN server immediately without recompiling Rust.
+    #[cfg(debug_assertions)]
+    {
+        let disk_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("kiosk-dist")
+            .join(rel_path);
+        if let Ok(bytes) = tokio::fs::read(&disk_path).await {
+            return Some(
+                (
+                    StatusCode::OK,
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CACHE_CONTROL, cache.to_string()),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+            );
+        }
+    }
+
+    KioskAssets::get(rel_path).map(|file| {
+        (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, cache.to_string()),
+            ],
+            file.data.into_owned(),
+        )
+            .into_response()
+    })
 }
 
 /// Best-effort local LAN IPv4 discovery without making any external network connection.
@@ -303,13 +441,14 @@ pub fn detect_lan_ip() -> Option<String> {
 mod tests {
     use super::*;
     use crate::event::CreateEventParams;
-    use axum::body::Body;
+    use crate::orders::{CreateOrderItemInput, OrderRecord, ShippingAddress};
+    use axum::body::{to_bytes, Body};
     use axum::http::Request;
     use tempfile::tempdir;
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn serves_status_and_subject_search() {
+    async fn serves_numerically_sorted_subjects_and_places_order_with_square_qr() {
         let dir = tempdir().unwrap();
         let bundle = Arc::new(
             EventBundle::create(CreateEventParams {
@@ -321,33 +460,102 @@ mod tests {
                 folder_levels: None,
                 order_code: Some("TST".into()),
                 station_code: Some("A".into()),
-                tax_rate_basis_points: None,
+                tax_rate_basis_points: Some(850),
                 scaffold: None,
             })
             .unwrap(),
         );
         bundle
-            .add_subject(Some("1022"), "Kevin", Some("S"), Some("1A"), None)
+            .add_subject(Some("1000"), "Zoe", Some("A"), Some("Session 1A"), None)
+            .unwrap();
+        let sub105 = bundle
+            .add_subject(Some("105"), "Julia", Some("B"), Some("Session 1A"), None)
+            .unwrap();
+        bundle
+            .add_subject(Some("1050"), "Mia", Some("C"), Some("Session 1A"), None)
             .unwrap();
 
-        let app = build_router(SharedActiveEvent::new(Some(bundle)));
+        let app = build_router(SharedActiveEvent::new(Some(Arc::clone(&bundle))));
 
+        // Numeric ordering + exact match ranking: "105" must come BEFORE "1050" and "1000"
         let resp = app
             .clone()
-            .oneshot(Request::builder().uri("/api/status").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let resp = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/subjects?q=kevin")
+                    .uri("/api/subjects?q=10")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let list: Vec<SubjectRecord> = serde_json::from_slice(&body).unwrap();
+        let nums: Vec<&str> = list.iter().filter_map(|s| s.number.as_deref()).collect();
+        assert_eq!(nums, vec!["105", "1000", "1050"]);
+
+        // Place an order with Full Digital + USB Add-On + Print
+        let products = bundle.list_products(false).unwrap();
+        let full_dig = products.iter().find(|p| p.product_type == "full_digital").unwrap();
+        let usb = products.iter().find(|p| p.product_type == "usb_addon").unwrap();
+        let print8 = products
+            .iter()
+            .find(|p| p.product_type == "print" && p.size.as_deref() == Some("8x10"))
+            .unwrap();
+
+        let order_req = CreateOrderRequest {
+            customer_name: "Jane Parent".into(),
+            customer_email: Some("jane@example.com".into()),
+            customer_phone: Some("555-1234".into()),
+            shipping_address: Some(ShippingAddress {
+                street: "123 Main St".into(),
+                street2: None,
+                city: "Chicago".into(),
+                state: "IL".into(),
+                zip: "60601".into(),
+            }),
+            notes: None,
+            items: vec![
+                CreateOrderItemInput {
+                    product_id: full_dig.id.clone(),
+                    subject_id: Some(sub105.id.clone()),
+                    photo_id: None,
+                    quantity: 1,
+                },
+                CreateOrderItemInput {
+                    product_id: usb.id.clone(),
+                    subject_id: Some(sub105.id.clone()),
+                    photo_id: None,
+                    quantity: 1,
+                },
+                CreateOrderItemInput {
+                    product_id: print8.id.clone(),
+                    subject_id: Some(sub105.id.clone()),
+                    photo_id: None,
+                    quantity: 1,
+                },
+            ],
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/orders")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&order_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let order: OrderRecord = serde_json::from_slice(&body).unwrap();
+        assert_eq!(order.order_number, "TST-A0001");
+        assert_eq!(order.subtotal_cents, 8500 + 1000 + 2800);
+        assert_eq!(order.tax_cents, 1046);
+        assert_eq!(order.total_cents, 13346);
+        assert!(order.square_pos_url.starts_with("square-commerce-v1://payment/create?data="));
     }
 }
