@@ -6,6 +6,7 @@ import type {
   EventSummary,
   LanServerStatus,
   LibraryEventEntry,
+  ProcessingMetrics,
   ScanResult,
 } from "@/types";
 
@@ -20,6 +21,7 @@ export const useEventStore = defineStore("event", {
       lanIp: null,
       lanUrl: null,
     } as LanServerStatus,
+    processingMetrics: null as ProcessingMetrics | null,
     isScanning: false,
     lastError: null as string | null,
   }),
@@ -31,7 +33,12 @@ export const useEventStore = defineStore("event", {
         this.refreshLibrary(),
         this.refreshActiveEvent(),
         this.refreshLanStatus(),
+        this.refreshProcessingMetrics(),
       ]);
+    },
+
+    async refreshProcessingMetrics() {
+      this.processingMetrics = await invoke<ProcessingMetrics>("get_processing_metrics");
     },
 
     async loadPresets() {

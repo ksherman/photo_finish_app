@@ -9,3 +9,12 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["PhotoFinish"]
+
+# Compile heavy imaging/SQLite dependencies with full SIMD optimizations even
+# during `pnpm tauri dev`, avoiding the ~50x debug-mode imaging penalty while
+# keeping app crate incremental rebuilds fast.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.photofinish-core]
+opt-level = 2

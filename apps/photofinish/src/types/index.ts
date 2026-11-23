@@ -119,3 +119,19 @@ export interface ScanResult {
   photosNew: number;
   photosSkipped: number;
 }
+
+export interface ProcessingMetrics {
+  engine: string;
+  workerThreads: number;
+  inFlight: number;
+  queued: number;
+  completed: number;
+  errors: number;
+  photosPerSec: number;
+  etaSeconds: number | null;
+  avgDecodePreviewMs: number;
+  avgEncodePreviewMs: number;
+  avgThumbMs: number;
+  avgTotalMs: number;
+  avgDbFlushMs: number;
+}

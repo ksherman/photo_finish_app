@@ -202,10 +202,11 @@ watch(
           <input
             v-model="customSubPath"
             type="text"
-            placeholder="e.g. Group 8B/Beam"
+            placeholder="Scan barcode or type e.g. Group 8B/Beam"
             class="w-full text-sm border rounded-md px-2.5 py-1.5"
             :class="subfolderRequired ? 'border-amber-400' : 'border-slate-300'"
             :disabled="copyState.isCopying"
+            @keydown.enter.prevent="canCopy && startCopy()"
           />
           <p v-if="subfolderRequired" class="text-xs text-amber-600 mt-1">Sub-folder required before copying</p>
         </div>

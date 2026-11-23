@@ -12,6 +12,7 @@ use photofinish_core::event::{
 use photofinish_core::hardware::{
     self, CardReaderInfo, CopyOptions, CopyProgressEvent, DirectoryEntry,
 };
+use photofinish_core::imaging::ProcessingMetrics;
 use photofinish_core::preset::{self, EventPreset};
 use photofinish_core::server::{detect_lan_ip, EmbeddedServer, LanServerStatus};
 
@@ -112,6 +113,11 @@ pub async fn scan_active_event(state: State<'_, AppState>) -> Result<ScanResult,
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+pub fn get_processing_metrics(state: State<'_, AppState>) -> ProcessingMetrics {
+    state.image_pipeline.metrics()
 }
 
 #[tauri::command]

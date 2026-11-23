@@ -2,61 +2,24 @@ mod commands;
 
 use std::sync::Arc;
 use tauri::Manager;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 use photofinish_core::db::AppDb;
 use photofinish_core::event::{EventBundle, PendingPhotoJob};
-use photofinish_core::imaging::process_photo_in_bundle;
+use photofinish_core::imaging::ImagePipeline;
 use photofinish_core::server::{EmbeddedServer, SharedActiveEvent};
-
-pub struct ImageTask {
-    pub bundle: Arc<EventBundle>,
-    pub job: PendingPhotoJob,
-}
 
 pub struct AppState {
     pub app_db: Arc<AppDb>,
     pub active_event: SharedActiveEvent,
     pub lan_server: Mutex<Option<EmbeddedServer>>,
-    pub image_tx: mpsc::UnboundedSender<ImageTask>,
+    pub image_pipeline: ImagePipeline,
 }
 
 impl AppState {
     pub fn queue_photo_jobs(&self, bundle: &Arc<EventBundle>, jobs: Vec<PendingPhotoJob>) {
-        for job in jobs {
-            let _ = self.image_tx.send(ImageTask {
-                bundle: Arc::clone(bundle),
-                job,
-            });
-        }
+        self.image_pipeline.enqueue(bundle, jobs);
     }
-}
-
-fn spawn_image_worker() -> mpsc::UnboundedSender<ImageTask> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ImageTask>();
-    let concurrency = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(2).max(2))
-        .unwrap_or(4);
-    let semaphore = Arc::new(Semaphore::new(concurrency));
-
-    tauri::async_runtime::spawn(async move {
-        while let Some(task) = rx.recv().await {
-            let permit = match Arc::clone(&semaphore).acquire_owned().await {
-                Ok(p) => p,
-                Err(_) => break,
-            };
-            tauri::async_runtime::spawn_blocking(move || {
-                let _permit = permit;
-                let _ = process_photo_in_bundle(
-                    &task.bundle,
-                    &task.job.photo_id,
-                    &task.job.relative_path,
-                );
-            });
-        }
-    });
-
-    tx
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,7 +37,7 @@ pub fn run() {
                     .expect("failed to open machine-local app database"),
             );
             let active_event = SharedActiveEvent::new(None);
-            let image_tx = spawn_image_worker();
+            let image_pipeline = ImagePipeline::start(None);
 
             // Best-effort auto-start LAN kiosk server on default port 4000
             let default_port: u16 = app_db
@@ -94,7 +57,7 @@ pub fn run() {
                 app_db,
                 active_event,
                 lan_server: Mutex::new(initial_server),
-                image_tx,
+                image_pipeline,
             });
 
             Ok(())
@@ -108,6 +71,7 @@ pub fn run() {
             commands::open_event,
             commands::gather_events,
             commands::scan_active_event,
+            commands::get_processing_metrics,
             commands::get_lan_server_status,
             commands::start_lan_server,
             commands::stop_lan_server,

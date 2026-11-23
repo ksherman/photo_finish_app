@@ -98,6 +98,21 @@ pub struct PendingPhotoJob {
     pub relative_path: String,
 }
 
+#[derive(Debug, Clone)]
+pub enum PhotoProcessUpdate {
+    Ready {
+        photo_id: String,
+        thumbnail_rel_path: String,
+        preview_rel_path: String,
+        width: u32,
+        height: u32,
+    },
+    Error {
+        photo_id: String,
+        message: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanResult {
@@ -697,6 +712,54 @@ impl EventBundle {
             "UPDATE photos SET status = 'error', error_message = ?2, updated_at = ?3 WHERE id = ?1",
             rusqlite::params![photo_id, message, now],
         )?;
+        Ok(())
+    }
+
+    /// Commits a batch of completed or failed photo processing outcomes in a single
+    /// SQLite transaction to eliminate per-photo write lock & WAL sync overhead.
+    pub fn mark_photos_batch(&self, updates: &[PhotoProcessUpdate]) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.write_conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let tx = conn.transaction()?;
+        {
+            let mut ready_stmt = tx.prepare(
+                "UPDATE photos
+                 SET status = 'ready', thumbnail_rel_path = ?2, preview_rel_path = ?3,
+                     width = ?4, height = ?5, error_message = NULL, updated_at = ?6
+                 WHERE id = ?1",
+            )?;
+            let mut err_stmt = tx.prepare(
+                "UPDATE photos SET status = 'error', error_message = ?2, updated_at = ?3 WHERE id = ?1",
+            )?;
+
+            for upd in updates {
+                match upd {
+                    PhotoProcessUpdate::Ready {
+                        photo_id,
+                        thumbnail_rel_path,
+                        preview_rel_path,
+                        width,
+                        height,
+                    } => {
+                        ready_stmt.execute(rusqlite::params![
+                            photo_id,
+                            thumbnail_rel_path,
+                            preview_rel_path,
+                            *width as i64,
+                            *height as i64,
+                            now,
+                        ])?;
+                    }
+                    PhotoProcessUpdate::Error { photo_id, message } => {
+                        err_stmt.execute(rusqlite::params![photo_id, message, now])?;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
