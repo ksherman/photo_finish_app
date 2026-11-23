@@ -36,6 +36,8 @@ struct DiskutilInfo {
     device_tree_path: Option<String>,
     #[serde(rename = "BusProtocol")]
     bus_protocol: Option<String>,
+    #[serde(rename = "VirtualOrPhysical")]
+    virtual_or_physical: Option<String>,
     #[serde(rename = "Internal")]
     internal: Option<bool>,
     #[serde(rename = "Removable")]
@@ -44,6 +46,10 @@ struct DiskutilInfo {
     removable_media: Option<bool>,
     #[serde(rename = "Ejectable")]
     ejectable: Option<bool>,
+    #[serde(rename = "WritableVolume")]
+    writable_volume: Option<bool>,
+    #[serde(rename = "WritableMedia")]
+    writable_media: Option<bool>,
     #[serde(rename = "VolumeName")]
     volume_name: Option<String>,
     #[serde(rename = "MountPoint")]
@@ -58,6 +64,36 @@ struct DiskutilInfo {
     free_space: Option<u64>,
     #[serde(rename = "APFSContainerFree")]
     apfs_container_free: Option<u64>,
+}
+
+/// Returns true for virtual disks and mounted disk images (e.g. Docker.dmg, installer `.dmg`s,
+/// Time Machine sparsebundles) so they never appear as camera card readers or USB drives.
+fn is_virtual_or_disk_image(info: &DiskutilInfo) -> bool {
+    if info
+        .virtual_or_physical
+        .as_deref()
+        .map(|v| v.eq_ignore_ascii_case("virtual"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if info
+        .bus_protocol
+        .as_deref()
+        .map(|p| p.to_lowercase().contains("disk image"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if info
+        .media_name
+        .as_deref()
+        .map(|m| m.to_lowercase().contains("disk image"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    false
 }
 
 /// Looks up the USB hardware serial number for a given disk (e.g. "disk5").
@@ -110,6 +146,10 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>> {
             Ok(info) => info,
             Err(_) => continue,
         };
+
+        if is_virtual_or_disk_image(&disk_info) {
+            continue;
+        }
 
         let is_removable = disk_info.removable.unwrap_or(false)
             || disk_info.removable_media.unwrap_or(false);
@@ -218,6 +258,10 @@ pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
             Err(_) => continue,
         };
 
+        if is_virtual_or_disk_image(&disk_info) {
+            continue;
+        }
+
         let is_internal = disk_info.internal.unwrap_or(false);
         if is_internal {
             continue;
@@ -250,6 +294,13 @@ pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
                 Ok(info) => info,
                 Err(_) => continue,
             };
+
+            if is_virtual_or_disk_image(&part_info)
+                || part_info.writable_volume == Some(false)
+                || part_info.writable_media == Some(false)
+            {
+                continue;
+            }
 
             let volume_name = partition
                 .volume_name
@@ -305,4 +356,52 @@ pub fn eject_drive(disk_id: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_out_virtual_and_disk_image_volumes() {
+        let dmg = DiskutilInfo {
+            device_tree_path: None,
+            bus_protocol: Some("Disk Image".into()),
+            virtual_or_physical: Some("Virtual".into()),
+            internal: Some(false),
+            removable: Some(true),
+            removable_media: Some(true),
+            ejectable: Some(true),
+            writable_volume: Some(false),
+            writable_media: Some(false),
+            volume_name: Some("Docker".into()),
+            mount_point: Some("/Volumes/Docker".into()),
+            media_name: Some("Disk Image".into()),
+            total_size: None,
+            size: None,
+            free_space: None,
+            apfs_container_free: None,
+        };
+        assert!(is_virtual_or_disk_image(&dmg));
+
+        let real_sd = DiskutilInfo {
+            device_tree_path: None,
+            bus_protocol: Some("Secure Digital".into()),
+            virtual_or_physical: Some("Physical".into()),
+            internal: Some(true),
+            removable: Some(true),
+            removable_media: Some(true),
+            ejectable: Some(true),
+            writable_volume: Some(true),
+            writable_media: Some(true),
+            volume_name: Some("EOS_DIGITAL".into()),
+            mount_point: Some("/Volumes/EOS_DIGITAL".into()),
+            media_name: Some("Built In SDXC Reader".into()),
+            total_size: None,
+            size: None,
+            free_space: None,
+            apfs_container_free: None,
+        };
+        assert!(!is_virtual_or_disk_image(&real_sd));
+    }
 }
