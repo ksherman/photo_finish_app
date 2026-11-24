@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-23  
 **Active codebase:** `apps/photofinish/` (Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum)  
-**Verified test suite:** `cargo test --workspace` (20/20 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
+**Verified test suite:** `cargo test --workspace` (24/24 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
 
 ---
 
@@ -16,7 +16,7 @@
 - Create events with sport-agnostic presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, optional folder scaffolding, and remembered per-machine `station_code` default (`A` by default, auto-saved if changed on a secondary server).
 - Open existing event bundles or recursively **Gather** nested weekend event bundles from a shared parent / NAS directory (up to 6 levels deep, stopping immediately at bundle boundaries so photo folders are never walked).
 - Read-only **Consolidated Multi-Station Overview** across all gathered bundles (live station badges, photo/roster/order counts, combined paid revenue, duplicate order-number collision detection, `SchemaTooNew` indicators, and one-click consolidated CSV export).
-- Always-visible **LAN Server Status Bar** (`ServerStatusBar.vue`) with photo counts, live thumbnail throughput (`photos/sec`) + ETA, manual safety-net Scan, and Start/Stop LAN Kiosk controls.
+- **Auto-Watch (`watcher.rs` / macOS FSEvents) & Two-Way Reconcile:** Enabled by default whenever an event bundle is open — coalesces Finder drops, folder renames, and deleted folders with a 1.5s quiet debounce, reconciles only the affected subfolder(s), auto-prunes orphaned DB rows + cached `_photofinish/` thumbnails/previews (preserving order history via `ON DELETE SET NULL`), pauses automatically during internal Card Ingest & Rotation Renaming, and surfaces live `Auto-Watch` toggle + `+X new · Y removed` sync badges in `ServerStatusBar.vue`. Manual **Scan Folder** runs a full-event two-way reconcile to catch changes made while PhotoFinish was closed.
 
 ### 3. Hardware Card Ingest (`IngestView.vue`, `ReaderDashboardCard.vue`, `ReaderSetupModal.vue`, `hardware/`)
 - macOS `diskutil` + `ioreg` USB hardware serial discovery (with `sdxc-builtin` support, duplicate-serial `DeviceTreePath` disambiguation, and automatic exclusion of virtual disks / `.dmg` images like `Docker`).
@@ -58,10 +58,9 @@
 
 1. **ShootProof Studio API Sync (`ShootProof Sync` tab):** OAuth 2.0 (`studio` scope), Event → Area → Subject nested album creation, 20–50 worker S3 upload, automated `zip-bundle` digital delivery for on-site Square-paid orders (both single-photo `photoIds` and full-album), and WHCC/Bay Photo `lab-shipment` print drop-ship (`docs/future/shootproof-integration.md`). *(On hold pending account/service verification.)*
 2. **Roster & Folders UX Polish:** Refine ergonomics based on live-meet practice runs.
-3. **Optional Automatic Filesystem Watcher (`notify`):** Auto-index manual Finder drops without clicking Scan.
-4. **Optional Multi-Card Copy Yield:** Auto-pause thumbnail workers while multiple SD cards are actively copying if real multi-card testing shows USB bus contention.
-5. **Optional Apple Developer ID Code Signing & Notarization:** Sign & notarize the `.dmg` for zero-warning Gatekeeper install across meet Macs once an Apple Developer ID is configured.
-6. **Windows Hardware Layer (`hardware/windows.rs`):** If/when Windows meet servers are supported alongside Apple Silicon Macs.
+3. **Optional Multi-Card Copy Yield:** Auto-pause thumbnail workers while multiple SD cards are actively copying if real multi-card testing shows USB bus contention.
+4. **Optional Apple Developer ID Code Signing & Notarization:** Sign & notarize the `.dmg` for zero-warning Gatekeeper install across meet Macs once an Apple Developer ID is configured.
+5. **Windows Hardware Layer (`hardware/windows.rs`):** If/when Windows meet servers are supported alongside Apple Silicon Macs.
 
 ---
 

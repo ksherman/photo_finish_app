@@ -9,7 +9,10 @@ import type {
   LibraryOverviewResponse,
   ProcessingMetrics,
   ScanResult,
+  WatcherStatus,
 } from "@/types";
+
+let syncNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useEventStore = defineStore("event", {
   state: () => ({
@@ -24,6 +27,19 @@ export const useEventStore = defineStore("event", {
       lanIp: null,
       lanUrl: null,
     } as LanServerStatus,
+    watcherStatus: {
+      enabled: true,
+      watching: false,
+      watchedRoot: null,
+      lastSyncAt: null,
+      lastAdded: 0,
+      lastRemoved: 0,
+      totalAdded: 0,
+      totalRemoved: 0,
+      lastError: null,
+    } as WatcherStatus,
+    lastSyncNotice: null as string | null,
+    fsSyncGeneration: 0,
     processingMetrics: null as ProcessingMetrics | null,
     isScanning: false,
     lastError: null as string | null,
@@ -37,8 +53,28 @@ export const useEventStore = defineStore("event", {
         this.refreshLibrary(),
         this.refreshActiveEvent(),
         this.refreshLanStatus(),
+        this.refreshWatcherStatus(),
         this.refreshProcessingMetrics(),
       ]);
+    },
+
+    async refreshWatcherStatus() {
+      this.watcherStatus = await invoke<WatcherStatus>("get_watcher_status");
+    },
+
+    async toggleAutoWatch() {
+      const next = !this.watcherStatus.enabled;
+      this.watcherStatus = await invoke<WatcherStatus>("set_auto_watch_enabled", {
+        enabled: next,
+      });
+    },
+
+    showSyncNotice(message: string, durationMs = 6000) {
+      this.lastSyncNotice = message;
+      if (syncNoticeTimer) clearTimeout(syncNoticeTimer);
+      syncNoticeTimer = setTimeout(() => {
+        this.lastSyncNotice = null;
+      }, durationMs);
     },
 
     async loadMachineStationCode() {
@@ -88,7 +124,7 @@ export const useEventStore = defineStore("event", {
       this.lastError = null;
       const summary = await invoke<EventSummary>("create_event", { params });
       this.activeEvent = summary;
-      await this.refreshLibrary();
+      await Promise.all([this.refreshLibrary(), this.refreshWatcherStatus()]);
       return summary;
     },
 
@@ -96,7 +132,7 @@ export const useEventStore = defineStore("event", {
       this.lastError = null;
       const summary = await invoke<EventSummary>("open_event", { rootPath });
       this.activeEvent = summary;
-      await this.refreshLibrary();
+      await Promise.all([this.refreshLibrary(), this.refreshWatcherStatus()]);
       return summary;
     },
 
@@ -118,6 +154,15 @@ export const useEventStore = defineStore("event", {
       try {
         const res = await invoke<ScanResult>("scan_active_event");
         await this.refreshActiveEvent();
+        const parts: string[] = [];
+        if (res.photosNew > 0) parts.push(`+${res.photosNew.toLocaleString()} new`);
+        if (res.photosRemoved > 0) parts.push(`${res.photosRemoved.toLocaleString()} removed`);
+        if (parts.length > 0) {
+          this.fsSyncGeneration += 1;
+          this.showSyncNotice(`Scan: ${parts.join(" · ")}`);
+        } else {
+          this.showSyncNotice("Scan: Up to date", 3500);
+        }
         return res;
       } finally {
         this.isScanning = false;

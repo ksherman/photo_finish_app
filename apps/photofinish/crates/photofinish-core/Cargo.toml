@@ -11,6 +11,7 @@ chrono = { version = "0.4", features = ["serde"] }
 fast_image_resize = { version = "5", features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 mime_guess = "2"
+notify = "8"
 plist = "1"
 rand = "0.8"
 regex = "1"

@@ -1,24 +1,38 @@
 mod commands;
 
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 use photofinish_core::db::AppDb;
 use photofinish_core::event::{EventBundle, PendingPhotoJob};
 use photofinish_core::imaging::ImagePipeline;
 use photofinish_core::server::{EmbeddedServer, SharedActiveEvent};
+use photofinish_core::watcher::{EventWatcherManager, WatcherPauseGuard};
 
 pub struct AppState {
     pub app_db: Arc<AppDb>,
     pub active_event: SharedActiveEvent,
     pub lan_server: Mutex<Option<EmbeddedServer>>,
     pub image_pipeline: ImagePipeline,
+    pub watcher: std::sync::Mutex<EventWatcherManager>,
 }
 
 impl AppState {
     pub fn queue_photo_jobs(&self, bundle: &Arc<EventBundle>, jobs: Vec<PendingPhotoJob>) {
         self.image_pipeline.enqueue(bundle, jobs);
+    }
+
+    pub fn watch_active_bundle(&self, bundle: Arc<EventBundle>) {
+        if let Ok(mut mgr) = self.watcher.lock() {
+            if let Err(err) = mgr.watch_bundle(bundle, &self.image_pipeline) {
+                eprintln!("PhotoFinish: filesystem watcher warning: {}", err);
+            }
+        }
+    }
+
+    pub fn pause_watcher(&self) -> WatcherPauseGuard {
+        self.watcher.lock().unwrap().pause()
     }
 }
 
@@ -72,11 +86,27 @@ pub fn run() {
                     .ok()
             });
 
+            let auto_watch_enabled = app_db
+                .get_setting("auto_watch_enabled")
+                .ok()
+                .flatten()
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true);
+
+            let emit_handle = app.handle().clone();
+            let watcher = std::sync::Mutex::new(EventWatcherManager::new(
+                auto_watch_enabled,
+                Some(Arc::new(move |ev| {
+                    let _ = emit_handle.emit("event-fs-synced", &ev);
+                })),
+            ));
+
             app.manage(AppState {
                 app_db,
                 active_event,
                 lan_server: Mutex::new(initial_server),
                 image_pipeline,
+                watcher,
             });
 
             Ok(())
@@ -91,6 +121,8 @@ pub fn run() {
             commands::open_event,
             commands::gather_events,
             commands::scan_active_event,
+            commands::get_watcher_status,
+            commands::set_auto_watch_enabled,
             commands::get_processing_metrics,
             commands::parse_roster_files,
             commands::import_roster,

@@ -330,6 +330,7 @@ struct SharedQueue {
 /// - Dedicated OS worker threads (reusing per-thread `Resizer` buffers)
 /// - Single batched SQLite flusher (commits up to 64 photo updates per transaction)
 /// - Live rolling throughput, ETA, and per-stage timing telemetry
+#[derive(Clone)]
 pub struct ImagePipeline {
     worker_threads: usize,
     queue: Arc<SharedQueue>,

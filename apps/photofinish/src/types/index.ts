@@ -162,6 +162,27 @@ export interface ScanResult {
   photosFound: number;
   photosNew: number;
   photosSkipped: number;
+  photosRemoved: number;
+}
+
+export interface WatcherStatus {
+  enabled: boolean;
+  watching: boolean;
+  watchedRoot: string | null;
+  lastSyncAt: string | null;
+  lastAdded: number;
+  lastRemoved: number;
+  totalAdded: number;
+  totalRemoved: number;
+  lastError: string | null;
+}
+
+export interface WatcherSyncEvent {
+  eventRoot: string;
+  added: number;
+  removed: number;
+  queued: number;
+  syncedAt: string;
 }
 
 export interface ProcessingMetrics {

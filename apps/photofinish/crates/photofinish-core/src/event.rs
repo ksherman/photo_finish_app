@@ -152,6 +152,7 @@ pub struct ScanResult {
     pub photos_found: usize,
     pub photos_new: usize,
     pub photos_skipped: usize,
+    pub photos_removed: usize,
     pub pending_jobs: Vec<PendingPhotoJob>,
 }
 
@@ -1762,116 +1763,273 @@ impl EventBundle {
         Ok((batch_id, pending))
     }
 
-    /// Walks the event folder for any JPEGs not yet indexed (safety net for manual Finder drops).
+    /// Two-way full-event reconcile: discovers any new JPEGs on disk AND prunes orphaned DB rows
+    /// (plus their cached thumbnails/previews) whose original files/folders were deleted in Finder.
     /// Always skips `_`-prefixed directories (including `_photofinish`) and hidden dotfiles.
     pub fn scan_directory(&self) -> Result<ScanResult> {
-        let mut discovered = Vec::new();
-        for entry in WalkDir::new(&self.root)
-            .into_iter()
-            .filter_entry(|e| {
-                if e.depth() == 0 {
-                    return true;
+        self.reconcile_subpaths(&[String::new()])
+    }
+
+    /// Reconciles one or more relative directory subpaths inside the event bundle against SQLite:
+    /// - Inserts any newly dropped JPEGs (skipping 0-byte files still being written), auto-matching
+    ///   them to the roster by leading bib number and returning `pending_jobs` for thumbnailing.
+    /// - Prunes any DB rows under those subpaths whose files no longer exist on disk (e.g. a
+    ///   deleted folder like `Session 18A` or Finder rename), along with their cached thumbnails
+    ///   and previews inside `_photofinish/`.
+    ///
+    /// Passing `[""]` performs a full-event reconcile. Passing specific subpaths (from the
+    /// FSEvents auto-watcher) scopes both disk walking and SQLite queries (`idx_photos_folder`)
+    /// so changes reconcile in milliseconds even on 150,000+ photo meets.
+    pub fn reconcile_subpaths(&self, rel_prefixes: &[String]) -> Result<ScanResult> {
+        // Safety guard: never prune if the event volume/bundle is unmounted or unreadable.
+        if !self.root.is_dir() || !self.db_path.is_file() {
+            return Err(Error::Io(format!(
+                "Event bundle root is not accessible: {}",
+                self.root.display()
+            )));
+        }
+
+        let prefixes = collapse_reconcile_prefixes(rel_prefixes);
+        if prefixes.is_empty() {
+            return Ok(ScanResult {
+                photos_found: 0,
+                photos_new: 0,
+                photos_skipped: 0,
+                photos_removed: 0,
+                pending_jobs: Vec::new(),
+            });
+        }
+
+        let mut total_found = 0usize;
+        let mut total_skipped = 0usize;
+        let mut all_pending: Vec<PendingPhotoJob> = Vec::new();
+        let mut files_to_cleanup: Vec<String> = Vec::new();
+        let mut total_removed = 0usize;
+
+        for prefix in &prefixes {
+            // 1. Walk disk strictly within `prefix` (if it still exists on disk).
+            let mut discovered: HashMap<String, IngestFileInput> = HashMap::new();
+            let walk_target = if prefix.is_empty() {
+                self.root.clone()
+            } else {
+                self.root.join(prefix)
+            };
+
+            if walk_target.is_dir() {
+                for entry in WalkDir::new(&walk_target)
+                    .into_iter()
+                    .filter_entry(|e| {
+                        if e.depth() == 0 {
+                            return true;
+                        }
+                        let name = e.file_name().to_string_lossy();
+                        if name.starts_with('.') || name.starts_with('_') {
+                            return false;
+                        }
+                        true
+                    })
+                    .filter_map(|e| e.ok())
+                {
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    if !is_jpeg_path(entry.path()) {
+                        continue;
+                    }
+                    let size = entry.metadata().map(|m| m.len() as i64).unwrap_or(0);
+                    // Skip 0-byte placeholder files that Finder/copy tools may still be creating.
+                    if size == 0 {
+                        continue;
+                    }
+                    if let Ok(rel) = entry.path().strip_prefix(&self.root) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if has_hidden_or_internal_segment(&rel_str) {
+                            continue;
+                        }
+                        let orig_name = entry.file_name().to_string_lossy().to_string();
+                        discovered.insert(
+                            rel_str.clone(),
+                            IngestFileInput {
+                                relative_path: rel_str,
+                                original_filename: orig_name,
+                                file_size_bytes: size,
+                            },
+                        );
+                    }
                 }
-                let name = e.file_name().to_string_lossy();
-                if name.starts_with('.') || name.starts_with('_') {
-                    return false;
+            } else if walk_target.is_file() && is_jpeg_path(&walk_target) {
+                let size = walk_target.metadata().map(|m| m.len() as i64).unwrap_or(0);
+                if size > 0 {
+                    if let Ok(rel) = walk_target.strip_prefix(&self.root) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if !has_hidden_or_internal_segment(&rel_str) {
+                            let orig_name = walk_target
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            discovered.insert(
+                                rel_str.clone(),
+                                IngestFileInput {
+                                    relative_path: rel_str,
+                                    original_filename: orig_name,
+                                    file_size_bytes: size,
+                                },
+                            );
+                        }
+                    }
                 }
-                true
-            })
-            .filter_map(|e| e.ok())
-        {
-            if !entry.file_type().is_file() {
-                continue;
             }
-            let is_jpeg = entry
-                .path()
-                .extension()
-                .map(|ext| {
-                    let lower = ext.to_string_lossy().to_lowercase();
-                    lower == "jpg" || lower == "jpeg"
+
+            total_found += discovered.len();
+
+            // 2. Diff against DB rows scoped strictly to `prefix` inside a single transaction.
+            let mut conn = self.write_conn.lock().unwrap();
+            let folder_levels = load_folder_levels(&conn)?;
+            let subject_lookup = load_subject_number_map(&conn)?;
+
+            struct ExistingRow {
+                id: String,
+                relative_path: String,
+                thumb: Option<String>,
+                preview: Option<String>,
+            }
+
+            let existing_rows: Vec<ExistingRow> = if prefix.is_empty() {
+                let mut stmt = conn.prepare(
+                    "SELECT id, relative_path, thumbnail_rel_path, preview_rel_path FROM photos",
+                )?;
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok(ExistingRow {
+                            id: r.get(0)?,
+                            relative_path: r.get(1)?,
+                            thumb: r.get(2)?,
+                            preview: r.get(3)?,
+                        })
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows
+            } else {
+                let range_start = format!("{}/", prefix);
+                let range_end = format!("{}0", prefix); // ASCII '0' = '/' + 1
+                let mut stmt = conn.prepare(
+                    "SELECT id, relative_path, thumbnail_rel_path, preview_rel_path
+                     FROM photos
+                     WHERE folder_path = ?1
+                        OR (folder_path >= ?2 AND folder_path < ?3)",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![prefix, range_start, range_end], |r| {
+                        Ok(ExistingRow {
+                            id: r.get(0)?,
+                            relative_path: r.get(1)?,
+                            thumb: r.get(2)?,
+                            preview: r.get(3)?,
+                        })
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows
+            };
+
+            let mut existing_paths: HashSet<String> = HashSet::with_capacity(existing_rows.len());
+            let mut orphans: Vec<ExistingRow> = Vec::new();
+            for row in existing_rows {
+                if discovered.contains_key(&row.relative_path) {
+                    existing_paths.insert(row.relative_path);
+                } else if !self.root.join(&row.relative_path).is_file() {
+                    // Belt-and-suspenders check: only prune rows genuinely absent from disk.
+                    orphans.push(row);
+                } else {
+                    existing_paths.insert(row.relative_path);
+                }
+            }
+
+            let now = Utc::now().to_rfc3339();
+            let tx = conn.transaction()?;
+
+            if !orphans.is_empty() {
+                let mut del_stmt = tx.prepare("DELETE FROM photos WHERE id = ?1")?;
+                for orphan in &orphans {
+                    del_stmt.execute([&orphan.id])?;
+                }
+            }
+
+            let mut new_entries: Vec<IngestFileInput> = discovered
+                .into_values()
+                .filter(|f| {
+                    if existing_paths.contains(&f.relative_path) {
+                        total_skipped += 1;
+                        false
+                    } else {
+                        true
+                    }
                 })
-                .unwrap_or(false);
-            if !is_jpeg {
-                continue;
-            }
+                .collect();
+            new_entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-            if let Ok(rel) = entry.path().strip_prefix(&self.root) {
-                let rel_str = rel.to_string_lossy().replace('\\', "/");
-                let size = entry.metadata().map(|m| m.len() as i64).unwrap_or(0);
-                let orig_name = entry.file_name().to_string_lossy().to_string();
-                discovered.push(IngestFileInput {
-                    relative_path: rel_str,
-                    original_filename: orig_name,
-                    file_size_bytes: size,
-                });
-            }
-        }
+            if !new_entries.is_empty() {
+                let mut ins_stmt = tx.prepare(
+                    "INSERT INTO photos (
+                        id, subject_id, relative_path, folder_path, leaf_folder,
+                        filename, original_filename, file_size_bytes, tags_json,
+                        status, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'discovered', ?10, ?11)",
+                )?;
 
-        let photos_found = discovered.len();
-        let mut conn = self.write_conn.lock().unwrap();
-        let folder_levels = load_folder_levels(&conn)?;
-        let subject_lookup = load_subject_number_map(&conn)?;
-
-        let existing: HashSet<String> = {
-            let mut stmt = conn.prepare("SELECT relative_path FROM photos")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-
-        let now = Utc::now().to_rfc3339();
-        let tx = conn.transaction()?;
-        let mut pending = Vec::new();
-        let mut photos_skipped = 0;
-
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO photos (
-                    id, subject_id, relative_path, folder_path, leaf_folder,
-                    filename, original_filename, file_size_bytes, tags_json,
-                    status, created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'discovered', ?10, ?11)",
-            )?;
-
-            for f in discovered {
-                if existing.contains(&f.relative_path) {
-                    photos_skipped += 1;
-                    continue;
+                for f in new_entries {
+                    let parsed = parse_relative_location(&f.relative_path, &folder_levels);
+                    let subject_id = parsed
+                        .leaf_folder
+                        .as_deref()
+                        .and_then(extract_subject_number)
+                        .and_then(|num| subject_lookup.get(&num).cloned());
+                    let photo_id = id::photo_id();
+                    let tags_json = serde_json::to_string(&parsed.tags)?;
+                    ins_stmt.execute(rusqlite::params![
+                        photo_id,
+                        subject_id,
+                        f.relative_path,
+                        parsed.folder_path,
+                        parsed.leaf_folder,
+                        parsed.filename,
+                        f.original_filename,
+                        f.file_size_bytes,
+                        tags_json,
+                        now,
+                        now,
+                    ])?;
+                    all_pending.push(PendingPhotoJob {
+                        photo_id,
+                        relative_path: f.relative_path,
+                    });
                 }
-                let parsed = parse_relative_location(&f.relative_path, &folder_levels);
-                let subject_id = parsed
-                    .leaf_folder
-                    .as_deref()
-                    .and_then(extract_subject_number)
-                    .and_then(|num| subject_lookup.get(&num).cloned());
-                let photo_id = id::photo_id();
-                let tags_json = serde_json::to_string(&parsed.tags)?;
-                stmt.execute(rusqlite::params![
-                    photo_id,
-                    subject_id,
-                    f.relative_path,
-                    parsed.folder_path,
-                    parsed.leaf_folder,
-                    parsed.filename,
-                    f.original_filename,
-                    f.file_size_bytes,
-                    tags_json,
-                    now,
-                    now,
-                ])?;
-                pending.push(PendingPhotoJob {
-                    photo_id,
-                    relative_path: f.relative_path,
-                });
+            }
+
+            tx.commit()?;
+            drop(conn);
+
+            total_removed += orphans.len();
+            for orphan in orphans {
+                if let Some(t) = orphan.thumb {
+                    files_to_cleanup.push(t);
+                }
+                if let Some(pr) = orphan.preview {
+                    files_to_cleanup.push(pr);
+                }
             }
         }
 
-        tx.commit()?;
+        // 3. Remove cached thumbnails/previews for pruned photos outside DB lock.
+        for rel in files_to_cleanup {
+            let _ = fs::remove_file(self.root.join(rel));
+        }
 
         Ok(ScanResult {
-            photos_found,
-            photos_new: pending.len(),
-            photos_skipped,
-            pending_jobs: pending,
+            photos_found: total_found,
+            photos_new: all_pending.len(),
+            photos_skipped: total_skipped,
+            photos_removed: total_removed,
+            pending_jobs: all_pending,
         })
     }
 
@@ -2488,6 +2646,50 @@ impl EventBundle {
             .optional()?;
         Ok(rel.flatten().map(|r| self.root.join(r)))
     }
+}
+
+fn is_jpeg_path(path: &Path) -> bool {
+    path.extension()
+        .map(|ext| {
+            let lower = ext.to_string_lossy().to_lowercase();
+            lower == "jpg" || lower == "jpeg"
+        })
+        .unwrap_or(false)
+}
+
+fn has_hidden_or_internal_segment(rel: &str) -> bool {
+    rel.split('/')
+        .any(|seg| seg.starts_with('.') || seg.starts_with('_'))
+}
+
+/// Normalizes and deduplicates relative folder prefixes so ancestor prefixes subsume
+/// any nested descendants (and `""` subsumes everything for a full-event reconcile).
+fn collapse_reconcile_prefixes(raw: &[String]) -> Vec<String> {
+    let mut cleaned: Vec<String> = Vec::with_capacity(raw.len());
+    for item in raw {
+        let norm = item.replace('\\', "/").trim_matches('/').to_string();
+        if !norm.is_empty() && has_hidden_or_internal_segment(&norm) {
+            continue;
+        }
+        cleaned.push(norm);
+    }
+    cleaned.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    cleaned.dedup();
+
+    let mut collapsed: Vec<String> = Vec::new();
+    for p in cleaned {
+        let covered = collapsed.iter().any(|anc| {
+            anc.is_empty()
+                || p == *anc
+                || (p.len() > anc.len()
+                    && p.starts_with(anc.as_str())
+                    && p.as_bytes()[anc.len()] == b'/')
+        });
+        if !covered {
+            collapsed.push(p);
+        }
+    }
+    collapsed
 }
 
 fn query_photo_counts(conn: &Connection) -> Result<PhotoCounts> {
@@ -3355,5 +3557,165 @@ mod tests {
         assert!(csv.contains("ILS-B0001"));
         assert!(csv.contains("Parent A"));
         assert!(csv.contains("Parent B"));
+    }
+
+    #[test]
+    fn scan_and_reconcile_prunes_deleted_folders_and_cached_derivatives() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("orphan-meet");
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "Orphan Cleanup Meet".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("OCM".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: None,
+            scaffold: None,
+        })
+        .unwrap();
+
+        let sub_keep = bundle
+            .add_subject(Some("101"), "Maya", Some("K"), Some("Session 10A"), None)
+            .unwrap();
+        let sub_del = bundle
+            .add_subject(Some("180"), "Zoe", Some("D"), Some("Session 18A"), None)
+            .unwrap();
+
+        let keep_file = root.join("Gym A/Session 10A/Group 1A/Beam/101 Maya K/IMG_001.jpg");
+        let del_file1 = root.join("Gym A/Session 18A/Group 1A/Beam/180 Zoe D/IMG_002.jpg");
+        let del_file2 = root.join("Gym A/Session 18A/Group 1A/Floor/180 Zoe D/IMG_003.jpg");
+        for f in [&keep_file, &del_file1, &del_file2] {
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(f, b"fake-jpeg-bytes").unwrap();
+        }
+
+        let scan1 = bundle.scan_directory().unwrap();
+        assert_eq!(scan1.photos_new, 3);
+        assert_eq!(scan1.photos_removed, 0);
+
+        // Mark all photos ready with mock thumbnails & previews
+        let mut del_thumbs = Vec::new();
+        for job in &scan1.pending_jobs {
+            let t_rel = format!("_photofinish/thumbnails/{}.jpg", job.photo_id);
+            let p_rel = format!("_photofinish/previews/{}.jpg", job.photo_id);
+            fs::write(root.join(&t_rel), b"thumb").unwrap();
+            fs::write(root.join(&p_rel), b"prev").unwrap();
+            bundle
+                .mark_photo_ready(&job.photo_id, &t_rel, &p_rel, 1280, 853)
+                .unwrap();
+            if job.relative_path.contains("Session 18A") {
+                del_thumbs.push((t_rel, p_rel));
+            }
+        }
+
+        // Attach a single-photo order item to one of the Session 18A photos to verify
+        // pruning never violates foreign keys (ON DELETE SET NULL keeps order history intact)
+        let del_photo_id = bundle.list_subject_photos(&sub_del.id).unwrap()[0].id.clone();
+        let single_prod = bundle
+            .list_products(false)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.product_type == "single_digital")
+            .unwrap();
+        bundle
+            .place_order(CreateOrderRequest {
+                customer_name: "Order Parent".into(),
+                customer_email: None,
+                customer_phone: None,
+                shipping_address: None,
+                notes: None,
+                items: vec![crate::orders::CreateOrderItemInput {
+                    product_id: single_prod.id,
+                    subject_id: Some(sub_del.id.clone()),
+                    photo_id: Some(del_photo_id),
+                    quantity: 1,
+                }],
+            })
+            .unwrap();
+
+        // Delete Session 18A in Finder
+        fs::remove_dir_all(root.join("Gym A/Session 18A")).unwrap();
+
+        // Full scan_directory prunes ONLY Session 18A + its thumbnails/previews, leaving Session 10A ready
+        let scan2 = bundle.scan_directory().unwrap();
+        assert_eq!(scan2.photos_found, 1);
+        assert_eq!(scan2.photos_new, 0);
+        assert_eq!(scan2.photos_skipped, 1);
+        assert_eq!(scan2.photos_removed, 2);
+
+        let counts = bundle.photo_counts().unwrap();
+        assert_eq!(counts.total, 1);
+        assert_eq!(counts.ready, 1);
+        assert_eq!(bundle.list_subject_photos(&sub_keep.id).unwrap().len(), 1);
+        assert_eq!(bundle.list_subject_photos(&sub_del.id).unwrap().len(), 0);
+        for (t_rel, p_rel) in &del_thumbs {
+            assert!(!root.join(t_rel).exists());
+            assert!(!root.join(p_rel).exists());
+        }
+        // Order history preserved cleanly
+        assert_eq!(bundle.list_orders().unwrap().orders.len(), 1);
+    }
+
+    #[test]
+    fn targeted_reconcile_subpaths_handles_add_delete_and_rename_without_touching_siblings() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("targeted-meet");
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "Targeted Reconcile Meet".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("TRM".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: None,
+            scaffold: None,
+        })
+        .unwrap();
+
+        let sub105 = bundle
+            .add_subject(Some("105"), "Julia", Some("B"), Some("Session 10A"), None)
+            .unwrap();
+
+        let keep = root.join("Gym A/Session 10A/Group 1A/Beam/101 Keep/IMG_001.jpg");
+        let old_dir = root.join("Gym A/Session 10A/Group 1A/Beam/TempFolder");
+        fs::create_dir_all(keep.parent().unwrap()).unwrap();
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(&keep, b"keep-jpg").unwrap();
+        fs::write(old_dir.join("IMG_002.jpg"), b"rename-jpg").unwrap();
+
+        assert_eq!(bundle.scan_directory().unwrap().photos_new, 2);
+
+        // Simulate Finder renaming TempFolder -> "105 Julia B" + dropping a 0-byte in-progress file
+        let new_dir = root.join("Gym A/Session 10A/Group 1A/Beam/105 Julia B");
+        fs::rename(&old_dir, &new_dir).unwrap();
+        fs::write(new_dir.join("IMG_IN_PROGRESS.jpg"), b"").unwrap();
+
+        let res = bundle
+            .reconcile_subpaths(&[
+                "Gym A/Session 10A/Group 1A/Beam/TempFolder".into(),
+                "Gym A/Session 10A/Group 1A/Beam/105 Julia B".into(),
+            ])
+            .unwrap();
+        assert_eq!(res.photos_removed, 1);
+        assert_eq!(res.photos_new, 1); // 0-byte file skipped!
+        assert_eq!(res.pending_jobs.len(), 1);
+        assert_eq!(bundle.photo_counts().unwrap().total, 2);
+
+        // Once the imaging pipeline marks the newly indexed photo ready, it appears in 105 Julia B's gallery
+        bundle
+            .mark_photo_ready(
+                &res.pending_jobs[0].photo_id,
+                "_photofinish/thumbnails/t.jpg",
+                "_photofinish/previews/p.jpg",
+                1280,
+                853,
+            )
+            .unwrap();
+        assert_eq!(bundle.list_subject_photos(&sub105.id).unwrap().len(), 1);
     }
 }

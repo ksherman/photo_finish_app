@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEventStore } from "@/stores/event";
+import type { WatcherSyncEvent } from "@/types";
 
 const eventStore = useEventStore();
 
 let statusTimer: ReturnType<typeof setInterval> | null = null;
+let unlistenFsSync: UnlistenFn | null = null;
 
 const isProcessing = computed(() => {
   const pending = eventStore.activeEvent?.photoCounts.pending ?? 0;
@@ -41,7 +44,27 @@ const metricsTooltip = computed(() => {
   ].join("\n");
 });
 
-onMounted(() => {
+const watcherTooltip = computed(() => {
+  const w = eventStore.watcherStatus;
+  if (!w.enabled) {
+    return "Auto-Watch is paused. Click to automatically detect Finder drops, renames, and deleted folders.";
+  }
+  const lines = [
+    w.watching
+      ? "Auto-Watch active (macOS FSEvents): automatically indexes new Finder drops and prunes deleted folders."
+      : "Auto-Watch enabled (waiting for an open event bundle).",
+  ];
+  if (w.totalAdded > 0 || w.totalRemoved > 0) {
+    lines.push(`Session synced: +${w.totalAdded.toLocaleString()} added, ${w.totalRemoved.toLocaleString()} removed`);
+  }
+  if (w.lastError) {
+    lines.push(`Last warning: ${w.lastError}`);
+  }
+  lines.push("Click to pause Auto-Watch.");
+  return lines.join("\n");
+});
+
+onMounted(async () => {
   statusTimer = setInterval(async () => {
     if (isProcessing.value) {
       await Promise.all([
@@ -50,10 +73,27 @@ onMounted(() => {
       ]);
     }
   }, 1000);
+
+  unlistenFsSync = await listen<WatcherSyncEvent>("event-fs-synced", async (event) => {
+    const { added, removed } = event.payload;
+    eventStore.fsSyncGeneration += 1;
+    const parts: string[] = [];
+    if (added > 0) parts.push(`+${added.toLocaleString()} new`);
+    if (removed > 0) parts.push(`${removed.toLocaleString()} removed`);
+    if (parts.length > 0) {
+      eventStore.showSyncNotice(`Auto-synced: ${parts.join(" · ")}`);
+    }
+    await Promise.all([
+      eventStore.refreshActiveEvent(),
+      eventStore.refreshProcessingMetrics(),
+      eventStore.refreshWatcherStatus(),
+    ]);
+  });
 });
 
 onUnmounted(() => {
   if (statusTimer) clearInterval(statusTimer);
+  if (unlistenFsSync) unlistenFsSync();
 });
 </script>
 
@@ -90,6 +130,12 @@ onUnmounted(() => {
               {{ Math.round(eventStore.processingMetrics.photosPerSec) }} photos/sec
               <template v-if="etaLabel"> · {{ etaLabel }}</template>
             </span>
+            <span
+              v-if="eventStore.lastSyncNotice"
+              class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium"
+            >
+              {{ eventStore.lastSyncNotice }}
+            </span>
           </div>
         </div>
         <div v-else class="text-sm text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1 rounded-md">
@@ -97,11 +143,34 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2.5">
+        <button
+          v-if="eventStore.activeEvent"
+          @click="eventStore.toggleAutoWatch()"
+          :title="watcherTooltip"
+          class="px-2.5 py-1.5 text-xs font-medium rounded-md border flex items-center gap-1.5 transition-colors"
+          :class="
+            eventStore.watcherStatus.enabled && eventStore.watcherStatus.watching
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+              : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-50'
+          "
+        >
+          <span
+            class="inline-block w-2 h-2 rounded-full"
+            :class="
+              eventStore.watcherStatus.enabled && eventStore.watcherStatus.watching
+                ? 'bg-emerald-500'
+                : 'bg-slate-300'
+            "
+          />
+          <span>{{ eventStore.watcherStatus.enabled ? "Auto-Watch" : "Watch Paused" }}</span>
+        </button>
+
         <button
           v-if="eventStore.activeEvent"
           @click="eventStore.scanActiveEvent().then(() => eventStore.refreshProcessingMetrics())"
           :disabled="eventStore.isScanning"
+          title="Full-event reconcile: discover new Finder drops and prune any deleted folders or orphaned photos"
           class="px-3 py-1.5 text-xs font-medium rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
           {{ eventStore.isScanning ? "Scanning..." : "Scan Folder" }}

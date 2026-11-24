@@ -679,6 +679,15 @@ watch(
     }
   }
 );
+watch(
+  () => eventStore.fsSyncGeneration,
+  (next, prev) => {
+    if (eventStore.activeEvent && prev !== undefined && next !== prev) {
+      loadFolders();
+      loadRosterData();
+    }
+  }
+);
 </script>
 
 <template>

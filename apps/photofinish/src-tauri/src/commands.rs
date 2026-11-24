@@ -26,6 +26,7 @@ use photofinish_core::roster::{
     UnassignedFoldersResponse,
 };
 use photofinish_core::server::{detect_lan_ip, EmbeddedServer, LanServerStatus};
+use photofinish_core::watcher::WatcherStatus;
 
 use crate::AppState;
 
@@ -66,7 +67,8 @@ pub fn create_event(
         .app_db
         .upsert_library_event(bundle.root(), &summary.id, &summary.name)
         .map_err(|e| e.to_string())?;
-    state.active_event.set(Some(bundle));
+    state.active_event.set(Some(Arc::clone(&bundle)));
+    state.watch_active_bundle(bundle);
     Ok(summary)
 }
 
@@ -85,7 +87,8 @@ pub fn open_event(state: State<'_, AppState>, root_path: String) -> Result<Event
         }
     }
 
-    state.active_event.set(Some(bundle));
+    state.active_event.set(Some(Arc::clone(&bundle)));
+    state.watch_active_bundle(bundle);
     Ok(summary)
 }
 
@@ -290,6 +293,29 @@ pub async fn scan_active_event(state: State<'_, AppState>) -> Result<ScanResult,
 }
 
 #[tauri::command]
+pub fn get_watcher_status(state: State<'_, AppState>) -> WatcherStatus {
+    state.watcher.lock().unwrap().status()
+}
+
+#[tauri::command]
+pub fn set_auto_watch_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<WatcherStatus, String> {
+    state
+        .app_db
+        .set_setting("auto_watch_enabled", if enabled { "true" } else { "false" })
+        .map_err(|e| e.to_string())?;
+    let active = state.active_event.get();
+    state
+        .watcher
+        .lock()
+        .unwrap()
+        .set_enabled(enabled, active, &state.image_pipeline)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_processing_metrics(state: State<'_, AppState>) -> ProcessingMetrics {
     state.image_pipeline.metrics()
 }
@@ -404,6 +430,7 @@ pub fn assign_folder_to_subject(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
+    let _pause = state.pause_watcher();
     bundle
         .assign_folder_to_subject(&folder_path, &subject_id, rename_on_disk)
         .map_err(|e| e.to_string())
@@ -443,7 +470,9 @@ pub async fn apply_folder_reassignments(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
+    let pause_guard = state.pause_watcher();
     tauri::async_runtime::spawn_blocking(move || {
+        let _pause = pause_guard;
         bundle
             .apply_folder_reassignments(&changes, rename_on_disk)
             .map_err(|e| e.to_string())
@@ -462,7 +491,9 @@ pub async fn remove_folder(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
+    let pause_guard = state.pause_watcher();
     tauri::async_runtime::spawn_blocking(move || {
+        let _pause = pause_guard;
         bundle
             .remove_folder(&folder_path, mode)
             .map_err(|e| e.to_string())
@@ -663,8 +694,10 @@ pub async fn ingest_from_reader(
         tags: request.tags,
     };
 
+    let pause_guard = state.pause_watcher();
     let (batch_id, copied_count, pending_jobs) =
         tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let _pause = pause_guard;
             let files = hardware::copy_files_into_event(&copy_opts, |ev| {
                 let _ = on_progress.send(ev);
             })
