@@ -4,16 +4,16 @@ import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "path";
 
 export default defineConfig({
-  root: resolve(__dirname, "kiosk"),
+  root: resolve(import.meta.dirname, "kiosk"),
   base: "/",
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
-      "@": resolve(__dirname, "src"),
+      "@": resolve(import.meta.dirname, "src"),
     },
   },
   build: {
-    outDir: resolve(__dirname, "crates/photofinish-core/kiosk-dist"),
+    outDir: resolve(import.meta.dirname, "crates/photofinish-core/kiosk-dist"),
     emptyOutDir: false,
   },
 });

@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::RngExt;
 
 const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 const DIGITS: &[u8] = b"0123456789";
@@ -7,20 +7,20 @@ const DIGITS: &[u8] = b"0123456789";
 /// Uses 4 letters + 5 digits + 2 letters (~1.7 trillion combinations per prefix)
 /// so merging event bundles from multiple servers has negligible collision risk.
 pub fn generate(prefix: &str) -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut out = String::with_capacity(prefix.len() + 11);
     out.push_str(prefix);
 
     for _ in 0..4 {
-        let idx = rng.gen_range(0..LETTERS.len());
+        let idx = rng.random_range(0..LETTERS.len());
         out.push(LETTERS[idx] as char);
     }
     for _ in 0..5 {
-        let idx = rng.gen_range(0..DIGITS.len());
+        let idx = rng.random_range(0..DIGITS.len());
         out.push(DIGITS[idx] as char);
     }
     for _ in 0..2 {
-        let idx = rng.gen_range(0..LETTERS.len());
+        let idx = rng.random_range(0..LETTERS.len());
         out.push(LETTERS[idx] as char);
     }
 

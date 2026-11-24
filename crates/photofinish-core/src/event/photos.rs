@@ -433,7 +433,7 @@ impl EventBundle {
     /// Returns a fast random sample of ready photo IDs for the kiosk home marquee
     /// using O(k log N) rowid probes instead of sorting 150K+ rows with `ORDER BY RANDOM()`.
     pub fn list_showcase_photo_ids(&self, count: i64) -> Result<Vec<String>> {
-        use rand::Rng;
+        use rand::RngExt;
 
         let conn = self.read_conn()?;
         let target = count.clamp(1, 60) as usize;
@@ -454,7 +454,7 @@ impl EventBundle {
                 .collect());
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut stmt = conn.prepare(
             "SELECT id FROM photos WHERE rowid >= ?1 AND status = 'ready' LIMIT 1",
         )?;
@@ -464,7 +464,7 @@ impl EventBundle {
             if ids.len() >= target {
                 break;
             }
-            let probe = rng.gen_range(1..=max_rowid);
+            let probe = rng.random_range(1..=max_rowid);
             if let Ok(Some(id)) = stmt.query_row([probe], |r| r.get::<_, String>(0)).optional() {
                 if seen.insert(id.clone()) {
                     ids.push(id);

@@ -10,7 +10,7 @@ export default defineConfig(async () => ({
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {
-      "@": resolve(__dirname, "src"),
+      "@": resolve(import.meta.dirname, "src"),
     },
   },
   clearScreen: false,
