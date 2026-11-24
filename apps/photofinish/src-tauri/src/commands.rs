@@ -22,8 +22,8 @@ use photofinish_core::orders::{
 use photofinish_core::preset::{self, EventPreset};
 use photofinish_core::roster::{
     self, AssignFolderResult, BatchReassignResult, FolderReassignmentInput, ImportRosterResult,
-    ListFoldersResponse, ParsedRosterFile, RemoveFolderMode, RemoveFolderResult, RosterEntryInput,
-    UnassignedFoldersResponse,
+    IngestBatchSummary, ListFoldersResponse, ParsedRosterFile, RemoveFolderMode,
+    RemoveFolderResult, RosterEntryInput, UnassignedFoldersResponse,
 };
 use photofinish_core::server::{detect_lan_ip, EmbeddedServer, LanServerStatus};
 use photofinish_core::watcher::WatcherStatus;
@@ -437,11 +437,30 @@ pub fn assign_folder_to_subject(
 }
 
 #[tauri::command]
+pub async fn list_ingest_batches(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<IngestBatchSummary>, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        bundle
+            .list_ingest_batches(limit.unwrap_or(40))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn list_folders(
     state: State<'_, AppState>,
     parent_filter: Option<String>,
     only_unassigned: bool,
     context_parent: Option<String>,
+    batch_id: Option<String>,
 ) -> Result<ListFoldersResponse, String> {
     let bundle = state
         .active_event
@@ -453,6 +472,7 @@ pub async fn list_folders(
                 parent_filter.as_deref(),
                 only_unassigned,
                 context_parent.as_deref(),
+                batch_id.as_deref(),
             )
             .map_err(|e| e.to_string())
     })

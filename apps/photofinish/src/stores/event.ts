@@ -40,6 +40,7 @@ export const useEventStore = defineStore("event", {
     } as WatcherStatus,
     lastSyncNotice: null as string | null,
     fsSyncGeneration: 0,
+    pendingBatchToName: null as string | null,
     processingMetrics: null as ProcessingMetrics | null,
     isScanning: false,
     lastError: null as string | null,
@@ -75,6 +76,14 @@ export const useEventStore = defineStore("event", {
       syncNoticeTimer = setTimeout(() => {
         this.lastSyncNotice = null;
       }, durationMs);
+    },
+
+    openBatchForNaming(batchId: string) {
+      this.pendingBatchToName = batchId;
+    },
+
+    clearPendingBatchToName() {
+      this.pendingBatchToName = null;
     },
 
     async loadMachineStationCode() {

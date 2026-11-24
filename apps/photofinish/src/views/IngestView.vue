@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
 import { useIngestStore } from "@/stores/ingest";
 import ReaderDashboardCard from "@/components/ReaderDashboardCard.vue";
@@ -14,6 +14,16 @@ const configuringReader = ref<CardReaderInfo | null>(null);
 const configuringDefaultGroup = ref<string | null>(null);
 const isEjectingAll = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+// Optional Local Folder Ingest modal (great for thumb drives / AirDrop drops OR testing multi-card queues)
+const showFolderIngestModal = ref(false);
+const localSourcePath = ref("");
+const localDestRelPath = ref("");
+const localLabel = ref("");
+const localPhotographer = ref("");
+const localAutoRename = ref(true);
+const localRenamePrefix = ref("Gymnast");
+const localIngestError = ref<string | null>(null);
 
 // Group creation & inline rename state
 const showNewGroupInput = ref(false);
@@ -307,12 +317,62 @@ async function ejectAllCards() {
   }
 }
 
+async function pickLocalSourceFolder() {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "Select Source Folder (e.g. DCIM or Camera Card Folder)",
+  });
+  if (typeof selected === "string") {
+    localSourcePath.value = selected;
+    if (!localLabel.value.trim()) {
+      localLabel.value = selected.split("/").filter(Boolean).pop() || "Manual Folder";
+    }
+  }
+}
+
+async function startLocalFolderIngest() {
+  localIngestError.value = null;
+  if (!localSourcePath.value.trim()) {
+    localIngestError.value = "Choose a source folder to ingest.";
+    return;
+  }
+  const params = {
+    sourcePath: localSourcePath.value.trim(),
+    destinationRelPath: localDestRelPath.value.trim().replace(/^\/+|\/+$/g, ""),
+    label: localLabel.value.trim() || "Folder Ingest",
+    photographer: localPhotographer.value.trim() || "Manual",
+    autoRename: localAutoRename.value,
+    renamePrefix: localRenamePrefix.value.trim() || "Gymnast",
+  };
+  showFolderIngestModal.value = false;
+  localSourcePath.value = "";
+  localDestRelPath.value = "";
+  localLabel.value = "";
+  // Fire non-blocking so operators can queue multiple folders concurrently!
+  ingestStore
+    .ingestFromLocalFolder(params)
+    .then(() => eventStore.refreshActiveEvent())
+    .catch((err) => {
+      console.error("Local folder ingest failed:", err);
+    });
+}
+
 onMounted(async () => {
-  await Promise.all([ingestStore.loadReaderConfigs(), ingestStore.discoverReaders()]);
+  await Promise.all([
+    ingestStore.loadReaderConfigs(),
+    ingestStore.discoverReaders(),
+    eventStore.activeEvent ? ingestStore.loadIngestBatches() : Promise.resolve(),
+  ]);
   pollTimer = setInterval(async () => {
     await ingestStore.discoverReaders();
-    if (eventStore.activeEvent && eventStore.activeEvent.photoCounts.pending > 0) {
-      await eventStore.refreshActiveEvent();
+    if (eventStore.activeEvent) {
+      if (eventStore.activeEvent.photoCounts.pending > 0) {
+        await Promise.all([
+          eventStore.refreshActiveEvent(),
+          ingestStore.loadIngestBatches(),
+        ]);
+      }
     }
   }, 3000);
 });
@@ -376,6 +436,15 @@ async function confirmResetConfigs() {
         </button>
 
         <button
+          v-if="eventStore.activeEvent"
+          @click="showFolderIngestModal = true; localIngestError = null"
+          title="Ingest photos from a local folder or thumb drive into the active event"
+          class="px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+        >
+          Ingest Folder&hellip;
+        </button>
+
+        <button
           v-if="onlineReaders.length > 1"
           @click="ejectAllCards"
           :disabled="isEjectingAll || anyReaderCopying"
@@ -404,6 +473,86 @@ async function confirmResetConfigs() {
       class="p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800"
     >
       Open or create an Event Bundle in the <strong>Events</strong> tab before ingesting memory cards.
+    </div>
+
+    <!-- Live Card Naming Queue Strip (Active Downloads + Finished Cards Awaiting Naming) -->
+    <div
+      v-if="eventStore.activeEvent && (ingestStore.activeCopies.length > 0 || ingestStore.pendingNamingBatches.length > 0)"
+      class="bg-white rounded-xl border border-indigo-200/80 shadow-xs px-4 py-3 space-y-2.5"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+          <span>Card Naming Queue</span>
+          <span
+            v-if="ingestStore.pendingNamingBatches.length > 0"
+            class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold normal-case"
+          >
+            {{ ingestStore.pendingNamingBatches.length }} card{{ ingestStore.pendingNamingBatches.length === 1 ? '' : 's' }} ready to name
+          </span>
+          <span
+            v-if="ingestStore.activeCopies.length > 0"
+            class="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold normal-case animate-pulse"
+          >
+            {{ ingestStore.activeCopies.length }} copying now
+          </span>
+        </div>
+        <span class="text-xs text-slate-400">
+          Click any finished card to jump straight to naming its folders
+        </span>
+      </div>
+
+      <div class="flex flex-wrap gap-2">
+        <!-- Actively copying cards / folders -->
+        <div
+          v-for="copy in ingestStore.activeCopies"
+          :key="copy.readerId"
+          class="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50/70 text-xs"
+        >
+          <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
+          <div class="min-w-0">
+            <div class="font-semibold text-blue-900 truncate max-w-[200px]">{{ copy.readerLabel }}</div>
+            <div class="font-mono text-[11px] text-blue-700 truncate max-w-[240px]">
+              {{ copy.destinationRelPath || "(event root)" }}
+            </div>
+          </div>
+          <span class="font-mono font-semibold text-blue-700 pl-1">
+            {{ Math.round(copy.progress?.percentage || 0) }}%
+          </span>
+        </div>
+
+        <!-- Finished cards with unnamed folders -->
+        <button
+          v-for="batch in ingestStore.pendingNamingBatches"
+          :key="batch.id"
+          @click="eventStore.openBatchForNaming(batch.id)"
+          class="group flex items-center gap-2.5 px-3 py-2 rounded-lg border border-amber-200 bg-amber-50/70 hover:bg-indigo-50 hover:border-indigo-300 transition-colors text-left text-xs"
+        >
+          <span class="px-1.5 py-0.5 rounded bg-white border border-amber-200 font-mono font-bold text-slate-700">
+            #{{ batch.sequenceNum }}
+          </span>
+          <div class="min-w-0">
+            <div class="font-semibold text-slate-900 truncate max-w-[220px]">
+              {{ batch.readerName || batch.volumeName || "Card" }}
+            </div>
+            <div class="font-mono text-[11px] text-slate-600 truncate max-w-[260px]">
+              {{ batch.destinationRelPath || "(event root)" }}
+            </div>
+          </div>
+          <div class="pl-1 text-right shrink-0">
+            <div class="font-semibold text-amber-800 group-hover:text-indigo-700">
+              {{ batch.unassignedFolders }} to name &rarr;
+            </div>
+            <div class="text-[10px] text-slate-500">
+              <template v-if="batch.pendingPhotos > 0">
+                {{ batch.readyPhotos }}/{{ batch.totalPhotos }} thumbs
+              </template>
+              <template v-else>
+                {{ batch.totalPhotos }} ready ✓
+              </template>
+            </div>
+          </div>
+        </button>
+      </div>
     </div>
 
     <!-- ================= NAMED GROUPS (e.g. Gym A, Gym B) ================= -->
@@ -586,6 +735,114 @@ async function confirmResetConfigs() {
       <span v-if="hoverGroup" class="text-xs px-1.5 py-0.5 rounded bg-white/20">
         &rarr; {{ hoverGroup }}
       </span>
+    </div>
+
+    <!-- Local Folder Ingest Modal -->
+    <div
+      v-if="showFolderIngestModal"
+      class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 backdrop-blur-sm"
+      @click="showFolderIngestModal = false"
+    >
+      <div class="w-full max-w-lg bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden" @click.stop>
+        <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h2 class="text-base font-bold text-slate-900">Ingest Local Folder</h2>
+            <p class="text-xs text-slate-500 mt-0.5">
+              Copy photos from a folder or thumb drive through the card ingest queue.
+            </p>
+          </div>
+          <button @click="showFolderIngestModal = false" class="text-slate-400 hover:text-slate-700 text-xl leading-none">&times;</button>
+        </div>
+
+        <form @submit.prevent="startLocalFolderIngest" class="p-5 space-y-4">
+          <div v-if="localIngestError" class="p-2.5 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+            {{ localIngestError }}
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">Source Folder *</label>
+            <div class="flex gap-2">
+              <input
+                v-model="localSourcePath"
+                type="text"
+                readonly
+                placeholder="Choose folder (e.g. DCIM or card dump)..."
+                class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm bg-slate-50 font-mono"
+              />
+              <button
+                type="button"
+                @click="pickLocalSourceFolder"
+                class="px-3 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg text-sm font-medium"
+              >
+                Browse
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">
+              Destination Path (relative to event)
+            </label>
+            <input
+              v-model="localDestRelPath"
+              type="text"
+              placeholder="e.g. Gym A/Session 10A/Group 2A/Beam"
+              class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono"
+            />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">Card / Station Label</label>
+              <input
+                v-model="localLabel"
+                type="text"
+                placeholder="e.g. Gym A · Beam"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">Photographer</label>
+              <input
+                v-model="localPhotographer"
+                type="text"
+                placeholder="Initials or name"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 pt-1">
+            <label class="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+              <input v-model="localAutoRename" type="checkbox" class="rounded" />
+              <span>Auto-rename numbered subfolders</span>
+            </label>
+            <input
+              v-if="localAutoRename"
+              v-model="localRenamePrefix"
+              type="text"
+              placeholder="Gymnast"
+              class="w-32 border border-slate-300 rounded-md px-2.5 py-1 text-sm"
+            />
+          </div>
+
+          <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              @click="showFolderIngestModal = false"
+              class="px-4 py-2 text-sm text-slate-600 hover:text-slate-900"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              Start Ingest
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <!-- Reader Setup Modal -->

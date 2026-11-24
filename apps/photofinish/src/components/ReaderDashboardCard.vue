@@ -388,13 +388,26 @@ watch(
 
       <div
         v-if="copyState.lastResult?.success"
-        class="bg-emerald-50 p-2.5 rounded-lg text-xs text-emerald-700 border border-emerald-200 flex items-center justify-between"
+        class="bg-emerald-50 p-2.5 rounded-lg text-xs text-emerald-700 border border-emerald-200 space-y-2"
       >
-        <span>
-          Copied {{ copyState.lastResult.copiedCount }} files ({{ copyState.lastResult.queuedCount }} queued) in
-          {{ copyState.lastResult.durationSeconds.toFixed(1) }}s{{ lastEjected ? " · Safely ejected ✓" : "" }}
-        </span>
-        <button @click="ingestStore.resetCopyState(reader.reader_id); lastEjected = false" class="ml-2 text-emerald-600 font-bold">&times;</button>
+        <div class="flex items-start justify-between gap-2">
+          <span>
+            Copied {{ copyState.lastResult.copiedCount }} files ({{ copyState.lastResult.queuedCount }} queued) in
+            {{ copyState.lastResult.durationSeconds.toFixed(1) }}s{{ lastEjected ? " · Safely ejected ✓" : "" }}
+          </span>
+          <button @click="ingestStore.resetCopyState(reader.reader_id); lastEjected = false" class="text-emerald-600 font-bold leading-none">&times;</button>
+        </div>
+        <button
+          v-if="copyState.lastResult.batchId"
+          @click="eventStore.openBatchForNaming(copyState.lastResult.batchId)"
+          class="w-full px-2.5 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-1"
+        >
+          <span>Name Folders</span>
+          <span v-if="copyState.lastResult.destinationRelPath" class="font-mono font-normal opacity-90 truncate max-w-[170px]">
+            ({{ copyState.lastResult.destinationRelPath.split('/').slice(-2).join('/') }})
+          </span>
+          <span>&rarr;</span>
+        </button>
       </div>
 
       <div

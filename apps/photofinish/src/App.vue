@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, watch } from "vue";
 import { useEventStore } from "@/stores/event";
+import { useIngestStore } from "@/stores/ingest";
 import ServerStatusBar from "@/components/ServerStatusBar.vue";
 import BrandMark from "@/components/BrandMark.vue";
 import EventsView from "@/views/EventsView.vue";
@@ -13,6 +14,7 @@ type Tab = "events" | "ingest" | "roster" | "orders" | "shootproof";
 
 const activeTab = ref<Tab>("events");
 const eventStore = useEventStore();
+const ingestStore = useIngestStore();
 
 const navItems: { id: Tab; label: string }[] = [
   { id: "events", label: "Events" },
@@ -21,6 +23,26 @@ const navItems: { id: Tab; label: string }[] = [
   { id: "orders", label: "Orders & USB" },
   { id: "shootproof", label: "ShootProof Sync" },
 ];
+
+watch(
+  () => eventStore.pendingBatchToName,
+  (batchId) => {
+    if (batchId) {
+      activeTab.value = "roster";
+    }
+  }
+);
+
+watch(
+  () => eventStore.activeEvent?.id,
+  (id) => {
+    if (id) {
+      ingestStore.loadIngestBatches();
+    } else {
+      ingestStore.ingestBatches = [];
+    }
+  }
+);
 
 onMounted(() => {
   eventStore.bootstrap();
@@ -41,14 +63,32 @@ onMounted(() => {
           v-for="item in navItems"
           :key="item.id"
           @click="activeTab = item.id"
-          class="w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors"
+          class="w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-between gap-2"
           :class="
             activeTab === item.id
               ? 'bg-blue-600 text-white'
               : 'text-slate-300 hover:bg-slate-800 hover:text-white'
           "
         >
-          {{ item.label }}
+          <span>{{ item.label }}</span>
+          <span
+            v-if="item.id === 'roster' && ingestStore.pendingNamingBatches.length > 0"
+            class="px-1.5 py-0.5 text-[11px] font-semibold rounded-full"
+            :class="
+              activeTab === item.id
+                ? 'bg-white/20 text-white'
+                : 'bg-amber-500/20 text-amber-300'
+            "
+            :title="`${ingestStore.pendingNamingBatches.length} ingested card(s) ready to name`"
+          >
+            {{ ingestStore.pendingNamingBatches.length }}
+          </span>
+          <span
+            v-else-if="item.id === 'ingest' && ingestStore.activeCopies.length > 0"
+            class="px-1.5 py-0.5 text-[11px] font-semibold rounded-full bg-blue-400/25 text-blue-200 animate-pulse"
+          >
+            {{ ingestStore.activeCopies.length }}
+          </span>
         </button>
       </nav>
     </aside>

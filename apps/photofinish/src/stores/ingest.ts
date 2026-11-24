@@ -3,21 +3,33 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   CardReaderInfo,
   CopyProgressEvent,
+  IngestBatchSummary,
   IngestResult,
   ReaderConfig,
   ReaderLayoutUpdate,
 } from "@/types";
 
-interface CopyState {
+export interface CopyState {
   isCopying: boolean;
+  readerLabel: string;
+  destinationRelPath: string;
   progress: CopyProgressEvent | null;
   error: string | null;
   lastResult: {
+    batchId: string;
+    destinationRelPath: string;
     copiedCount: number;
     queuedCount: number;
     durationSeconds: number;
     success: boolean;
   } | null;
+}
+
+export interface ActiveCopyInfo {
+  readerId: string;
+  readerLabel: string;
+  destinationRelPath: string;
+  progress: CopyProgressEvent | null;
 }
 
 export const useIngestStore = defineStore("ingest", {
@@ -26,6 +38,7 @@ export const useIngestStore = defineStore("ingest", {
     readerConfigs: {} as Record<string, ReaderConfig>,
     groupOrder: [] as string[],
     copyStates: {} as Record<string, CopyState>,
+    ingestBatches: [] as IngestBatchSummary[],
   }),
 
   getters: {
@@ -37,11 +50,28 @@ export const useIngestStore = defineStore("ingest", {
       return (
         state.copyStates[readerId] || {
           isCopying: false,
+          readerLabel: "",
+          destinationRelPath: "",
           progress: null,
           error: null,
           lastResult: null,
         }
       );
+    },
+
+    activeCopies: (state): ActiveCopyInfo[] => {
+      return Object.entries(state.copyStates)
+        .filter(([, cs]) => cs.isCopying)
+        .map(([readerId, cs]) => ({
+          readerId,
+          readerLabel: cs.readerLabel || readerId,
+          destinationRelPath: cs.destinationRelPath,
+          progress: cs.progress,
+        }));
+    },
+
+    pendingNamingBatches: (state): IngestBatchSummary[] => {
+      return state.ingestBatches.filter((b) => b.unassignedFolders > 0);
     },
   },
 
@@ -193,14 +223,31 @@ export const useIngestStore = defineStore("ingest", {
       await this.discoverReaders();
     },
 
+    async loadIngestBatches(limit = 40) {
+      try {
+        this.ingestBatches = await invoke<IngestBatchSummary[]>("list_ingest_batches", {
+          limit,
+        });
+      } catch {
+        this.ingestBatches = [];
+      }
+    },
+
     async ingestFromReader(
       reader: CardReaderInfo,
       config: ReaderConfig,
       destinationRelPath: string,
       includedFolders?: string[]
     ): Promise<IngestResult> {
+      const labelCore = config.customLabel?.trim() || reader.display_name;
+      const readerLabel = config.groupName?.trim()
+        ? `${config.groupName.trim()} · ${labelCore}`
+        : labelCore;
+
       this.copyStates[reader.reader_id] = {
         isCopying: true,
+        readerLabel,
+        destinationRelPath,
         progress: { total: 0, copied: 0, current_file: "", percentage: 0 },
         error: null,
         lastResult: null,
@@ -222,7 +269,7 @@ export const useIngestStore = defineStore("ingest", {
         const result = await invoke<IngestResult>("ingest_from_reader", {
           request: {
             readerId: reader.reader_id,
-            readerName: reader.display_name,
+            readerName: readerLabel,
             volumeName: reader.volume_name,
             photographer: config.photographer,
             sourcePath,
@@ -238,18 +285,22 @@ export const useIngestStore = defineStore("ingest", {
 
         const durationSeconds = (performance.now() - startTime) / 1000;
         this.copyStates[reader.reader_id].lastResult = {
+          batchId: result.batchId,
+          destinationRelPath,
           copiedCount: result.copiedCount,
           queuedCount: result.queuedCount,
           durationSeconds,
           success: true,
         };
-        await this.loadReaderConfigs();
+        await Promise.all([this.loadReaderConfigs(), this.loadIngestBatches()]);
         return result;
       } catch (err) {
         const msg = String(err);
         if (this.copyStates[reader.reader_id]) {
           this.copyStates[reader.reader_id].error = msg;
           this.copyStates[reader.reader_id].lastResult = {
+            batchId: "",
+            destinationRelPath,
             copiedCount: 0,
             queuedCount: 0,
             durationSeconds: 0,
@@ -260,6 +311,76 @@ export const useIngestStore = defineStore("ingest", {
       } finally {
         if (this.copyStates[reader.reader_id]) {
           this.copyStates[reader.reader_id].isCopying = false;
+        }
+      }
+    },
+
+    async ingestFromLocalFolder(params: {
+      sourcePath: string;
+      destinationRelPath: string;
+      label: string;
+      photographer: string;
+      autoRename: boolean;
+      renamePrefix: string;
+    }): Promise<IngestResult> {
+      const readerId = `folder-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const volumeName = params.sourcePath.split("/").filter(Boolean).pop() || "Folder";
+      const readerLabel = params.label.trim() || volumeName;
+
+      this.copyStates[readerId] = {
+        isCopying: true,
+        readerLabel,
+        destinationRelPath: params.destinationRelPath,
+        progress: { total: 0, copied: 0, current_file: "", percentage: 0 },
+        error: null,
+        lastResult: null,
+      };
+
+      try {
+        const startTime = performance.now();
+        const channel = new Channel<CopyProgressEvent>();
+        channel.onmessage = (progress) => {
+          if (this.copyStates[readerId]) {
+            this.copyStates[readerId].progress = progress;
+          }
+        };
+
+        const result = await invoke<IngestResult>("ingest_from_reader", {
+          request: {
+            readerId,
+            readerName: readerLabel,
+            volumeName,
+            photographer: params.photographer.trim() || "Manual",
+            sourcePath: params.sourcePath,
+            destinationRelPath: params.destinationRelPath,
+            renamePrefix: params.renamePrefix.trim() || null,
+            autoRename: params.autoRename,
+            fileRenamePrefix: null,
+            includedFolders: null,
+            tags: {},
+          },
+          onProgress: channel,
+        });
+
+        const durationSeconds = (performance.now() - startTime) / 1000;
+        this.copyStates[readerId].lastResult = {
+          batchId: result.batchId,
+          destinationRelPath: params.destinationRelPath,
+          copiedCount: result.copiedCount,
+          queuedCount: result.queuedCount,
+          durationSeconds,
+          success: true,
+        };
+        await this.loadIngestBatches();
+        return result;
+      } catch (err) {
+        if (this.copyStates[readerId]) {
+          this.copyStates[readerId].error = String(err);
+        }
+        throw err;
+      } finally {
+        if (this.copyStates[readerId]) {
+          this.copyStates[readerId].isCopying = false;
         }
       }
     },

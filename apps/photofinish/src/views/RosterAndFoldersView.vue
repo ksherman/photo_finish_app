@@ -3,10 +3,12 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
+import { useIngestStore } from "@/stores/ingest";
 import type {
   BatchReassignResult,
   FolderItem,
   ImportRosterResult,
+  IngestBatchSummary,
   ListFoldersResponse,
   ParsedRosterFile,
   RemoveFolderMode,
@@ -16,6 +18,7 @@ import type {
 } from "@/types";
 
 const eventStore = useEventStore();
+const ingestStore = useIngestStore();
 
 type SubTab = "roster" | "folders";
 type FolderMode = "unassigned" | "all";
@@ -44,6 +47,11 @@ const newTeam = ref("");
 
 // Folder manager state
 const folderMode = ref<FolderMode>("unassigned");
+const activeBatchId = ref<string | null>(null);
+const nextCardToName = ref<IngestBatchSummary | null>(null);
+const hideMatchedSubjects = ref(
+  localStorage.getItem("photofinish:hideMatchedSubjects") === "true"
+);
 const locationFilterQuery = ref("");
 const selectedParent = ref("");
 const folderData = ref<ListFoldersResponse>({
@@ -55,6 +63,12 @@ const folderData = ref<ListFoldersResponse>({
   detectedGroupPrefix: null,
   sameGroupSubjectIds: [],
   subjectSamplePhotos: {},
+  sectionLabel: null,
+  sectionMatchedSubjects: {},
+});
+
+watch(hideMatchedSubjects, (val) => {
+  localStorage.setItem("photofinish:hideMatchedSubjects", String(val));
 });
 const selectedFolderPath = ref<string | null>(null);
 const pickerScope = ref<PickerScope>("all");
@@ -230,6 +244,97 @@ const subjectUsageInView = computed(() => {
   return { stagedTo, currentInLoc };
 });
 
+const activeBatch = computed<IngestBatchSummary | null>(() => {
+  if (!activeBatchId.value) return null;
+  return ingestStore.ingestBatches.find((b) => b.id === activeBatchId.value) || null;
+});
+
+interface PickerSubjectItem {
+  subject: SubjectRecord;
+  dimmed: boolean;
+  badgeText: string | null;
+  badgeClass: string;
+}
+
+const isFixingExistingRotation = computed(
+  () => !activeBatchId.value && folderMode.value === "all"
+);
+
+const classifiedPickerSubjects = computed<PickerSubjectItem[]>(() => {
+  const sel = selectedFolder.value;
+  const selStaged = sel ? stagedMap.value[sel.folderPath] : undefined;
+  const secLabel = folderData.value.sectionLabel;
+  const secMatched = folderData.value.sectionMatchedSubjects || {};
+
+  return scopedPickerSubjects.value.map((s) => {
+    const isStagedHere = Boolean(sel && selStaged === s.id);
+    const isStagedElsewhere = !isStagedHere && subjectUsageInView.value.stagedTo.has(s.id);
+    const isCurrentHere = Boolean(sel && sel.assignedSubjectId === s.id);
+    const isInCurrentRotation = !isCurrentHere && subjectUsageInView.value.currentInLoc.has(s.id);
+    const matchedElsewhereLoc = secMatched[s.id];
+
+    if (isStagedHere) {
+      return {
+        subject: s,
+        dimmed: false,
+        badgeText: "Staged here",
+        badgeClass: "bg-indigo-600 text-white font-semibold",
+      };
+    }
+    if (isStagedElsewhere) {
+      return {
+        subject: s,
+        dimmed: true,
+        badgeText: "Staged",
+        badgeClass: "bg-indigo-100 text-indigo-700 font-medium",
+      };
+    }
+    if (isCurrentHere) {
+      return {
+        subject: s,
+        dimmed: false,
+        badgeText: "Current",
+        badgeClass: "bg-emerald-100 text-emerald-700 font-medium",
+      };
+    }
+    if (isInCurrentRotation) {
+      // In Fix Rotations ("All Folders") mode, athletes in THIS rotation stay bright so you can
+      // swap them easily; when naming fresh cards / unassigned folders, grey them out!
+      return {
+        subject: s,
+        dimmed: !isFixingExistingRotation.value,
+        badgeText: "Matched here",
+        badgeClass: "bg-slate-200/80 text-slate-600 font-medium",
+      };
+    }
+    if (matchedElsewhereLoc) {
+      const label = secLabel
+        ? `Done on ${secLabel} · ${matchedElsewhereLoc}`
+        : `Matched · ${matchedElsewhereLoc}`;
+      return {
+        subject: s,
+        dimmed: true,
+        badgeText: label,
+        badgeClass: "bg-slate-200/70 text-slate-600 font-medium",
+      };
+    }
+    return {
+      subject: s,
+      dimmed: false,
+      badgeText: null,
+      badgeClass: "",
+    };
+  });
+});
+
+const unmatchedPickerItems = computed(() =>
+  classifiedPickerSubjects.value.filter((item) => !item.dimmed)
+);
+
+const dimmedPickerItems = computed(() =>
+  classifiedPickerSubjects.value.filter((item) => item.dimmed)
+);
+
 function sanitizeFolderName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, "_").trim();
 }
@@ -339,15 +444,17 @@ async function loadFolders(contextParentOverride?: string | null) {
   if (!eventStore.activeEvent) return;
   try {
     const res = await invoke<ListFoldersResponse>("list_folders", {
-      parentFilter: selectedParent.value || null,
-      onlyUnassigned: folderMode.value === "unassigned",
+      parentFilter: activeBatchId.value ? null : selectedParent.value || null,
+      onlyUnassigned: activeBatchId.value ? false : folderMode.value === "unassigned",
       contextParent: contextParentOverride ?? selectedFolder.value?.parentPath ?? null,
+      batchId: activeBatchId.value,
     });
     folderData.value = res;
 
-    // In "All Folders" mode, auto-select the first location if none is selected yet
-    // so we show a single clean rotation rather than 3,000+ folders.
+    // In "All Folders" mode (when not scoped to an ingested card), auto-select the first
+    // location if none is selected yet so we show a single clean rotation.
     if (
+      !activeBatchId.value &&
       folderMode.value === "all" &&
       !selectedParent.value &&
       res.locations.length > 0
@@ -357,18 +464,23 @@ async function loadFolders(contextParentOverride?: string | null) {
         parentFilter: selectedParent.value,
         onlyUnassigned: false,
         contextParent: selectedParent.value,
+        batchId: null,
       });
       folderData.value = locRes;
     }
 
-    // Keep or pick a sensible selected folder
+    // Keep or pick a sensible selected folder (preferring first unassigned folder when viewing a card)
     if (
       selectedFolderPath.value &&
       !folderData.value.folders.some((f) => f.folderPath === selectedFolderPath.value)
     ) {
-      selectedFolderPath.value = folderData.value.folders[0]?.folderPath || null;
+      const firstUnassigned = folderData.value.folders.find((f) => f.unassignedCount > 0);
+      selectedFolderPath.value =
+        firstUnassigned?.folderPath || folderData.value.folders[0]?.folderPath || null;
     } else if (!selectedFolderPath.value && folderData.value.folders.length > 0) {
-      selectedFolderPath.value = folderData.value.folders[0].folderPath;
+      const firstUnassigned = folderData.value.folders.find((f) => f.unassignedCount > 0);
+      selectedFolderPath.value =
+        firstUnassigned?.folderPath || folderData.value.folders[0].folderPath;
     }
 
     // Auto-select tightest smart scope unless user explicitly pinned another scope
@@ -392,8 +504,30 @@ async function loadFolders(contextParentOverride?: string | null) {
   }
 }
 
+function selectIngestBatch(batchId: string) {
+  subTab.value = "folders";
+  activeBatchId.value = batchId;
+  nextCardToName.value = null;
+  stagedMap.value = {};
+  selectedFolderPath.value = null;
+  pickerSearch.value = "";
+  userPinnedScope.value = false;
+  loadFolders();
+}
+
+function exitCardView() {
+  activeBatchId.value = null;
+  nextCardToName.value = null;
+  stagedMap.value = {};
+  selectedFolderPath.value = null;
+  userPinnedScope.value = false;
+  loadFolders();
+}
+
 function switchFolderMode(mode: FolderMode) {
-  if (folderMode.value === mode) return;
+  if (!activeBatchId.value && folderMode.value === mode) return;
+  activeBatchId.value = null;
+  nextCardToName.value = null;
   folderMode.value = mode;
   stagedMap.value = {};
   selectedFolderPath.value = null;
@@ -493,8 +627,28 @@ async function confirmApplyStaged() {
     showPreviewModal.value = false;
     const swapCount = res.changes.filter((c) => c.action === "swapped").length;
     const suffix = swapCount > 0 ? ` (${swapCount} swapped atomically)` : res.renamedOnDisk ? " (folders renamed on disk)" : "";
-    bannerMessage.value = `Updated ${res.foldersUpdated} folder(s) / ${res.photosUpdated.toLocaleString()} photo(s)${suffix}.`;
-    await Promise.all([loadFolders(), loadRosterData(), eventStore.refreshActiveEvent()]);
+    const finishedBatchId = activeBatchId.value;
+    await Promise.all([
+      loadFolders(),
+      loadRosterData(),
+      ingestStore.loadIngestBatches(),
+      eventStore.refreshActiveEvent(),
+    ]);
+
+    if (finishedBatchId) {
+      const updatedBatch = ingestStore.ingestBatches.find((b) => b.id === finishedBatchId);
+      if (updatedBatch && updatedBatch.unassignedFolders === 0) {
+        const nextReady = ingestStore.pendingNamingBatches.find((b) => b.id !== finishedBatchId) || null;
+        nextCardToName.value = nextReady;
+        bannerMessage.value = `Card #${updatedBatch.sequenceNum} complete! Updated ${res.foldersUpdated} folder(s) / ${res.photosUpdated.toLocaleString()} photo(s)${suffix}.`;
+      } else {
+        nextCardToName.value = null;
+        bannerMessage.value = `Updated ${res.foldersUpdated} folder(s) / ${res.photosUpdated.toLocaleString()} photo(s)${suffix}.`;
+      }
+    } else {
+      nextCardToName.value = null;
+      bannerMessage.value = `Updated ${res.foldersUpdated} folder(s) / ${res.photosUpdated.toLocaleString()} photo(s)${suffix}.`;
+    }
   } catch (err) {
     errorMessage.value = String(err);
   } finally {
@@ -532,7 +686,12 @@ async function confirmRemoveFolder() {
     } else {
       bannerMessage.value = `Removed "${target.leafFolder}" (${res.photosRemoved} photos) from database (files remain on disk).`;
     }
-    await Promise.all([loadFolders(), loadRosterData(), eventStore.refreshActiveEvent()]);
+    await Promise.all([
+      loadFolders(),
+      loadRosterData(),
+      ingestStore.loadIngestBatches(),
+      eventStore.refreshActiveEvent(),
+    ]);
   } catch (err) {
     errorMessage.value = String(err);
   } finally {
@@ -646,27 +805,71 @@ async function runAutoMatch() {
   }
 }
 
-onMounted(() => {
+let liveRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+async function consumePendingBatch() {
+  const bid = eventStore.pendingBatchToName;
+  if (!bid || !eventStore.activeEvent) return;
+  eventStore.clearPendingBatchToName();
+  await ingestStore.loadIngestBatches();
+  selectIngestBatch(bid);
+}
+
+onMounted(async () => {
   window.addEventListener("keydown", onLightboxKeyDown);
   if (eventStore.activeEvent) {
-    loadRosterData();
-    loadFolders();
+    await Promise.all([loadRosterData(), ingestStore.loadIngestBatches()]);
+    if (eventStore.pendingBatchToName) {
+      await consumePendingBatch();
+    } else {
+      await loadFolders();
+    }
   }
+
+  // While thumbnails for freshly downloaded cards are finishing (or other cards are downloading),
+  // quietly stream updated thumbnails & queue badges without disturbing staged selections.
+  liveRefreshTimer = setInterval(async () => {
+    if (!eventStore.activeEvent || subTab.value !== "folders") return;
+    const hasPendingThumbs = eventStore.activeEvent.photoCounts.pending > 0;
+    const hasActiveCopies = ingestStore.activeCopies.length > 0;
+    if (!hasPendingThumbs && !hasActiveCopies) return;
+
+    await ingestStore.loadIngestBatches();
+    const needsThumbs = folderData.value.folders.some(
+      (f) => f.samplePhotoIds.length < Math.min(4, f.photoCount)
+    );
+    if (needsThumbs) {
+      await loadFolders();
+    }
+  }, 1500);
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", onLightboxKeyDown);
+  if (liveRefreshTimer) clearInterval(liveRefreshTimer);
 });
+
+watch(
+  () => eventStore.pendingBatchToName,
+  (bid) => {
+    if (bid && eventStore.activeEvent) {
+      consumePendingBatch();
+    }
+  }
+);
 
 watch(
   () => eventStore.activeEvent?.id,
   () => {
     selectedParent.value = "";
+    activeBatchId.value = null;
+    nextCardToName.value = null;
     selectedFolderPath.value = null;
     stagedMap.value = {};
     userPinnedScope.value = false;
     if (eventStore.activeEvent) {
       loadRosterData();
+      ingestStore.loadIngestBatches();
       loadFolders();
     }
   }
@@ -675,6 +878,7 @@ watch(
   () => eventStore.activeEvent?.photoCounts.total,
   (next, prev) => {
     if (eventStore.activeEvent && prev !== undefined && next !== prev) {
+      ingestStore.loadIngestBatches();
       loadFolders();
     }
   }
@@ -683,6 +887,7 @@ watch(
   () => eventStore.fsSyncGeneration,
   (next, prev) => {
     if (eventStore.activeEvent && prev !== undefined && next !== prev) {
+      ingestStore.loadIngestBatches();
       loadFolders();
       loadRosterData();
     }
@@ -732,9 +937,18 @@ watch(
         </div>
       </div>
 
-      <div v-if="bannerMessage" class="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800 flex items-center justify-between">
+      <div v-if="bannerMessage" class="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800 flex flex-wrap items-center justify-between gap-3">
         <span>{{ bannerMessage }}</span>
-        <button @click="bannerMessage = null" class="text-emerald-600 font-bold ml-4">&times;</button>
+        <div class="flex items-center gap-2.5 ml-auto">
+          <button
+            v-if="nextCardToName"
+            @click="selectIngestBatch(nextCardToName.id)"
+            class="px-3 py-1.5 text-xs font-semibold rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+          >
+            Next Card (#{{ nextCardToName.sequenceNum }} · {{ nextCardToName.readerName || nextCardToName.destinationRelPath.split('/').slice(-2).join('/') }}) &rarr;
+          </button>
+          <button @click="bannerMessage = null; nextCardToName = null" class="text-emerald-600 font-bold">&times;</button>
+        </div>
       </div>
       <div v-if="errorMessage" class="p-3.5 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between">
         <span>{{ errorMessage }}</span>
@@ -909,77 +1123,206 @@ watch(
 
       <!-- ================= FOLDERS TAB ================= -->
       <div v-show="subTab === 'folders'" class="space-y-4">
-        <!-- Toolbar: Mode Toggle + Searchable Location Selector -->
-        <div class="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div class="flex flex-wrap items-center gap-2.5">
-              <div class="inline-flex rounded-lg bg-slate-100 p-0.5 text-xs font-medium border border-slate-200">
-                <button
-                  @click="switchFolderMode('unassigned')"
-                  class="px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5"
-                  :class="folderMode === 'unassigned' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
-                >
-                  Unassigned Only
-                  <span
-                    v-if="folderData.totalUnassignedFolders > 0"
-                    class="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-[11px]"
-                  >
-                    {{ folderData.totalUnassignedFolders }}
-                  </span>
-                </button>
-                <button
-                  @click="switchFolderMode('all')"
-                  class="px-3 py-1.5 rounded-md transition-colors"
-                  :class="folderMode === 'all' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
-                >
-                  All Folders (Fix Rotations)
-                </button>
-              </div>
-
-              <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer ml-1">
-                <input v-model="renameOnDisk" type="checkbox" class="rounded" />
-                <span>Rename folders on disk</span>
-              </label>
+        <!-- Live Card Naming Queue Strip (shows downloading cards + finished cards with unnamed folders) -->
+        <div
+          v-if="ingestStore.activeCopies.length > 0 || ingestStore.pendingNamingBatches.length > 0 || activeBatch"
+          class="bg-white rounded-xl border border-indigo-200/80 shadow-xs px-4 py-3 space-y-2.5"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+              <span>Ingested Card Queue</span>
+              <span
+                v-if="ingestStore.pendingNamingBatches.length > 0"
+                class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold normal-case"
+              >
+                {{ ingestStore.pendingNamingBatches.length }} card{{ ingestStore.pendingNamingBatches.length === 1 ? '' : 's' }} waiting
+              </span>
+              <span
+                v-if="ingestStore.activeCopies.length > 0"
+                class="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold normal-case animate-pulse"
+              >
+                {{ ingestStore.activeCopies.length }} downloading
+              </span>
             </div>
-
             <button
-              @click="runAutoMatch"
-              class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              v-if="activeBatchId"
+              @click="exitCardView"
+              class="text-xs font-medium text-indigo-700 hover:underline"
             >
-              Auto-Match Numbered Folders
+              Show All Event Locations
             </button>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2.5">
-            <input
-              v-model="locationFilterQuery"
-              @keydown.enter.prevent="jumpToFirstFilteredLocation"
-              type="search"
-              placeholder="Filter locations (e.g. 10a 1a beam)..."
-              class="w-60 border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
-            />
-            <select
-              :value="selectedParent"
-              @change="selectParentPath(($event.target as HTMLSelectElement).value)"
-              class="flex-1 min-w-[260px] border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white font-mono"
+          <div class="flex flex-wrap gap-2">
+            <!-- Actively downloading cards -->
+            <div
+              v-for="copy in ingestStore.activeCopies"
+              :key="copy.readerId"
+              class="flex items-center gap-2.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50/70 text-xs"
             >
-              <option v-if="folderMode === 'unassigned'" value="">
-                All Unassigned Locations ({{ availableLocations.length }} location{{ availableLocations.length === 1 ? '' : 's' }}, {{ folderData.totalUnassignedPhotos.toLocaleString() }} photos)
-              </option>
-              <option
-                v-if="selectedParent && !availableLocations.some((l) => l.parentPath === selectedParent)"
-                :value="selectedParent"
+              <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
+              <div class="min-w-0">
+                <div class="font-semibold text-blue-900 truncate max-w-[180px]">{{ copy.readerLabel }}</div>
+                <div class="font-mono text-[11px] text-blue-700 truncate max-w-[220px]">
+                  {{ copy.destinationRelPath || "(event root)" }}
+                </div>
+              </div>
+              <span class="font-mono font-semibold text-blue-700">
+                {{ Math.round(copy.progress?.percentage || 0) }}%
+              </span>
+            </div>
+
+            <!-- Finished cards awaiting naming (plus active card if just completed) -->
+            <button
+              v-for="batch in ingestStore.pendingNamingBatches"
+              :key="batch.id"
+              @click="selectIngestBatch(batch.id)"
+              class="flex items-center gap-2.5 px-3 py-1.5 rounded-lg border text-left text-xs transition-all"
+              :class="
+                activeBatchId === batch.id
+                  ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-200'
+                  : 'border-amber-200 bg-amber-50/60 hover:bg-amber-50 hover:border-amber-300'
+              "
+            >
+              <span
+                class="px-1.5 py-0.5 rounded font-mono font-bold"
+                :class="activeBatchId === batch.id ? 'bg-indigo-600 text-white' : 'bg-white border border-amber-200 text-slate-700'"
               >
-                {{ selectedParent }} (current)
-              </option>
-              <option v-if="folderMode === 'all' && availableLocations.length === 0" value="">
-                No matching locations
-              </option>
-              <option v-for="loc in availableLocations" :key="loc.parentPath" :value="loc.parentPath">
-                {{ loc.parentPath || "(event root)" }} — {{ folderMode === 'unassigned' ? `${loc.unassignedFolderCount} unassigned (${loc.unassignedPhotoCount} photos)` : `${loc.folderCount} folders (${loc.photoCount} photos)` }}
-              </option>
-            </select>
+                #{{ batch.sequenceNum }}
+              </span>
+              <div class="min-w-0">
+                <div class="font-semibold text-slate-900 truncate max-w-[190px]">
+                  {{ batch.readerName || batch.volumeName || "Card" }}
+                </div>
+                <div class="font-mono text-[11px] text-slate-600 truncate max-w-[240px]">
+                  {{ batch.destinationRelPath || "(event root)" }}
+                </div>
+              </div>
+              <div class="text-right shrink-0 pl-1">
+                <div class="font-semibold" :class="activeBatchId === batch.id ? 'text-indigo-700' : 'text-amber-800'">
+                  {{ batch.unassignedFolders }}/{{ batch.totalFolders }} left
+                </div>
+                <div class="text-[10px] text-slate-500">
+                  <template v-if="batch.pendingPhotos > 0">
+                    {{ batch.readyPhotos }}/{{ batch.totalPhotos }} thumbs
+                  </template>
+                  <template v-else>
+                    ready ✓
+                  </template>
+                </div>
+              </div>
+            </button>
           </div>
+        </div>
+
+        <!-- Toolbar: Active Card Banner OR Mode Toggle + Searchable Location Selector -->
+        <div class="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
+          <div
+            v-if="activeBatch"
+            class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100"
+          >
+            <div class="flex items-center gap-2.5 min-w-0">
+              <span class="px-2 py-0.5 rounded-md bg-indigo-600 text-white font-mono text-xs font-bold shrink-0">
+                Card #{{ activeBatch.sequenceNum }}
+              </span>
+              <div class="min-w-0">
+                <div class="text-sm font-bold text-slate-900 flex items-center gap-2 flex-wrap">
+                  <span>{{ activeBatch.readerName || activeBatch.volumeName || "Ingested Card" }}</span>
+                  <span v-if="activeBatch.photographer" class="text-xs font-normal text-slate-500">
+                    · {{ activeBatch.photographer }}
+                  </span>
+                </div>
+                <div class="text-xs font-mono text-indigo-700 truncate">
+                  {{ activeBatch.destinationRelPath || "(event root)" }}
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+              <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                <input v-model="renameOnDisk" type="checkbox" class="rounded" />
+                <span>Rename folders on disk</span>
+              </label>
+              <button
+                @click="exitCardView"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              >
+                Exit Card View
+              </button>
+            </div>
+          </div>
+
+          <template v-else>
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div class="flex flex-wrap items-center gap-2.5">
+                <div class="inline-flex rounded-lg bg-slate-100 p-0.5 text-xs font-medium border border-slate-200">
+                  <button
+                    @click="switchFolderMode('unassigned')"
+                    class="px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5"
+                    :class="folderMode === 'unassigned' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+                  >
+                    Unassigned Only
+                    <span
+                      v-if="folderData.totalUnassignedFolders > 0"
+                      class="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-[11px]"
+                    >
+                      {{ folderData.totalUnassignedFolders }}
+                    </span>
+                  </button>
+                  <button
+                    @click="switchFolderMode('all')"
+                    class="px-3 py-1.5 rounded-md transition-colors"
+                    :class="folderMode === 'all' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+                  >
+                    All Folders (Fix Rotations)
+                  </button>
+                </div>
+
+                <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer ml-1">
+                  <input v-model="renameOnDisk" type="checkbox" class="rounded" />
+                  <span>Rename folders on disk</span>
+                </label>
+              </div>
+
+              <button
+                @click="runAutoMatch"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              >
+                Auto-Match Numbered Folders
+              </button>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2.5">
+              <input
+                v-model="locationFilterQuery"
+                @keydown.enter.prevent="jumpToFirstFilteredLocation"
+                type="search"
+                placeholder="Filter locations (e.g. 10a 1a beam)..."
+                class="w-60 border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
+              />
+              <select
+                :value="selectedParent"
+                @change="selectParentPath(($event.target as HTMLSelectElement).value)"
+                class="flex-1 min-w-[260px] border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white font-mono"
+              >
+                <option v-if="folderMode === 'unassigned'" value="">
+                  All Unassigned Locations ({{ availableLocations.length }} location{{ availableLocations.length === 1 ? '' : 's' }}, {{ folderData.totalUnassignedPhotos.toLocaleString() }} photos)
+                </option>
+                <option
+                  v-if="selectedParent && !availableLocations.some((l) => l.parentPath === selectedParent)"
+                  :value="selectedParent"
+                >
+                  {{ selectedParent }} (current)
+                </option>
+                <option v-if="folderMode === 'all' && availableLocations.length === 0" value="">
+                  No matching locations
+                </option>
+                <option v-for="loc in availableLocations" :key="loc.parentPath" :value="loc.parentPath">
+                  {{ loc.parentPath || "(event root)" }} — {{ folderMode === 'unassigned' ? `${loc.unassignedFolderCount} unassigned (${loc.unassignedPhotoCount} photos)` : `${loc.folderCount} folders (${loc.photoCount} photos)` }}
+                </option>
+              </select>
+            </div>
+          </template>
         </div>
 
         <!-- Sticky Pending Changes Bar -->
@@ -1167,50 +1510,71 @@ watch(
                 </button>
               </div>
 
-              <!-- Smart Scope Pills: Same Group / Same Session / All Roster -->
-              <div class="flex flex-wrap items-center gap-1.5 text-xs">
-                <button
-                  v-if="sameGroupSubjects.length > 0"
-                  @click="setScope('group')"
-                  class="px-2.5 py-1 rounded-full font-medium transition-colors border"
-                  :class="
-                    pickerScope === 'group'
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                  "
+              <!-- Smart Scope Pills: Same Group / Same Session / All Roster + Matched Narrowing -->
+              <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <button
+                    v-if="sameGroupSubjects.length > 0"
+                    @click="setScope('group')"
+                    class="px-2.5 py-1 rounded-full font-medium transition-colors border"
+                    :class="
+                      pickerScope === 'group'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    "
+                  >
+                    {{ shortGroupName || 'Same Group' }} ({{ sameGroupSubjects.length }})
+                  </button>
+                  <button
+                    v-if="folderData.detectedSessionGroup && sameSessionSubjects.length > 0"
+                    @click="setScope('session')"
+                    class="px-2.5 py-1 rounded-full font-medium transition-colors border"
+                    :class="
+                      pickerScope === 'session'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    "
+                  >
+                    {{ folderData.detectedSessionGroup }} ({{ sameSessionSubjects.length }})
+                  </button>
+                  <button
+                    @click="setScope('all')"
+                    class="px-2.5 py-1 rounded-full font-medium transition-colors border"
+                    :class="
+                      pickerScope === 'all'
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                    "
+                  >
+                    All Roster ({{ allSubjects.length.toLocaleString() }})
+                  </button>
+                </div>
+
+                <label
+                  v-if="dimmedPickerItems.length > 0"
+                  class="flex items-center gap-1.5 text-slate-600 cursor-pointer select-none"
+                  title="Hide already-matched athletes completely instead of greying them out at the bottom"
                 >
-                  {{ shortGroupName || 'Same Group' }} ({{ sameGroupSubjects.length }})
-                </button>
-                <button
-                  v-if="folderData.detectedSessionGroup && sameSessionSubjects.length > 0"
-                  @click="setScope('session')"
-                  class="px-2.5 py-1 rounded-full font-medium transition-colors border"
-                  :class="
-                    pickerScope === 'session'
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                  "
-                >
-                  {{ folderData.detectedSessionGroup }} ({{ sameSessionSubjects.length }})
-                </button>
-                <button
-                  @click="setScope('all')"
-                  class="px-2.5 py-1 rounded-full font-medium transition-colors border"
-                  :class="
-                    pickerScope === 'all'
-                      ? 'bg-indigo-600 text-white border-indigo-600'
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                  "
-                >
-                  All Roster ({{ allSubjects.length.toLocaleString() }})
-                </button>
+                  <input v-model="hideMatchedSubjects" type="checkbox" class="rounded" />
+                  <span>Hide matched ({{ dimmedPickerItems.length }})</span>
+                </label>
+              </div>
+
+              <!-- Live Remaining Counter -->
+              <div class="flex items-center justify-between gap-2 text-xs text-slate-500">
+                <span>
+                  <strong class="text-slate-800">{{ unmatchedPickerItems.length }}</strong> remaining
+                  <template v-if="dimmedPickerItems.length > 0">
+                    · {{ dimmedPickerItems.length }} already matched{{ folderData.sectionLabel ? ` on ${folderData.sectionLabel}` : '' }}
+                  </template>
+                </span>
               </div>
 
               <div class="relative">
                 <input
                   v-model="pickerSearch"
                   type="search"
-                  :placeholder="`Search ${subjectLabel.toLowerCase()} by # or name...`"
+                  :placeholder="`Filter ${subjectLabel.toLowerCase()} by # or name...`"
                   class="w-full border border-slate-300 bg-white rounded-md px-3 py-1.5 text-sm"
                 />
               </div>
@@ -1239,80 +1603,124 @@ watch(
             </div>
 
             <div class="divide-y divide-slate-100 overflow-y-auto flex-1">
+              <!-- Remaining (Unmatched) Athletes First — Full Crisp Contrast -->
               <button
-                v-for="s in scopedPickerSubjects"
-                :key="s.id"
-                @click="stageFolderTarget(s.id)"
+                v-for="item in unmatchedPickerItems"
+                :key="item.subject.id"
+                @click="stageFolderTarget(item.subject.id)"
                 :disabled="!selectedFolder"
                 class="w-full px-3.5 py-2 text-left flex items-center justify-between gap-3 transition-colors"
                 :class="[
                   selectedFolder ? 'hover:bg-indigo-50 cursor-pointer' : 'opacity-50 cursor-not-allowed',
-                  selectedFolder && stagedMap[selectedFolder.folderPath] === s.id
+                  selectedFolder && stagedMap[selectedFolder.folderPath] === item.subject.id
                     ? 'bg-indigo-50/90'
                     : '',
                 ]"
               >
                 <div class="flex items-center gap-3 min-w-0">
-                  <!-- Cross-apparatus reference thumbnail (e.g. Floor photo while fixing Beam!) -->
+                  <!-- Cross-apparatus reference thumbnail (e.g. Floor photo while naming Beam!) -->
                   <div class="w-9 h-12 rounded overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center">
                     <img
-                      v-if="folderData.subjectSamplePhotos[s.id] && eventStore.lanStatus.running"
-                      :src="`${thumbBaseUrl}/${folderData.subjectSamplePhotos[s.id]}`"
+                      v-if="folderData.subjectSamplePhotos[item.subject.id] && eventStore.lanStatus.running"
+                      :src="`${thumbBaseUrl}/${folderData.subjectSamplePhotos[item.subject.id]}`"
                       loading="lazy"
                       class="w-full h-full object-cover"
                     />
                     <span v-else class="text-[10px] text-slate-400 font-mono">
-                      {{ s.number || "—" }}
+                      {{ item.subject.number || "—" }}
                     </span>
                   </div>
 
                   <div class="min-w-0">
                     <div class="flex items-center gap-2">
-                      <span v-if="s.number" class="font-mono text-xs font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
-                        {{ s.number }}
+                      <span v-if="item.subject.number" class="font-mono text-xs font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded">
+                        {{ item.subject.number }}
                       </span>
                       <span class="text-sm font-medium text-slate-900 truncate">
-                        {{ s.firstName }} {{ s.lastName || "" }}
+                        {{ item.subject.firstName }} {{ item.subject.lastName || "" }}
                       </span>
                     </div>
                     <div class="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
-                      <span v-if="s.groupLabel">{{ s.groupLabel }}</span>
-                      <span>· {{ s.photoCount }} photos</span>
+                      <span v-if="item.subject.groupLabel">{{ item.subject.groupLabel }}</span>
+                      <span>· {{ item.subject.photoCount }} photos</span>
                     </div>
                   </div>
                 </div>
 
-                <div class="flex items-center gap-1.5 flex-shrink-0">
-                  <span
-                    v-if="selectedFolder && stagedMap[selectedFolder.folderPath] === s.id"
-                    class="px-2 py-0.5 text-[11px] rounded-full bg-indigo-600 text-white font-semibold"
-                  >
-                    Staged here
-                  </span>
-                  <span
-                    v-else-if="subjectUsageInView.stagedTo.has(s.id)"
-                    class="px-2 py-0.5 text-[11px] rounded-full bg-indigo-100 text-indigo-700 font-medium"
-                  >
-                    Staged
-                  </span>
-                  <span
-                    v-else-if="selectedFolder?.assignedSubjectId === s.id"
-                    class="px-2 py-0.5 text-[11px] rounded-full bg-emerald-100 text-emerald-700 font-medium"
-                  >
-                    Current
-                  </span>
-                  <span
-                    v-else-if="subjectUsageInView.currentInLoc.has(s.id)"
-                    class="px-2 py-0.5 text-[11px] rounded-full bg-slate-100 text-slate-500"
-                  >
-                    In rotation
+                <div v-if="item.badgeText" class="flex items-center gap-1.5 flex-shrink-0">
+                  <span class="px-2 py-0.5 text-[11px] rounded-full" :class="item.badgeClass">
+                    {{ item.badgeText }}
                   </span>
                 </div>
               </button>
 
-              <div v-if="scopedPickerSubjects.length === 0" class="p-8 text-center text-sm text-slate-500 space-y-2">
-                <div>No {{ subjectLabel.toLowerCase() }}s match this filter.</div>
+              <!-- Already-Matched Athletes (Greyed Out & Sunk Below Remaining so Fewer Numbers Stay Bright!) -->
+              <template v-if="!hideMatchedSubjects && dimmedPickerItems.length > 0">
+                <div class="px-3.5 py-1.5 bg-slate-100/90 text-[11px] font-semibold uppercase tracking-wide text-slate-400 flex items-center justify-between">
+                  <span>
+                    Already Matched{{ folderData.sectionLabel ? ` on ${folderData.sectionLabel}` : '' }} ({{ dimmedPickerItems.length }})
+                  </span>
+                  <span class="normal-case font-normal">Still clickable if needed</span>
+                </div>
+
+                <button
+                  v-for="item in dimmedPickerItems"
+                  :key="item.subject.id"
+                  @click="stageFolderTarget(item.subject.id)"
+                  :disabled="!selectedFolder"
+                  class="w-full px-3.5 py-2 text-left flex items-center justify-between gap-3 bg-slate-50/70 opacity-45 hover:opacity-85 hover:bg-slate-100/80 transition-all"
+                  :class="selectedFolder ? 'cursor-pointer' : 'cursor-not-allowed'"
+                >
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-9 h-12 rounded overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center grayscale-[65%]">
+                      <img
+                        v-if="folderData.subjectSamplePhotos[item.subject.id] && eventStore.lanStatus.running"
+                        :src="`${thumbBaseUrl}/${folderData.subjectSamplePhotos[item.subject.id]}`"
+                        loading="lazy"
+                        class="w-full h-full object-cover"
+                      />
+                      <span v-else class="text-[10px] text-slate-400 font-mono">
+                        {{ item.subject.number || "—" }}
+                      </span>
+                    </div>
+
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span v-if="item.subject.number" class="font-mono text-xs font-medium text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded line-through decoration-slate-400">
+                          {{ item.subject.number }}
+                        </span>
+                        <span class="text-sm font-normal text-slate-500 truncate">
+                          {{ item.subject.firstName }} {{ item.subject.lastName || "" }}
+                        </span>
+                      </div>
+                      <div class="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
+                        <span v-if="item.subject.groupLabel">{{ item.subject.groupLabel }}</span>
+                        <span>· {{ item.subject.photoCount }} photos</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div v-if="item.badgeText" class="flex items-center gap-1.5 flex-shrink-0">
+                    <span class="px-2 py-0.5 text-[11px] rounded-full" :class="item.badgeClass">
+                      {{ item.badgeText }}
+                    </span>
+                  </div>
+                </button>
+              </template>
+
+              <div v-if="unmatchedPickerItems.length === 0 && (hideMatchedSubjects || dimmedPickerItems.length === 0)" class="p-8 text-center text-sm text-slate-500 space-y-2">
+                <div v-if="hideMatchedSubjects && dimmedPickerItems.length > 0">
+                  All {{ dimmedPickerItems.length }} matching {{ subjectLabel.toLowerCase() }}(s) in this scope are already matched.
+                </div>
+                <div v-else>No {{ subjectLabel.toLowerCase() }}s match this filter.</div>
                 <div class="flex justify-center gap-2">
+                  <button
+                    v-if="hideMatchedSubjects && dimmedPickerItems.length > 0"
+                    @click="hideMatchedSubjects = false"
+                    class="px-3 py-1 text-xs rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium"
+                  >
+                    Show Matched ({{ dimmedPickerItems.length }})
+                  </button>
                   <button
                     v-if="pickerScope !== 'session' && folderData.detectedSessionGroup"
                     @click="setScope('session')"

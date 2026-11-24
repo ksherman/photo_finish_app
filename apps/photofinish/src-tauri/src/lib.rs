@@ -132,6 +132,7 @@ pub fn run() {
             commands::auto_match_photos,
             commands::list_unassigned_folders,
             commands::assign_folder_to_subject,
+            commands::list_ingest_batches,
             commands::list_folders,
             commands::apply_folder_reassignments,
             commands::remove_folder,

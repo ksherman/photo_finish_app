@@ -104,6 +104,32 @@ pub struct ListFoldersResponse {
     pub detected_group_prefix: Option<String>,
     pub same_group_subject_ids: Vec<String>,
     pub subject_sample_photos: BTreeMap<String, String>,
+    /// Apparatus / section name inferred from the active folder location (e.g. "Beam", "Floor").
+    pub section_label: Option<String>,
+    /// Subjects already matched in another rotation/group on the SAME apparatus/section
+    /// in this session (subject_id -> short group/location label like "Group 1A"), so the
+    /// naming UI can grey out already-photographed athletes as a session progresses.
+    pub section_matched_subjects: BTreeMap<String, String>,
+}
+
+/// Summary of an ingested memory card (or folder batch) for the Card Naming Queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestBatchSummary {
+    pub id: String,
+    pub sequence_num: i64,
+    pub reader_id: Option<String>,
+    pub reader_name: Option<String>,
+    pub volume_name: Option<String>,
+    pub photographer: Option<String>,
+    pub destination_rel_path: String,
+    pub total_photos: i64,
+    pub ready_photos: i64,
+    pub pending_photos: i64,
+    pub total_folders: i64,
+    pub unassigned_folders: i64,
+    pub unassigned_photos: i64,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

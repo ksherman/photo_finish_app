@@ -23,8 +23,8 @@ use crate::preset::{
 use crate::roster::{
     natural_sort_key, AssignFolderResult, BatchReassignResult, FolderChangeResultItem, FolderItem,
     FolderLocationSummary, FolderParentSummary, FolderReassignmentInput, ImportRosterResult,
-    ListFoldersResponse, RemoveFolderMode, RemoveFolderResult, RosterEntryInput, UnassignedFolder,
-    UnassignedFoldersResponse,
+    IngestBatchSummary, ListFoldersResponse, RemoveFolderMode, RemoveFolderResult,
+    RosterEntryInput, UnassignedFolder, UnassignedFoldersResponse,
 };
 use crate::{Error, Result};
 
@@ -740,14 +740,59 @@ impl EventBundle {
         Ok(out)
     }
 
-    /// Lists photo folders (either unassigned-only or all folders within a location),
-    /// along with location summaries, inferred session & group roster context, and
-    /// cross-apparatus reference thumbnails for subjects in the detected group/session.
+    /// Lists recent ingested card batches with live photo, thumbnail, and unnamed-folder counts
+    /// for the Card Naming Queue bridging Card Ingest and Roster & Folders.
+    pub fn list_ingest_batches(&self, limit: i64) -> Result<Vec<IngestBatchSummary>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT b.id, b.sequence_num, b.reader_id, b.reader_name, b.volume_name,
+                    b.photographer, b.destination_rel_path, COALESCE(b.completed_at, b.started_at),
+                    COUNT(p.id) AS total_photos,
+                    COALESCE(SUM(CASE WHEN p.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready_photos,
+                    COALESCE(SUM(CASE WHEN p.status IN ('discovered', 'processing') THEN 1 ELSE 0 END), 0) AS pending_photos,
+                    COUNT(DISTINCT CASE WHEN p.folder_path != '' THEN p.folder_path END) AS total_folders,
+                    COUNT(DISTINCT CASE WHEN p.folder_path != '' AND p.subject_id IS NULL THEN p.folder_path END) AS unassigned_folders,
+                    COALESCE(SUM(CASE WHEN p.subject_id IS NULL THEN 1 ELSE 0 END), 0) AS unassigned_photos
+             FROM ingest_batches b
+             LEFT JOIN photos p ON p.ingest_batch_id = b.id
+             GROUP BY b.id
+             HAVING total_photos > 0
+             ORDER BY b.sequence_num DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(IngestBatchSummary {
+                    id: r.get(0)?,
+                    sequence_num: r.get(1)?,
+                    reader_id: r.get(2)?,
+                    reader_name: r.get(3)?,
+                    volume_name: r.get(4)?,
+                    photographer: r.get(5)?,
+                    destination_rel_path: r.get(6)?,
+                    created_at: r.get(7)?,
+                    total_photos: r.get(8)?,
+                    ready_photos: r.get(9)?,
+                    pending_photos: r.get(10)?,
+                    total_folders: r.get(11)?,
+                    unassigned_folders: r.get(12)?,
+                    unassigned_photos: r.get(13)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Lists photo folders (either unassigned-only, all folders within a location, or strictly
+    /// the folders belonging to a single ingested card via `batch_id`), along with location
+    /// summaries, inferred session & group roster context, cross-apparatus reference thumbnails,
+    /// and subjects already matched on the same apparatus/section in this session.
     pub fn list_folders(
         &self,
         parent_filter: Option<&str>,
         only_unassigned: bool,
         context_parent: Option<&str>,
+        batch_id: Option<&str>,
     ) -> Result<ListFoldersResponse> {
         let conn = self.read_conn()?;
 
@@ -809,13 +854,26 @@ impl EventBundle {
         let mut total_unassigned_folders = 0usize;
 
         let filter_norm = parent_filter.map(str::trim).filter(|s| !s.is_empty());
+        let batch_norm = batch_id.map(str::trim).filter(|s| !s.is_empty());
         let mut selected_rows: Vec<RawFolderRow> = Vec::new();
+
+        // Keep lightweight (parent_path, subject_id) tuples for instant in-memory section matching
+        let mut assigned_folder_index: Vec<(String, String)> = Vec::new();
 
         for row in raw_rows {
             let has_unassigned = row.unassigned_count > 0;
             if has_unassigned {
                 total_unassigned_photos += row.unassigned_count;
                 total_unassigned_folders += 1;
+            }
+
+            if row.min_subject_id.is_some()
+                && row.min_subject_id == row.max_subject_id
+                && row.unassigned_count == 0
+            {
+                if let Some(ref sid) = row.min_subject_id {
+                    assigned_folder_index.push((row.parent_path.clone(), sid.clone()));
+                }
             }
 
             let loc = loc_map
@@ -834,15 +892,61 @@ impl EventBundle {
                 loc.unassigned_photo_count += row.unassigned_count;
             }
 
-            if only_unassigned && !has_unassigned {
-                continue;
-            }
-            if let Some(f) = filter_norm {
-                if row.parent_path != f {
+            if batch_norm.is_none() {
+                if only_unassigned && !has_unassigned {
                     continue;
                 }
+                if let Some(f) = filter_norm {
+                    if row.parent_path != f {
+                        continue;
+                    }
+                }
+                selected_rows.push(row);
             }
-            selected_rows.push(row);
+        }
+
+        // If scoped to a specific ingested card (`batch_id`), load strictly that card's folders
+        // using `idx_photos_batch` so the operator only sees folders from this physical card.
+        let mut batch_dest_path: Option<String> = None;
+        if let Some(bid) = batch_norm {
+            batch_dest_path = conn
+                .query_row(
+                    "SELECT destination_rel_path FROM ingest_batches WHERE id = ?1",
+                    [bid],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|s| s.trim_matches('/').to_string())
+                .filter(|s| !s.is_empty());
+
+            let mut b_stmt = conn.prepare(
+                "SELECT folder_path,
+                        COUNT(*) AS photo_count,
+                        SUM(CASE WHEN subject_id IS NULL THEN 1 ELSE 0 END) AS unassigned_count,
+                        MIN(subject_id) AS min_subject_id,
+                        MAX(subject_id) AS max_subject_id
+                 FROM photos
+                 WHERE ingest_batch_id = ?1 AND folder_path != ''
+                 GROUP BY folder_path",
+            )?;
+            selected_rows = b_stmt
+                .query_map([bid], |r| {
+                    let folder_path: String = r.get(0)?;
+                    let (parent_path, leaf_folder) = match folder_path.rsplit_once('/') {
+                        Some((p, l)) => (p.to_string(), l.to_string()),
+                        None => (String::new(), folder_path.clone()),
+                    };
+                    Ok(RawFolderRow {
+                        folder_path,
+                        parent_path,
+                        leaf_folder,
+                        photo_count: r.get(1)?,
+                        unassigned_count: r.get(2)?,
+                        min_subject_id: r.get(3)?,
+                        max_subject_id: r.get(4)?,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
         }
 
         let mut locations: Vec<FolderLocationSummary> = loc_map.into_values().collect();
@@ -852,7 +956,11 @@ impl EventBundle {
 
         // Guard against rendering thousands of folder thumbnail cards at once if viewing
         // all folders without a location filter.
-        if !only_unassigned && filter_norm.is_none() && selected_rows.len() > 200 {
+        if batch_norm.is_none()
+            && !only_unassigned
+            && filter_norm.is_none()
+            && selected_rows.len() > 200
+        {
             selected_rows.truncate(200);
         }
 
@@ -864,13 +972,26 @@ impl EventBundle {
              ORDER BY filename ASC
              LIMIT 4",
         )?;
+        let mut batch_sample_stmt = conn.prepare(
+            "SELECT id FROM photos
+             WHERE folder_path = ?1 AND ingest_batch_id = ?2 AND +status = 'ready'
+             ORDER BY filename ASC
+             LIMIT 4",
+        )?;
 
         let mut folders = Vec::with_capacity(selected_rows.len());
         for row in selected_rows {
-            let sample_photo_ids: Vec<String> = sample_stmt
-                .query_map([&row.folder_path], |r| r.get(0))?
-                .filter_map(|r| r.ok())
-                .collect();
+            let sample_photo_ids: Vec<String> = if let Some(bid) = batch_norm {
+                batch_sample_stmt
+                    .query_map(rusqlite::params![&row.folder_path, bid], |r| r.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            } else {
+                sample_stmt
+                    .query_map([&row.folder_path], |r| r.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
             let has_multiple_subjects = row.min_subject_id != row.max_subject_id;
             let has_any_subject = row.min_subject_id.is_some();
             let is_mixed = has_multiple_subjects || (has_any_subject && row.unassigned_count > 0);
@@ -906,12 +1027,15 @@ impl EventBundle {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .or_else(|| filter_norm.map(str::to_string))
-            .or_else(|| folders.first().map(|f| f.parent_path.clone()).filter(|s| !s.is_empty()));
+            .or_else(|| folders.first().map(|f| f.parent_path.clone()).filter(|s| !s.is_empty()))
+            .or(batch_dest_path);
 
         let mut detected_session_group: Option<String> = None;
         let mut detected_group_prefix: Option<String> = None;
         let mut same_group_subject_ids: Vec<String> = Vec::new();
         let mut subject_sample_photos: BTreeMap<String, String> = BTreeMap::new();
+        let mut section_label: Option<String> = None;
+        let mut section_matched_subjects: BTreeMap<String, String> = BTreeMap::new();
 
         if let Some(ref ctx_parent) = effective_context_parent {
             // 1. Match roster group_label (e.g. "Session 10A") by exact path segment first,
@@ -923,7 +1047,48 @@ impl EventBundle {
                 .find(|g| segments.iter().any(|seg| seg.eq_ignore_ascii_case(g)))
                 .cloned();
 
-            // 2. Group ancestor prefix (one level above apparatus/section, e.g.
+            // 2. Section / apparatus name (last segment of ctx_parent, e.g. "Beam" or "Floor")
+            //    and subjects already matched on that SAME apparatus in earlier rotations/groups
+            //    of this session so operators see fewer remaining athletes as the session progresses.
+            let sec_opt = segments
+                .last()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            if let Some(ref sec) = sec_opt {
+                section_label = Some(sec.clone());
+                for (other_parent, sid) in &assigned_folder_index {
+                    if other_parent == ctx_parent {
+                        continue;
+                    }
+                    let other_segs: Vec<&str> = other_parent.split('/').collect();
+                    let same_section = other_segs
+                        .last()
+                        .map(|s| s.eq_ignore_ascii_case(sec))
+                        .unwrap_or(false);
+                    if !same_section {
+                        continue;
+                    }
+                    if let Some(ref sess) = detected_session_group {
+                        let same_session =
+                            other_segs.iter().any(|seg| seg.eq_ignore_ascii_case(sess));
+                        if !same_session {
+                            continue;
+                        }
+                    }
+                    // Short distinguishing label right above the apparatus (e.g. "Group 1A")
+                    let short_loc = if other_segs.len() >= 2 {
+                        other_segs[other_segs.len() - 2].to_string()
+                    } else {
+                        other_parent.clone()
+                    };
+                    section_matched_subjects
+                        .entry(sid.clone())
+                        .or_insert(short_loc);
+                }
+            }
+
+            // 3. Group ancestor prefix (one level above apparatus/section, e.g.
             //    "Gym A/Session 10A/Group 1A/Beam" -> "Gym A/Session 10A/Group 1A").
             if let Some((ancestor, _)) = ctx_parent.rsplit_once('/') {
                 if !ancestor.is_empty() {
@@ -944,7 +1109,7 @@ impl EventBundle {
                 }
             }
 
-            // 3. Collect 1 reference thumbnail per subject in Same Group and Same Session,
+            // 4. Collect 1 reference thumbnail per subject in Same Group and Same Session,
             //    preferring a ready photo OUTSIDE `ctx_parent` (e.g. Floor when fixing Beam!).
             //    `+status = 'ready'` forces `idx_photos_subject` (~1ms total for 100 subjects!).
             let mut candidate_subject_ids: HashSet<String> =
@@ -1003,6 +1168,8 @@ impl EventBundle {
             detected_group_prefix,
             same_group_subject_ids,
             subject_sample_photos,
+            section_label,
+            section_matched_subjects,
         })
     }
 
@@ -3131,7 +3298,7 @@ mod tests {
 
         // Verify list_folders detects Session 10A, Group 1A, and cross-apparatus sample photo for Julia
         let listed = bundle
-            .list_folders(Some("Gym A/Session 10A/Group 1A/Beam"), false, None)
+            .list_folders(Some("Gym A/Session 10A/Group 1A/Beam"), false, None, None)
             .unwrap();
         assert_eq!(listed.folders.len(), 3);
         assert_eq!(listed.detected_session_group.as_deref(), Some("Session 10A"));
@@ -3717,5 +3884,112 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bundle.list_subject_photos(&sub105.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ingest_batch_queue_scoping_and_section_matched_narrowing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("queue-meet");
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: root.clone(),
+            name: "Queue Narrowing Meet".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("QNM".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: None,
+            scaffold: None,
+        })
+        .unwrap();
+
+        let sub101 = bundle
+            .add_subject(Some("101"), "Ava", Some("M"), Some("Session 10A"), None)
+            .unwrap();
+        let sub102 = bundle
+            .add_subject(Some("102"), "Bella", Some("S"), Some("Session 10A"), None)
+            .unwrap();
+
+        // Rotation 1 on Beam (Group 1A): Ava (101) already matched
+        let f1 = "Gym A/Session 10A/Group 1A/Beam/101 Ava M/IMG_001.jpg";
+        fs::create_dir_all(root.join(f1).parent().unwrap()).unwrap();
+        fs::write(root.join(f1), b"jpg1").unwrap();
+        let (batch1, _) = bundle
+            .record_ingest_batch(
+                IngestBatchMeta {
+                    reader_id: Some("USB-BEAM".into()),
+                    reader_name: Some("Gym A · Beam".into()),
+                    volume_name: Some("CARD1".into()),
+                    photographer: Some("KDS".into()),
+                    source_path: None,
+                    destination_rel_path: "Gym A/Session 10A/Group 1A/Beam".into(),
+                    tags: BTreeMap::new(),
+                },
+                &[IngestFileInput {
+                    relative_path: f1.into(),
+                    original_filename: "IMG_001.jpg".into(),
+                    file_size_bytes: 4,
+                }],
+            )
+            .unwrap();
+
+        // Rotation 2 on Beam (Group 2A): unnamed folder "Gymnast 01"
+        let f2 = "Gym A/Session 10A/Group 2A/Beam/Gymnast 01/IMG_002.jpg";
+        fs::create_dir_all(root.join(f2).parent().unwrap()).unwrap();
+        fs::write(root.join(f2), b"jpg2").unwrap();
+        let (batch2, _) = bundle
+            .record_ingest_batch(
+                IngestBatchMeta {
+                    reader_id: Some("USB-BEAM".into()),
+                    reader_name: Some("Gym A · Beam".into()),
+                    volume_name: Some("CARD2".into()),
+                    photographer: Some("KDS".into()),
+                    source_path: None,
+                    destination_rel_path: "Gym A/Session 10A/Group 2A/Beam".into(),
+                    tags: BTreeMap::new(),
+                },
+                &[IngestFileInput {
+                    relative_path: f2.into(),
+                    original_filename: "IMG_002.jpg".into(),
+                    file_size_bytes: 4,
+                }],
+            )
+            .unwrap();
+
+        // Queue should show batch2 with 1 unassigned folder and batch1 with 0 unassigned
+        let batches = bundle.list_ingest_batches(20).unwrap();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].id, batch2);
+        assert_eq!(batches[0].unassigned_folders, 1);
+        assert_eq!(batches[1].id, batch1);
+        assert_eq!(batches[1].unassigned_folders, 0);
+
+        // Scoping list_folders to batch2 shows ONLY batch2's folder AND flags sub101 as
+        // already matched on Beam in Group 1A (so the picker can grey out Ava!)
+        let view = bundle
+            .list_folders(None, false, None, Some(&batch2))
+            .unwrap();
+        assert_eq!(view.folders.len(), 1);
+        assert_eq!(view.folders[0].leaf_folder, "Gymnast 01");
+        assert_eq!(view.section_label.as_deref(), Some("Beam"));
+        assert_eq!(
+            view.section_matched_subjects.get(&sub101.id).map(String::as_str),
+            Some("Group 1A")
+        );
+        assert!(!view.section_matched_subjects.contains_key(&sub102.id));
+
+        // After assigning batch2's folder to Bella (102), batch2's unassigned_folders drops to 0
+        bundle
+            .apply_folder_reassignments(
+                &[FolderReassignmentInput {
+                    folder_path: "Gym A/Session 10A/Group 2A/Beam/Gymnast 01".into(),
+                    target_subject_id: Some(sub102.id.clone()),
+                }],
+                true,
+            )
+            .unwrap();
+        let after_batches = bundle.list_ingest_batches(20).unwrap();
+        assert_eq!(after_batches[0].unassigned_folders, 0);
     }
 }

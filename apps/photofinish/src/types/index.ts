@@ -291,6 +291,25 @@ export interface ListFoldersResponse {
   detectedGroupPrefix: string | null;
   sameGroupSubjectIds: string[];
   subjectSamplePhotos: Record<string, string>;
+  sectionLabel: string | null;
+  sectionMatchedSubjects: Record<string, string>;
+}
+
+export interface IngestBatchSummary {
+  id: string;
+  sequenceNum: number;
+  readerId: string | null;
+  readerName: string | null;
+  volumeName: string | null;
+  photographer: string | null;
+  destinationRelPath: string;
+  totalPhotos: number;
+  readyPhotos: number;
+  pendingPhotos: number;
+  totalFolders: number;
+  unassignedFolders: number;
+  unassignedPhotos: number;
+  createdAt: string;
 }
 
 export interface FolderReassignmentInput {

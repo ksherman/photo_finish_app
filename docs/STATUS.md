@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-23  
 **Active codebase:** `apps/photofinish/` (Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum)  
-**Verified test suite:** `cargo test --workspace` (24/24 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
+**Verified test suite:** `cargo test --workspace` (25/25 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
 
 ---
 
@@ -29,8 +29,9 @@
 
 ### 5. Roster Import & Rotation Folder Management (`RosterAndFoldersView.vue`, `roster.rs`, `event.rs`)
 - Multi-file `.txt` and `.csv` roster import with filename-inferred session/group labels, idempotent upsert, and instant automatic photo matching (verified 99.995% auto-match on a 146,830-photo meet).
+- **Live Card Naming Queue (`ingest_batches` bridge):** Finished cards show a direct `Name Folders →` button and appear in a shared live Card Queue strip across `Card Ingest` and `Roster & Folders` (showing actively downloading cards `%` alongside finished cards waiting to be named, scoped strictly to that card's `ingest_batch_id` with live-streaming thumbnails and a 1-click `Next Card →` handoff when cleared). Also includes an `Ingest Folder…` modal for local folder/thumb-drive drops and multi-card testing.
 - **Unassigned Only** and **All Folders (Fix Rotations)** browsing with multi-word location filtering.
-- Smart scope picker (`Same Group` inferred from sibling apparatuses → `Same Session` → `All Roster` for late/out-of-group athletes) with cross-apparatus reference thumbnails and click-to-zoom preview lightbox.
+- Smart scope picker (`Same Group` inferred from sibling apparatuses → `Same Session` → `All Roster` for late/out-of-group athletes) with cross-apparatus reference thumbnails, click-to-zoom preview lightbox, and **progressive session narrowing** (athletes already staged, matched in this rotation, or already photographed on the same apparatus/section in an earlier rotation of the session are automatically greyed out and sunk below remaining athletes, with an optional `Hide matched` toggle).
 - **Swap-safe batch rotation renaming:** Stage multiple folder changes → Preview & Confirm modal (`Swapped` / `Renamed` / `Merged` badges) → atomic two-phase disk staging + two-phase SQLite transaction (zero photo mixing on cyclic shifts, collision-safe merges).
 - **Safe folder removal:** Confirmation modal with thumbnails supporting **Move to `_photofinish/trash`** (default, reversible, never re-scanned), **Permanent Delete from Disk**, or **Remove from Database Only**.
 
