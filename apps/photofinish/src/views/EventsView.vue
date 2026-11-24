@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ref, computed, watch, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
-import type { EventSummary } from "@/types";
+import type { CsvExportResult, EventSummary } from "@/types";
 
 const emit = defineEmits<{
   opened: [];
@@ -17,19 +18,80 @@ const presetId = ref("gymnastics");
 const subjectLabel = ref("Competitor");
 const customLevelsText = ref("Gym, Session, Group, Apparatus, Subject");
 const orderCode = ref("");
-const stationCode = ref("A");
+const stationCode = ref(eventStore.machineStationCode || "A");
 const numAreas = ref(2);
 const areaPrefix = ref("Gym");
 const sessionsPerArea = ref(4);
 const sessionPrefix = ref("Session");
 const enableScaffold = ref(true);
 
+const customStationInput = ref(eventStore.machineStationCode || "A");
+const isRefreshingLibrary = ref(false);
+const isGathering = ref(false);
+const isExportingAll = ref(false);
+
 const errorMessage = ref<string | null>(null);
+const bannerMessage = ref<string | null>(null);
 const gatheredResult = ref<EventSummary[] | null>(null);
+
+const presetStations = ["A", "B", "C", "D"];
+
+watch(
+  () => eventStore.machineStationCode,
+  (code) => {
+    customStationInput.value = code;
+    if (!showCreate.value) {
+      stationCode.value = code;
+    }
+  },
+  { immediate: true }
+);
 
 const selectedPreset = computed(() =>
   eventStore.presets.find((p) => p.id === presetId.value)
 );
+
+const overviewEvents = computed(() => eventStore.libraryOverview?.events ?? []);
+const overviewTotals = computed(() => eventStore.libraryOverview?.totals ?? null);
+const duplicateOrderNumbers = computed(
+  () => eventStore.libraryOverview?.duplicateOrderNumbers ?? []
+);
+
+function formatCents(cents: number): string {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  return `${sign}$${(abs / 100).toFixed(2)}`;
+}
+
+async function selectMachineStation(code: string) {
+  errorMessage.value = null;
+  try {
+    await eventStore.setMachineStationCode(code);
+    stationCode.value = eventStore.machineStationCode;
+    bannerMessage.value = `This Mac is now configured as Station ${eventStore.machineStationCode}. New event bundles will default to Station ${eventStore.machineStationCode}.`;
+  } catch (err) {
+    errorMessage.value = String(err);
+  }
+}
+
+async function refreshLibraryStatus() {
+  isRefreshingLibrary.value = true;
+  errorMessage.value = null;
+  try {
+    await eventStore.refreshLibrary();
+  } catch (err) {
+    errorMessage.value = String(err);
+  } finally {
+    isRefreshingLibrary.value = false;
+  }
+}
+
+function toggleCreateForm() {
+  showCreate.value = !showCreate.value;
+  if (showCreate.value) {
+    stationCode.value = eventStore.machineStationCode || "A";
+  }
+}
 
 function onPresetChange() {
   if (!selectedPreset.value) return;
@@ -61,6 +123,7 @@ async function pickParentDirectory() {
 
 async function handleCreate() {
   errorMessage.value = null;
+  bannerMessage.value = null;
   if (!name.value.trim() || !parentDir.value.trim()) {
     errorMessage.value = "Please enter an event name and select a folder location.";
     return;
@@ -80,7 +143,7 @@ async function handleCreate() {
       subjectLabel: subjectLabel.value.trim() || undefined,
       folderLevels: folderLevels.length > 0 ? folderLevels : undefined,
       orderCode: orderCode.value.trim() || undefined,
-      stationCode: stationCode.value.trim() || "A",
+      stationCode: stationCode.value.trim() || eventStore.machineStationCode || "A",
       scaffold: enableScaffold.value
         ? {
             num_areas: numAreas.value,
@@ -100,6 +163,7 @@ async function handleCreate() {
 
 async function handleOpenExisting() {
   errorMessage.value = null;
+  bannerMessage.value = null;
   const selected = await open({
     directory: true,
     multiple: false,
@@ -117,6 +181,7 @@ async function handleOpenExisting() {
 
 async function handleGatherFolder() {
   errorMessage.value = null;
+  bannerMessage.value = null;
   gatheredResult.value = null;
   const selected = await open({
     directory: true,
@@ -124,11 +189,42 @@ async function handleGatherFolder() {
     title: "Gather Multiple Event Bundles From Parent Folder (e.g. NAS / Season Folder)",
   });
   if (typeof selected === "string") {
+    isGathering.value = true;
     try {
       gatheredResult.value = await eventStore.gatherEvents(selected);
     } catch (err) {
       errorMessage.value = String(err);
+    } finally {
+      isGathering.value = false;
     }
+  }
+}
+
+async function handleExportConsolidatedCsv() {
+  errorMessage.value = null;
+  bannerMessage.value = null;
+  const targetPath = await save({
+    defaultPath: "photofinish-consolidated-orders.csv",
+    filters: [{ name: "CSV Spreadsheet", extensions: ["csv"] }],
+    title: "Export Consolidated Orders CSV (All Online Library Bundles)",
+  });
+  if (!targetPath) return;
+
+  isExportingAll.value = true;
+  try {
+    const res = await invoke<CsvExportResult>("export_orders_csv", {
+      outputPath: targetPath,
+      allLibraryEvents: true,
+    });
+    const skippedNote =
+      res.skippedEvents.length > 0
+        ? ` (Skipped ${res.skippedEvents.length}: ${res.skippedEvents.join(", ")})`
+        : "";
+    bannerMessage.value = `Exported ${res.orderCount} order(s) (${res.itemRowCount} line items across ${res.eventCount} event${res.eventCount === 1 ? "" : "s"}) to ${res.outputPath}.${skippedNote}`;
+  } catch (err) {
+    errorMessage.value = String(err);
+  } finally {
+    isExportingAll.value = false;
   }
 }
 
@@ -141,6 +237,10 @@ async function openFromLibrary(rootPath: string) {
     errorMessage.value = String(err);
   }
 }
+
+onMounted(() => {
+  eventStore.refreshLibrary();
+});
 </script>
 
 <template>
@@ -155,9 +255,10 @@ async function openFromLibrary(rootPath: string) {
       <div class="flex flex-wrap gap-2">
         <button
           @click="handleGatherFolder"
-          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+          :disabled="isGathering"
+          class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50"
         >
-          Gather Folder (Multi-Server)
+          {{ isGathering ? "Scanning Folder..." : "Gather Folder (Multi-Server)" }}
         </button>
         <button
           @click="handleOpenExisting"
@@ -166,7 +267,7 @@ async function openFromLibrary(rootPath: string) {
           Open Bundle
         </button>
         <button
-          @click="showCreate = !showCreate"
+          @click="toggleCreateForm"
           class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700"
         >
           {{ showCreate ? "Close Form" : "+ New Event Bundle" }}
@@ -174,15 +275,137 @@ async function openFromLibrary(rootPath: string) {
       </div>
     </div>
 
-    <div v-if="errorMessage" class="p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-      {{ errorMessage }}
+    <!-- Machine Station Identity Bar -->
+    <div class="bg-white rounded-xl border border-slate-200 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-slate-900 text-white font-mono text-sm font-bold shrink-0">
+          {{ eventStore.machineStationCode }}
+        </span>
+        <div class="min-w-0">
+          <div class="text-sm font-semibold text-slate-800">
+            This Mac: Server Station <span class="font-mono">{{ eventStore.machineStationCode }}</span>
+          </div>
+          <p class="text-xs text-slate-500">
+            Set a unique letter per meet Mac (A, B, C, D) so orders from concurrent stations never collide when gathered on Sunday night.
+          </p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-1.5 flex-wrap">
+        <button
+          v-for="code in presetStations"
+          :key="code"
+          @click="selectMachineStation(code)"
+          class="px-2.5 py-1 text-xs font-mono font-semibold rounded-md border transition-colors"
+          :class="
+            eventStore.machineStationCode === code
+              ? 'bg-slate-900 text-white border-slate-900'
+              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+          "
+        >
+          {{ code }}
+        </button>
+        <form @submit.prevent="selectMachineStation(customStationInput)" class="flex items-center gap-1 ml-1">
+          <input
+            v-model="customStationInput"
+            type="text"
+            maxlength="4"
+            placeholder="Custom"
+            class="w-16 border border-slate-300 rounded-md px-2 py-1 text-xs font-mono uppercase"
+          />
+          <button
+            type="submit"
+            :disabled="!customStationInput.trim() || customStationInput.trim().toUpperCase() === eventStore.machineStationCode"
+            class="px-2.5 py-1 text-xs font-medium rounded-md border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+          >
+            Set
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div v-if="errorMessage" class="p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-4">
+      <span>{{ errorMessage }}</span>
+      <button @click="errorMessage = null" class="text-red-500 font-bold">&times;</button>
+    </div>
+
+    <div v-if="bannerMessage" class="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800 flex items-center justify-between gap-4">
+      <span>{{ bannerMessage }}</span>
+      <button @click="bannerMessage = null" class="text-emerald-600 font-bold">&times;</button>
     </div>
 
     <div
       v-if="gatheredResult"
-      class="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800"
+      class="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800 flex items-center justify-between gap-4"
     >
-      Discovered {{ gatheredResult.length }} event bundle(s) and added them to your library.
+      <span>
+        Discovered <strong>{{ gatheredResult.length }}</strong> event bundle(s) across nested folders and added them to your library.
+      </span>
+      <button @click="gatheredResult = null" class="text-emerald-600 font-bold">&times;</button>
+    </div>
+
+    <div
+      v-if="duplicateOrderNumbers.length > 0"
+      class="p-4 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-900"
+    >
+      <div class="font-semibold">Duplicate Order Numbers Detected Across Gathered Bundles</div>
+      <p class="mt-1 text-xs text-amber-800">
+        Multiple online bundles share the same order number(s):
+        <span class="font-mono font-semibold">{{ duplicateOrderNumbers.slice(0, 8).join(", ") }}</span>
+        <span v-if="duplicateOrderNumbers.length > 8"> (+{{ duplicateOrderNumbers.length - 8 }} more)</span>.
+        This happens if two Macs used the same Order Prefix and Station Code. Make sure each Mac uses its own Station Code above.
+      </p>
+    </div>
+
+    <!-- Consolidated Multi-Station Summary Bar -->
+    <div
+      v-if="overviewTotals && overviewTotals.onlineEvents > 0"
+      class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex flex-wrap items-center justify-between gap-4"
+    >
+      <div class="flex flex-wrap items-center gap-6">
+        <div>
+          <div class="text-[11px] uppercase tracking-wide font-semibold text-slate-400">Online Bundles</div>
+          <div class="text-lg font-bold text-slate-900">
+            {{ overviewTotals.onlineEvents }}
+            <span v-if="overviewTotals.totalEvents > overviewTotals.onlineEvents" class="text-xs font-normal text-slate-500">
+              / {{ overviewTotals.totalEvents }}
+            </span>
+          </div>
+        </div>
+        <div class="h-8 w-px bg-slate-200 hidden sm:block"></div>
+        <div>
+          <div class="text-[11px] uppercase tracking-wide font-semibold text-slate-400">Total Photos</div>
+          <div class="text-lg font-bold text-slate-900 font-mono">
+            {{ overviewTotals.totalPhotos.toLocaleString() }}
+          </div>
+        </div>
+        <div class="h-8 w-px bg-slate-200 hidden sm:block"></div>
+        <div>
+          <div class="text-[11px] uppercase tracking-wide font-semibold text-slate-400">Combined Orders</div>
+          <div class="text-lg font-bold text-slate-900">
+            {{ overviewTotals.totalOrders.toLocaleString() }}
+            <span v-if="overviewTotals.pendingFulfillmentOrders > 0" class="text-xs font-medium text-amber-700 ml-1">
+              ({{ overviewTotals.pendingFulfillmentOrders }} open)
+            </span>
+          </div>
+        </div>
+        <div class="h-8 w-px bg-slate-200 hidden sm:block"></div>
+        <div>
+          <div class="text-[11px] uppercase tracking-wide font-semibold text-slate-400">Paid Revenue</div>
+          <div class="text-lg font-bold text-emerald-700 font-mono">
+            {{ formatCents(overviewTotals.grossPaidCents) }}
+          </div>
+        </div>
+      </div>
+
+      <button
+        @click="handleExportConsolidatedCsv"
+        :disabled="isExportingAll || overviewTotals.totalOrders === 0"
+        class="px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 bg-slate-50 text-slate-800 hover:bg-slate-100 disabled:opacity-45"
+        title="Export all orders across every online Event Bundle in your Library into one spreadsheet"
+      >
+        {{ isExportingAll ? "Exporting..." : "Export Consolidated Orders CSV" }}
+      </button>
     </div>
 
     <!-- Create Event Panel -->
@@ -317,45 +540,93 @@ async function openFromLibrary(rootPath: string) {
     <!-- Library List -->
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
       <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-slate-700">Known Event Bundles ({{ eventStore.library.length }})</h2>
+        <h2 class="text-sm font-semibold text-slate-700">Known Event Bundles ({{ overviewEvents.length }})</h2>
+        <button
+          @click="refreshLibraryStatus"
+          :disabled="isRefreshingLibrary"
+          class="text-xs font-medium text-slate-600 hover:text-slate-900 disabled:opacity-50"
+        >
+          {{ isRefreshingLibrary ? "Refreshing..." : "Refresh" }}
+        </button>
       </div>
-      <div v-if="eventStore.library.length === 0" class="p-10 text-center text-slate-500 text-sm">
+      <div v-if="overviewEvents.length === 0" class="p-10 text-center text-slate-500 text-sm">
         No event bundles yet. Create one, open an existing folder, or gather a NAS folder with multiple meets.
       </div>
       <ul v-else class="divide-y divide-slate-100">
         <li
-          v-for="entry in eventStore.library"
-          :key="entry.root_path"
+          v-for="entry in overviewEvents"
+          :key="entry.rootPath"
           class="px-5 py-4 flex items-center justify-between gap-4 hover:bg-slate-50"
         >
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
               <span class="font-semibold text-slate-900">{{ entry.name }}</span>
               <span
-                v-if="eventStore.activeEvent?.rootPath === entry.root_path"
+                v-if="entry.orderCode && entry.stationCode"
+                class="px-2 py-0.5 text-[11px] font-mono rounded-full bg-slate-100 text-slate-700 border border-slate-200 font-semibold"
+              >
+                {{ entry.orderCode }} · Station {{ entry.stationCode }}
+              </span>
+              <span
+                v-if="eventStore.activeEvent?.rootPath === entry.rootPath"
                 class="px-2 py-0.5 text-xs rounded-full bg-emerald-100 text-emerald-700 font-medium"
               >
                 Active
               </span>
               <span
-                v-if="!entry.exists_on_disk"
+                v-if="!entry.existsOnDisk"
                 class="px-2 py-0.5 text-xs rounded-full bg-red-100 text-red-700 font-medium"
               >
                 Drive Offline
               </span>
+              <span
+                v-else-if="entry.inspectError"
+                class="px-2 py-0.5 text-xs rounded-full bg-amber-100 text-amber-800 font-medium"
+                :title="entry.inspectError"
+              >
+                Unreadable / Newer Schema
+              </span>
             </div>
-            <p class="text-xs font-mono text-slate-500 truncate mt-0.5">{{ entry.root_path }}</p>
+            <p class="text-xs font-mono text-slate-500 truncate mt-0.5">{{ entry.rootPath }}</p>
+            <div
+              v-if="entry.existsOnDisk && !entry.inspectError && entry.photoCounts"
+              class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600"
+            >
+              <span>
+                <strong class="font-mono text-slate-800">{{ entry.photoCounts.ready.toLocaleString() }}</strong>
+                <span v-if="entry.photoCounts.pending > 0" class="text-amber-700">
+                  / {{ entry.photoCounts.total.toLocaleString() }}
+                </span>
+                photos
+              </span>
+              <span>
+                <strong class="font-mono text-slate-800">{{ entry.subjectCount.toLocaleString() }}</strong> roster
+              </span>
+              <span>
+                <strong class="font-mono text-slate-800">{{ entry.orderCount }}</strong>
+                order{{ entry.orderCount === 1 ? "" : "s" }}
+                <span v-if="entry.grossPaidCents > 0" class="text-emerald-700 font-mono font-semibold ml-1">
+                  ({{ formatCents(entry.grossPaidCents) }} paid)
+                </span>
+              </span>
+              <span v-if="entry.pendingFulfillmentCount > 0" class="text-amber-700 font-medium">
+                {{ entry.pendingFulfillmentCount }} pending fulfillment
+              </span>
+            </div>
+            <p v-else-if="entry.inspectError" class="mt-1 text-xs text-amber-700">
+              {{ entry.inspectError }}
+            </p>
           </div>
           <div class="flex items-center gap-2 flex-shrink-0">
             <button
-              v-if="entry.exists_on_disk"
-              @click="openFromLibrary(entry.root_path)"
+              v-if="entry.existsOnDisk && !entry.inspectError"
+              @click="openFromLibrary(entry.rootPath)"
               class="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
             >
               Open
             </button>
             <button
-              @click="eventStore.removeLibraryEvent(entry.root_path)"
+              @click="eventStore.removeLibraryEvent(entry.rootPath)"
               class="px-2.5 py-1.5 text-xs text-slate-500 hover:text-red-600"
             >
               Remove

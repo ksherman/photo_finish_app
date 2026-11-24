@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -7,7 +7,8 @@ use tauri::State;
 
 use photofinish_core::db::{LibraryEventEntry, ReaderConfig, ReaderLayoutUpdate};
 use photofinish_core::event::{
-    CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, ScanResult, SubjectRecord,
+    BundleOverview, CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, PhotoCounts,
+    ScanResult, SubjectRecord,
 };
 use photofinish_core::hardware::{
     self, CardReaderInfo, CopyOptions, CopyProgressEvent, DirectoryEntry, UsbCopyProgressEvent,
@@ -88,21 +89,184 @@ pub fn open_event(state: State<'_, AppState>, root_path: String) -> Result<Event
     Ok(summary)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryBundleOverview {
+    pub root_path: String,
+    pub event_id: String,
+    pub name: String,
+    pub last_opened_at: String,
+    pub exists_on_disk: bool,
+    pub order_code: Option<String>,
+    pub station_code: Option<String>,
+    pub photo_counts: Option<PhotoCounts>,
+    pub subject_count: i64,
+    pub order_count: i64,
+    pub paid_order_count: i64,
+    pub gross_paid_cents: i64,
+    pub pending_fulfillment_count: i64,
+    pub inspect_error: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryTotals {
+    pub total_events: usize,
+    pub online_events: usize,
+    pub total_photos: i64,
+    pub ready_photos: i64,
+    pub total_subjects: i64,
+    pub total_orders: i64,
+    pub paid_orders: i64,
+    pub gross_paid_cents: i64,
+    pub pending_fulfillment_orders: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryOverviewResponse {
+    pub events: Vec<LibraryBundleOverview>,
+    pub totals: LibraryTotals,
+    pub duplicate_order_numbers: Vec<String>,
+}
+
 #[tauri::command]
-pub fn gather_events(
+pub async fn get_library_overview(
+    state: State<'_, AppState>,
+) -> Result<LibraryOverviewResponse, String> {
+    let app_db = Arc::clone(&state.app_db);
+    tauri::async_runtime::spawn_blocking(move || -> Result<LibraryOverviewResponse, String> {
+        let entries = app_db.list_library_events().map_err(|e| e.to_string())?;
+        let mut events = Vec::with_capacity(entries.len());
+        let mut totals = LibraryTotals {
+            total_events: entries.len(),
+            ..Default::default()
+        };
+        let mut seen_orders: HashMap<String, usize> = HashMap::new();
+
+        for entry in entries {
+            if !entry.exists_on_disk {
+                events.push(LibraryBundleOverview {
+                    root_path: entry.root_path,
+                    event_id: entry.event_id,
+                    name: entry.name,
+                    last_opened_at: entry.last_opened_at,
+                    exists_on_disk: false,
+                    order_code: None,
+                    station_code: None,
+                    photo_counts: None,
+                    subject_count: 0,
+                    order_count: 0,
+                    paid_order_count: 0,
+                    gross_paid_cents: 0,
+                    pending_fulfillment_count: 0,
+                    inspect_error: None,
+                });
+                continue;
+            }
+
+            match EventBundle::inspect_readonly(&entry.root_path) {
+                Ok(BundleOverview {
+                    event_id,
+                    name,
+                    order_code,
+                    station_code,
+                    photo_counts,
+                    subject_count,
+                    order_count,
+                    paid_order_count,
+                    gross_paid_cents,
+                    pending_fulfillment_count,
+                    order_numbers,
+                    ..
+                }) => {
+                    totals.online_events += 1;
+                    totals.total_photos += photo_counts.total;
+                    totals.ready_photos += photo_counts.ready;
+                    totals.total_subjects += subject_count;
+                    totals.total_orders += order_count;
+                    totals.paid_orders += paid_order_count;
+                    totals.gross_paid_cents += gross_paid_cents;
+                    totals.pending_fulfillment_orders += pending_fulfillment_count;
+
+                    for num in order_numbers {
+                        *seen_orders.entry(num).or_insert(0) += 1;
+                    }
+
+                    events.push(LibraryBundleOverview {
+                        root_path: entry.root_path,
+                        event_id,
+                        name,
+                        last_opened_at: entry.last_opened_at,
+                        exists_on_disk: true,
+                        order_code: Some(order_code),
+                        station_code: Some(station_code),
+                        photo_counts: Some(photo_counts),
+                        subject_count,
+                        order_count,
+                        paid_order_count,
+                        gross_paid_cents,
+                        pending_fulfillment_count,
+                        inspect_error: None,
+                    });
+                }
+                Err(err) => {
+                    events.push(LibraryBundleOverview {
+                        root_path: entry.root_path,
+                        event_id: entry.event_id,
+                        name: entry.name,
+                        last_opened_at: entry.last_opened_at,
+                        exists_on_disk: true,
+                        order_code: None,
+                        station_code: None,
+                        photo_counts: None,
+                        subject_count: 0,
+                        order_count: 0,
+                        paid_order_count: 0,
+                        gross_paid_cents: 0,
+                        pending_fulfillment_count: 0,
+                        inspect_error: Some(err.to_string()),
+                    });
+                }
+            }
+        }
+
+        let mut duplicate_order_numbers: Vec<String> = seen_orders
+            .into_iter()
+            .filter_map(|(num, count)| if count > 1 { Some(num) } else { None })
+            .collect();
+        duplicate_order_numbers.sort();
+
+        Ok(LibraryOverviewResponse {
+            events,
+            totals,
+            duplicate_order_numbers,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn gather_events(
     state: State<'_, AppState>,
     parent_path: String,
 ) -> Result<Vec<EventSummary>, String> {
-    let discovered =
-        EventBundle::discover_in_directory(&parent_path).map_err(|e| e.to_string())?;
-    for summary in &discovered {
-        let _ = state.app_db.upsert_library_event(
-            &PathBuf::from(&summary.root_path),
-            &summary.id,
-            &summary.name,
-        );
-    }
-    Ok(discovered)
+    let app_db = Arc::clone(&state.app_db);
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<EventSummary>, String> {
+        let discovered =
+            EventBundle::discover_in_directory(&parent_path).map_err(|e| e.to_string())?;
+        for summary in &discovered {
+            let _ = app_db.upsert_library_event(
+                &PathBuf::from(&summary.root_path),
+                &summary.id,
+                &summary.name,
+            );
+        }
+        Ok(discovered)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -748,6 +912,7 @@ pub struct CsvExportResult {
     pub event_count: usize,
     pub order_count: usize,
     pub item_row_count: usize,
+    pub skipped_events: Vec<String>,
 }
 
 #[tauri::command]
@@ -761,16 +926,24 @@ pub async fn export_orders_csv(
 
     tauri::async_runtime::spawn_blocking(move || -> Result<CsvExportResult, String> {
         let mut collected: Vec<(String, Vec<OrderRecord>)> = Vec::new();
+        let mut skipped_events: Vec<String> = Vec::new();
 
         if all_library_events {
             let entries = app_db.list_library_events().map_err(|e| e.to_string())?;
             for entry in entries {
                 if !entry.exists_on_disk {
+                    skipped_events.push(format!("{} (drive offline)", entry.name));
                     continue;
                 }
-                if let Ok(bundle) = EventBundle::open(&entry.root_path) {
-                    if let (Ok(summary), Ok(res)) = (bundle.summary(), bundle.list_orders()) {
-                        collected.push((summary.name, res.orders));
+                match EventBundle::open(&entry.root_path) {
+                    Ok(bundle) => match (bundle.summary(), bundle.list_orders()) {
+                        (Ok(summary), Ok(res)) => collected.push((summary.name, res.orders)),
+                        (Err(e), _) | (_, Err(e)) => {
+                            skipped_events.push(format!("{} ({})", entry.name, e));
+                        }
+                    },
+                    Err(e) => {
+                        skipped_events.push(format!("{} ({})", entry.name, e));
                     }
                 }
             }
@@ -798,6 +971,7 @@ pub async fn export_orders_csv(
             event_count,
             order_count,
             item_row_count,
+            skipped_events,
         })
     })
     .await

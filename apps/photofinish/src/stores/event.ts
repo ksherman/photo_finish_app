@@ -6,6 +6,7 @@ import type {
   EventSummary,
   LanServerStatus,
   LibraryEventEntry,
+  LibraryOverviewResponse,
   ProcessingMetrics,
   ScanResult,
 } from "@/types";
@@ -14,6 +15,8 @@ export const useEventStore = defineStore("event", {
   state: () => ({
     presets: [] as EventPreset[],
     library: [] as LibraryEventEntry[],
+    libraryOverview: null as LibraryOverviewResponse | null,
+    machineStationCode: "A",
     activeEvent: null as EventSummary | null,
     lanStatus: {
       running: false,
@@ -30,11 +33,30 @@ export const useEventStore = defineStore("event", {
     async bootstrap() {
       await Promise.all([
         this.loadPresets(),
+        this.loadMachineStationCode(),
         this.refreshLibrary(),
         this.refreshActiveEvent(),
         this.refreshLanStatus(),
         this.refreshProcessingMetrics(),
       ]);
+    },
+
+    async loadMachineStationCode() {
+      const saved = await invoke<string | null>("get_app_setting", {
+        key: "default_station_code",
+      });
+      const clean = (saved || "A").trim().toUpperCase();
+      this.machineStationCode = clean || "A";
+    },
+
+    async setMachineStationCode(code: string) {
+      const clean = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+      if (!clean) return;
+      await invoke("set_app_setting", {
+        key: "default_station_code",
+        value: clean,
+      });
+      this.machineStationCode = clean;
     },
 
     async refreshProcessingMetrics() {
@@ -46,7 +68,12 @@ export const useEventStore = defineStore("event", {
     },
 
     async refreshLibrary() {
-      this.library = await invoke<LibraryEventEntry[]>("list_library_events");
+      const [entries, overview] = await Promise.all([
+        invoke<LibraryEventEntry[]>("list_library_events"),
+        invoke<LibraryOverviewResponse>("get_library_overview"),
+      ]);
+      this.library = entries;
+      this.libraryOverview = overview;
     },
 
     async refreshActiveEvent() {

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-23  
 **Active codebase:** `apps/photofinish/` (Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum)  
-**Verified test suite:** `cargo test --workspace` (18/18 passing), `pnpm build` (clean), `pnpm tauri build` (`PhotoFinish.app` 18.7 MiB / `.dmg` 7.0 MiB)
+**Verified test suite:** `cargo test --workspace` (20/20 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
 
 ---
 
@@ -12,9 +12,11 @@
 - **Portable Event Bundle (`<event>/_photofinish/photofinish.db`):** SQLite WAL mode, relative-only photo/derivative paths, forward-only embedded migrations (`0001_event_initial.sql`), automatic pre-migration online backups (`_photofinish/backups/`), and `SchemaTooNew` mixed-version protection.
 - **Machine-Local App DB (`photofinish_app.db`):** Library bookmarks, machine settings, and hardware-locked USB card reader configs + persistent layout/groups (`0001_app_initial.sql`, `0002_app_reader_layout.sql`).
 
-### 2. Event Bundle Manager (`EventsView.vue` + `event.rs` + `preset.rs`)
+### 2. Event Bundle Manager & Multi-Station Gathering (`EventsView.vue` + `event.rs` + `preset.rs`)
+- **Per-machine Station Identity (`default_station_code`):** Configure each meet Mac's station letter (`A`/`B`/`C`/`D`/custom) once in `photofinish_app.db` so new event bundles automatically stamp collision-free order numbers across concurrent stations.
 - Create events with sport-agnostic presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, and optional folder scaffolding.
-- Open existing event bundles or **Gather** multiple weekend event bundles from a shared parent / NAS directory.
+- Open existing event bundles or recursively **Gather** nested weekend event bundles from a shared parent / NAS directory (up to 6 levels deep, stopping immediately at bundle boundaries so photo folders are never walked).
+- Read-only **Consolidated Multi-Station Overview** across all gathered bundles (live station badges, photo/roster/order counts, combined paid revenue, duplicate order-number collision detection, `SchemaTooNew` indicators, and one-click consolidated CSV export).
 - Always-visible **LAN Server Status Bar** (`ServerStatusBar.vue`) with photo counts, live thumbnail throughput (`photos/sec`) + ETA, manual safety-net Scan, and Start/Stop LAN Kiosk controls.
 
 ### 3. Hardware Card Ingest (`IngestView.vue`, `ReaderDashboardCard.vue`, `ReaderSetupModal.vue`, `hardware/`)
@@ -48,17 +50,18 @@
 
 ### 8. Branding & Release Packaging
 - Full PhotoFinish brand icons (`icon.icns`, `icon.ico`, PNGs, favicons, Apple Touch Icon, `BrandMark.vue`).
-- Standalone Apple Silicon release bundle (`PhotoFinish.app` 18.7 MiB, `PhotoFinish_0.1.0_aarch64.dmg` 7.0 MiB).
+- Finalized macOS bundle identifier (`com.photofinish.desktop`) with automatic WAL-safe one-time migration from legacy `com.photofinish.app` app data.
+- Standalone Apple Silicon release bundle (`PhotoFinish.app` + `PhotoFinish_0.1.0_aarch64.dmg`).
 
 ---
 
 ## Remaining / Next Up
 
-1. **ShootProof Studio API Sync (`ShootProof Sync` tab):** OAuth 2.0 (`studio` scope), Event → Area → Subject nested album creation, 20–50 worker S3 upload, automated `zip-bundle` digital delivery for on-site Square-paid orders (both single-photo `photoIds` and full-album), and WHCC/Bay Photo `lab-shipment` print drop-ship (`docs/future/shootproof-integration.md`).
+1. **ShootProof Studio API Sync (`ShootProof Sync` tab):** OAuth 2.0 (`studio` scope), Event → Area → Subject nested album creation, 20–50 worker S3 upload, automated `zip-bundle` digital delivery for on-site Square-paid orders (both single-photo `photoIds` and full-album), and WHCC/Bay Photo `lab-shipment` print drop-ship (`docs/future/shootproof-integration.md`). *(On hold pending account/service verification.)*
 2. **Roster & Folders UX Polish:** Refine ergonomics based on live-meet practice runs.
 3. **Optional Automatic Filesystem Watcher (`notify`):** Auto-index manual Finder drops without clicking Scan.
 4. **Optional Multi-Card Copy Yield:** Auto-pause thumbnail workers while multiple SD cards are actively copying if real multi-card testing shows USB bus contention.
-5. **Bundle Identifier & Code Signing:** Switch Tauri bundle identifier from `com.photofinish.app` (e.g. to `com.photofinish.desktop`) before multi-machine deployment, plus Apple Developer ID notarization if desired.
+5. **Optional Apple Developer ID Code Signing & Notarization:** Sign & notarize the `.dmg` for zero-warning Gatekeeper install across meet Macs once an Apple Developer ID is configured.
 6. **Windows Hardware Layer (`hardware/windows.rs`):** If/when Windows meet servers are supported alongside Apple Silicon Macs.
 
 ---

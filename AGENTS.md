@@ -45,7 +45,7 @@
 
 ## 4. Ground-Truth Implementation Status
 
-*(Mirrors `docs/STATUS.md`, updated 2026-11-23. Test suite: **18/18** `photofinish-core` tests passing; release macOS `.app` 18.7 MiB / `.dmg` 7.0 MiB verified.)*
+*(Mirrors `docs/STATUS.md`, updated 2026-11-23. Test suite: **20/20** `photofinish-core` tests passing; release macOS `.app` / `.dmg` verified under `com.photofinish.desktop`.)*
 
 ### Built & Working — `apps/photofinish/` (Active Unified App)
 - **Core (`crates/photofinish-core`):**
@@ -65,16 +65,15 @@
   - Checkout (`/checkout`) with conditional shipping address for direct-to-home print drop-shipping + Order Confirmation (`/order/:orderNumber`) with Retina PNG Square POS QR code (`qrcode`) and tax breakdown.
 - **Desktop UI (`src/` + `src-tauri/`):**
   - Custom PhotoFinish icon branding (`BrandMark.vue`, native `.icns`/`.ico`/PNGs) and `additionalWatchFolders` in `tauri.conf.json` so `pnpm tauri dev` auto-rebuilds on `photofinish-core` edits.
-  - **Events:** Create w/ presets & scaffolding, Open existing bundle, Gather multiple bundles from a parent NAS/season folder.
+  - **Events:** Per-machine default Station Code (`A`/`B`/`C`/`D`), Create w/ presets & scaffolding, Open existing bundle, recursive multi-station Gather from nested NAS/season folders, read-only consolidated library overview (photos/orders/revenue, duplicate order-# collision detection, `SchemaTooNew` indicator), and one-click consolidated CSV export.
   - **Card Ingest:** Wide (`≥340px`) reader cards organized into persistent pointer-drag-and-drop groups (`Gym A: Floor → Beam`) & custom labels locked to hardware `reader_id`, Enter-to-ingest for barcode scanners, per-card `⏏ Eject`, `Auto-eject after ingest`, and `⏏ Eject All`.
   - **Roster & Folders:** Multi-file import preview, searchable roster table, Unassigned & All Folders rotation manager with Same Group / Same Session / All Roster scoping, cross-apparatus reference thumbnails, click-to-zoom lightbox, staged Preview & Confirm modal, and 3-mode Remove Folder modal.
   - **Orders & USB:** Auto-refreshing Order Desk (5s poll), KPI cards, Square POS QR modal, payment reconciliation, one-click native USB-C/A fulfillment with live MB/s progress + `DCIM/` guard + auto-eject, live Pricing & Tax catalog editor, and single/multi-event CSV export.
   - **Status Bar:** Active event counts, live processing progress bar + `photos/sec` + ETA, manual safety-net Scan, Start/Stop LAN kiosk server + LAN URL.
 - **Next to build in `apps/photofinish/`:**
-  1. ShootProof Studio API sync module (`ShootProof Sync` tab: OAuth 2.0, nested albums, 20–50 worker S3 upload, `zip-bundle` digital delivery for Square-paid orders, WHCC/Bay Photo `lab-shipment`).
-  2. Roster & Folders UX ergonomics polish (from real-meet usage).
-  3. Filesystem watcher (`notify`) for manual Finder drops + Windows hardware layer (`hardware/windows.rs`) when needed.
-  4. Finalize macOS bundle identifier (e.g. `com.photofinish.desktop` instead of `.app` suffix) & optional Apple Developer ID notarization before multi-station rollout.
+  1. Real-meet UX polish (Roster & Folders ergonomics, iPad LAN dry-run, optional `notify` Finder-drop auto-watcher).
+  2. ShootProof Studio API sync module (`ShootProof Sync` tab: OAuth 2.0, nested albums, 20–50 worker S3 upload, `zip-bundle` digital delivery for Square-paid orders, WHCC/Bay Photo `lab-shipment`) — on hold pending service/account verification.
+  3. Optional Apple Developer ID code signing / notarization & Windows hardware layer (`hardware/windows.rs`) when needed.
 
 ### Legacy Reference — `server/` (Unproven Elixir Prototype)
 - **Ash Domains & Resources:**

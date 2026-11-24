@@ -60,6 +60,41 @@ export interface LibraryEventEntry {
   exists_on_disk: boolean;
 }
 
+export interface LibraryBundleOverview {
+  rootPath: string;
+  eventId: string;
+  name: string;
+  lastOpenedAt: string;
+  existsOnDisk: boolean;
+  orderCode: string | null;
+  stationCode: string | null;
+  photoCounts: PhotoCounts | null;
+  subjectCount: number;
+  orderCount: number;
+  paidOrderCount: number;
+  grossPaidCents: number;
+  pendingFulfillmentCount: number;
+  inspectError: string | null;
+}
+
+export interface LibraryTotals {
+  totalEvents: number;
+  onlineEvents: number;
+  totalPhotos: number;
+  readyPhotos: number;
+  totalSubjects: number;
+  totalOrders: number;
+  paidOrders: number;
+  grossPaidCents: number;
+  pendingFulfillmentOrders: number;
+}
+
+export interface LibraryOverviewResponse {
+  events: LibraryBundleOverview[];
+  totals: LibraryTotals;
+  duplicateOrderNumbers: string[];
+}
+
 export interface LanServerStatus {
   running: boolean;
   port: number;
@@ -395,4 +430,5 @@ export interface CsvExportResult {
   eventCount: number;
   orderCount: number;
   itemRowCount: number;
+  skippedEvents: string[];
 }

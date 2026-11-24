@@ -73,6 +73,25 @@ pub struct PhotoCounts {
     pub error: i64,
 }
 
+/// Lightweight read-only snapshot of an Event Bundle for multi-station library overview
+/// and consolidated reporting (never mutates or runs migrations on unopened bundles).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleOverview {
+    pub event_id: String,
+    pub root_path: String,
+    pub name: String,
+    pub order_code: String,
+    pub station_code: String,
+    pub photo_counts: PhotoCounts,
+    pub subject_count: i64,
+    pub order_count: i64,
+    pub paid_order_count: i64,
+    pub gross_paid_cents: i64,
+    pub pending_fulfillment_count: i64,
+    pub order_numbers: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectRecord {
@@ -299,7 +318,9 @@ impl EventBundle {
     }
 
     /// Discovers all PhotoFinish Event Bundles inside a parent folder (e.g. `/NAS/2026-Season/`).
-    /// Checks both `parent` itself and immediate/nested child directories without descending inside bundles.
+    /// Recursively checks `parent` and nested child directories (up to 6 levels deep) while
+    /// skipping hidden/`_`-prefixed folders and stopping descent immediately whenever an
+    /// Event Bundle is found (never walks photo directories inside bundles).
     pub fn discover_in_directory(parent: impl AsRef<Path>) -> Result<Vec<EventSummary>> {
         let parent = parent.as_ref();
         if !parent.is_dir() {
@@ -309,18 +330,33 @@ impl EventBundle {
             )));
         }
 
+        const MAX_DISCOVER_DEPTH: usize = 6;
         let mut bundle_roots = Vec::new();
-        if is_event_bundle(parent) {
-            bundle_roots.push(parent.to_path_buf());
-        } else {
-            for entry in fs::read_dir(parent)
-                .map_err(|e| Error::Io(format!("{}: {}", parent.display(), e)))?
-                .flatten()
-            {
+        let mut stack: Vec<(PathBuf, usize)> = vec![(parent.to_path_buf(), 0)];
+
+        while let Some((dir, depth)) = stack.pop() {
+            if is_event_bundle(&dir) {
+                bundle_roots.push(dir);
+                // Do not descend into photo directories inside a discovered Event Bundle
+                continue;
+            }
+            if depth >= MAX_DISCOVER_DEPTH {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() && is_event_bundle(&path) {
-                    bundle_roots.push(path);
+                if !path.is_dir() {
+                    continue;
                 }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with('.') || name.starts_with('_') {
+                        continue;
+                    }
+                }
+                stack.push((path, depth + 1));
             }
         }
 
@@ -335,6 +371,83 @@ impl EventBundle {
         }
 
         Ok(summaries)
+    }
+
+    /// Reads high-level event, photo, and order metrics without opening RW or applying migrations.
+    /// Safe for scanning gathered multi-station bundles on NAS shares or inspecting bundles
+    /// created by newer app versions (`SchemaTooNew`).
+    pub fn inspect_readonly(root_path: impl AsRef<Path>) -> Result<BundleOverview> {
+        let root = root_path.as_ref();
+        let db_path = event_db_path(root);
+        if !db_path.is_file() {
+            return Err(Error::NotFound(format!(
+                "Not a PhotoFinish Event Bundle: {}",
+                root.display()
+            )));
+        }
+
+        let conn = open_ro_connection(&db_path)?;
+        let latest_version = EVENT_MIGRATIONS.last().map(|m| m.version).unwrap_or(0);
+        let current_version: i64 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if current_version > latest_version {
+            return Err(Error::SchemaTooNew {
+                db_version: current_version,
+                app_version: latest_version,
+            });
+        }
+
+        let (event_id, name, order_code, station_code): (String, String, String, String) = conn
+            .query_row(
+                "SELECT id, name, order_code, station_code FROM event_config LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+
+        let photo_counts = query_photo_counts(&conn)?;
+        let subject_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM subjects WHERE is_active = 1", [], |r| {
+                r.get(0)
+            })?;
+
+        let (order_count, paid_order_count, gross_paid_cents): (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN total_cents ELSE 0 END), 0)
+             FROM orders",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+
+        let pending_fulfillment_count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT o.id)
+             FROM orders o
+             JOIN order_items oi ON oi.order_id = o.id
+             WHERE o.payment_status != 'refunded'
+               AND oi.fulfillment_status != 'fulfilled'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let mut num_stmt = conn.prepare("SELECT order_number FROM orders ORDER BY order_number")?;
+        let order_numbers: Vec<String> = num_stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+
+        Ok(BundleOverview {
+            event_id,
+            root_path: root.to_string_lossy().to_string(),
+            name,
+            order_code,
+            station_code,
+            photo_counts,
+            subject_count,
+            order_count,
+            paid_order_count,
+            gross_paid_cents,
+            pending_fulfillment_count,
+            order_numbers,
+        })
     }
 
     pub fn summary(&self) -> Result<EventSummary> {
@@ -3105,5 +3218,142 @@ mod tests {
         assert!(csv.contains("Joe Franklin"));
         assert!(csv.contains("105 Julia B"));
         assert!(csv.contains("107.00"));
+    }
+
+    #[test]
+    fn multi_station_gather_and_consolidated_csv_merge() {
+        let nas_dir = tempdir().unwrap();
+
+        // Simulate a nested Sunday-night NAS gather layout across 2 stations at the same meet
+        // plus a second meet at another venue
+        let station_a_root = nas_dir.path().join("Weekend-03/Station-A/2026 IL State");
+        let station_b_root = nas_dir.path().join("Weekend-03/Station-B/2026 IL State");
+        let station_c_root = nas_dir.path().join("Weekend-03/Station-C/2026 WI State");
+
+        let bundle_a = EventBundle::create(CreateEventParams {
+            root_path: station_a_root.clone(),
+            name: "2026 IL State (Gym A)".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("ILS".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: Some(800),
+            scaffold: None,
+        })
+        .unwrap();
+
+        let bundle_b = EventBundle::create(CreateEventParams {
+            root_path: station_b_root.clone(),
+            name: "2026 IL State (Gym B)".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("ILS".into()),
+            station_code: Some("B".into()),
+            tax_rate_basis_points: Some(800),
+            scaffold: None,
+        })
+        .unwrap();
+
+        let _bundle_c = EventBundle::create(CreateEventParams {
+            root_path: station_c_root.clone(),
+            name: "2026 WI State".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("WIS".into()),
+            station_code: Some("C".into()),
+            tax_rate_basis_points: Some(550),
+            scaffold: None,
+        })
+        .unwrap();
+
+        // Place paid orders on Station A and Station B for the same meet
+        let prod_a = bundle_a.list_products(false).unwrap()[0].clone();
+        let sub_a = bundle_a.add_subject(Some("101"), "Ava", Some("M"), None, None).unwrap();
+        let ord_a = bundle_a
+            .place_order(CreateOrderRequest {
+                customer_name: "Parent A".into(),
+                customer_email: Some("a@example.com".into()),
+                customer_phone: None,
+                shipping_address: None,
+                notes: None,
+                items: vec![crate::orders::CreateOrderItemInput {
+                    product_id: prod_a.id,
+                    subject_id: Some(sub_a.id),
+                    photo_id: None,
+                    quantity: 1,
+                }],
+            })
+            .unwrap();
+        bundle_a
+            .update_order_payment(&UpdatePaymentRequest {
+                order_id: ord_a.id,
+                payment_status: "paid".into(),
+                payment_method: Some("square_qr".into()),
+                payment_reference: Some("SQ-A1".into()),
+                notes: None,
+            })
+            .unwrap();
+
+        let prod_b = bundle_b.list_products(false).unwrap()[0].clone();
+        let sub_b = bundle_b.add_subject(Some("202"), "Chloe", Some("R"), None, None).unwrap();
+        let ord_b = bundle_b
+            .place_order(CreateOrderRequest {
+                customer_name: "Parent B".into(),
+                customer_email: Some("b@example.com".into()),
+                customer_phone: None,
+                shipping_address: None,
+                notes: None,
+                items: vec![crate::orders::CreateOrderItemInput {
+                    product_id: prod_b.id,
+                    subject_id: Some(sub_b.id),
+                    photo_id: None,
+                    quantity: 1,
+                }],
+            })
+            .unwrap();
+        bundle_b
+            .update_order_payment(&UpdatePaymentRequest {
+                order_id: ord_b.id,
+                payment_status: "paid".into(),
+                payment_method: Some("square_qr".into()),
+                payment_reference: Some("SQ-B1".into()),
+                notes: None,
+            })
+            .unwrap();
+
+        // Recursive discovery from top-level NAS folder must find all 3 nested bundles
+        let discovered = EventBundle::discover_in_directory(nas_dir.path()).unwrap();
+        assert_eq!(discovered.len(), 3);
+
+        // Read-only inspection should report exact station codes, order numbers, and revenue
+        let ov_a = EventBundle::inspect_readonly(&station_a_root).unwrap();
+        let ov_b = EventBundle::inspect_readonly(&station_b_root).unwrap();
+        let ov_c = EventBundle::inspect_readonly(&station_c_root).unwrap();
+
+        assert_eq!(ov_a.station_code, "A");
+        assert_eq!(ov_b.station_code, "B");
+        assert_eq!(ov_c.station_code, "C");
+        assert_eq!(ov_a.order_numbers, vec!["ILS-A0001"]);
+        assert_eq!(ov_b.order_numbers, vec!["ILS-B0001"]);
+        assert_eq!(ov_a.paid_order_count, 1);
+        assert_eq!(ov_b.paid_order_count, 1);
+        assert!(ov_a.gross_paid_cents > 0);
+        assert_ne!(ov_a.order_numbers[0], ov_b.order_numbers[0]);
+
+        // Consolidated CSV merges all stations cleanly
+        let csv = orders::format_orders_csv(&[
+            (ov_a.name.clone(), bundle_a.list_orders().unwrap().orders),
+            (ov_b.name.clone(), bundle_b.list_orders().unwrap().orders),
+        ]);
+        assert!(csv.contains("ILS-A0001"));
+        assert!(csv.contains("ILS-B0001"));
+        assert!(csv.contains("Parent A"));
+        assert!(csv.contains("Parent B"));
     }
 }

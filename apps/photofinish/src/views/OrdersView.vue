@@ -445,7 +445,11 @@ async function handleExportCsv(allLibraryEvents: boolean) {
       outputPath: targetPath,
       allLibraryEvents,
     });
-    bannerMessage.value = `Exported ${res.orderCount} order(s) (${res.itemRowCount} line items across ${res.eventCount} event${res.eventCount === 1 ? "" : "s"}) to ${res.outputPath}.`;
+    const skippedNote =
+      res.skippedEvents.length > 0
+        ? ` (Skipped ${res.skippedEvents.length}: ${res.skippedEvents.join(", ")})`
+        : "";
+    bannerMessage.value = `Exported ${res.orderCount} order(s) (${res.itemRowCount} line items across ${res.eventCount} event${res.eventCount === 1 ? "" : "s"}) to ${res.outputPath}.${skippedNote}`;
   } catch (err) {
     errorMessage.value = String(err);
   }

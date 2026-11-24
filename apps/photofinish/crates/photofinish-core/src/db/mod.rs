@@ -106,6 +106,39 @@ pub fn backup_sqlite_db(src_conn: &Connection, dst_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// One-time migration helper for moving an existing machine-local `photofinish_app.db`
+/// from a legacy bundle identifier directory (e.g. `com.photofinish.app`) into the
+/// finalized directory (e.g. `com.photofinish.desktop`).
+///
+/// Uses SQLite's online backup API so WAL-mode changes are cleanly folded into the
+/// new file without mutating or deleting the original legacy directory, and writes via
+/// a temporary sibling file + atomic rename so partial copies never leave a corrupt DB.
+pub fn migrate_legacy_app_db(legacy_db: &Path, new_db: &Path) -> Result<bool> {
+    if new_db.exists() || !legacy_db.is_file() {
+        return Ok(false);
+    }
+    if let Some(parent) = new_db.parent() {
+        fs::create_dir_all(parent).map_err(|e| Error::Io(format!("{}: {}", parent.display(), e)))?;
+    }
+
+    let src_conn = open_rw_connection(legacy_db)?;
+    let tmp_path = new_db.with_extension("db.migrating");
+    if tmp_path.exists() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    let copy_res = backup_sqlite_db(&src_conn, &tmp_path);
+    drop(src_conn);
+    if let Err(err) = copy_res {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    fs::rename(&tmp_path, new_db)
+        .map_err(|e| Error::Io(format!("rename {} -> {}: {}", tmp_path.display(), new_db.display(), e)))?;
+    Ok(true)
+}
+
 /// Runs embedded forward-only migrations inside immediate transactions.
 ///
 /// Safety guarantees for portable event bundles:
@@ -533,5 +566,38 @@ mod tests {
 
         app_db.delete_reader_config("USB-2").unwrap();
         assert_eq!(app_db.list_reader_configs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrate_legacy_app_db_copies_wal_data_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let legacy_db = dir.path().join("com.photofinish.app").join("photofinish_app.db");
+        let new_db = dir.path().join("com.photofinish.desktop").join("photofinish_app.db");
+
+        {
+            let old_app = AppDb::open(&legacy_db).unwrap();
+            old_app.set_setting("default_station_code", "C").unwrap();
+            old_app
+                .upsert_library_event(Path::new("/Volumes/SSD/StateMeet"), "evt_123", "State Meet")
+                .unwrap();
+        }
+
+        // First migration should copy WAL contents cleanly
+        assert!(migrate_legacy_app_db(&legacy_db, &new_db).unwrap());
+        assert!(new_db.is_file());
+        // Legacy file remains untouched as backup
+        assert!(legacy_db.is_file());
+
+        // Second call must be a no-op once new_db exists
+        assert!(!migrate_legacy_app_db(&legacy_db, &new_db).unwrap());
+
+        let migrated = AppDb::open(&new_db).unwrap();
+        assert_eq!(
+            migrated.get_setting("default_station_code").unwrap().as_deref(),
+            Some("C")
+        );
+        let events = migrated.list_library_events().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "State Meet");
     }
 }

@@ -32,8 +32,27 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
+            let app_db_path = data_dir.join("photofinish_app.db");
+
+            // Seamlessly migrate existing local reader configs, library bookmarks, and settings
+            // from the pre-release `com.photofinish.app` bundle directory on first launch.
+            if let Some(legacy_db_path) = data_dir
+                .parent()
+                .map(|p| p.join("com.photofinish.app").join("photofinish_app.db"))
+            {
+                if let Err(err) =
+                    photofinish_core::db::migrate_legacy_app_db(&legacy_db_path, &app_db_path)
+                {
+                    eprintln!(
+                        "PhotoFinish: warning migrating legacy app database ({}): {}",
+                        legacy_db_path.display(),
+                        err
+                    );
+                }
+            }
+
             let app_db = Arc::new(
-                AppDb::open(&data_dir.join("photofinish_app.db"))
+                AppDb::open(&app_db_path)
                     .expect("failed to open machine-local app database"),
             );
             let active_event = SharedActiveEvent::new(None);
@@ -65,6 +84,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_presets,
             commands::list_library_events,
+            commands::get_library_overview,
             commands::remove_library_event,
             commands::get_active_event,
             commands::create_event,
