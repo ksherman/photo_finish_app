@@ -2,7 +2,9 @@ use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
 
-use super::{count_folders, count_jpeg_files, CardReaderInfo, UsbDriveInfo};
+use super::{
+    count_folders, count_jpeg_files, resolve_photo_source_dir, CardReaderInfo, UsbDriveInfo,
+};
 use crate::{Error, Result};
 
 #[derive(Deserialize)]
@@ -29,7 +31,7 @@ struct PartitionEntry {
     volume_name: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[allow(dead_code)]
 struct DiskutilInfo {
     #[serde(rename = "DeviceTreePath")]
@@ -66,40 +68,41 @@ struct DiskutilInfo {
     apfs_container_free: Option<u64>,
 }
 
-/// Returns true for virtual disks and mounted disk images (e.g. Docker.dmg, installer `.dmg`s,
-/// Time Machine sparsebundles) so they never appear as camera card readers or USB drives.
+fn list_diskutil_disks() -> Result<Vec<DiskEntry>> {
+    let output = Command::new("diskutil")
+        .args(["list", "-plist"])
+        .output()
+        .map_err(|e| Error::Io(format!("Failed to run diskutil list: {}", e)))?;
+    let list: DiskutilList = plist::from_bytes(&output.stdout)
+        .map_err(|e| Error::Io(format!("Failed to parse diskutil list: {}", e)))?;
+    Ok(list.all_disks_and_partitions)
+}
+
+fn query_diskutil_info(device_id: &str) -> Result<Option<DiskutilInfo>> {
+    let output = Command::new("diskutil")
+        .args(["info", "-plist", device_id])
+        .output()
+        .map_err(|e| Error::Io(format!("Failed to run diskutil info: {}", e)))?;
+    Ok(plist::from_bytes(&output.stdout).ok())
+}
+
+/// Returns true for virtual disks and mounted disk images (e.g. Docker.dmg, installer `.dmg`s)
+/// so they never appear as camera card readers or USB drives.
 fn is_virtual_or_disk_image(info: &DiskutilInfo) -> bool {
-    if info
-        .virtual_or_physical
+    info.virtual_or_physical
         .as_deref()
-        .map(|v| v.eq_ignore_ascii_case("virtual"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if info
-        .bus_protocol
-        .as_deref()
-        .map(|p| p.to_lowercase().contains("disk image"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if info
-        .media_name
-        .as_deref()
-        .map(|m| m.to_lowercase().contains("disk image"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    false
+        .is_some_and(|v| v.eq_ignore_ascii_case("virtual"))
+        || info
+            .bus_protocol
+            .as_deref()
+            .is_some_and(|p| p.to_lowercase().contains("disk image"))
+        || info
+            .media_name
+            .as_deref()
+            .is_some_and(|m| m.to_lowercase().contains("disk image"))
 }
 
 /// Looks up the USB hardware serial number for a given disk (e.g. "disk5").
-///
-/// The IOService tree is output via DFS, so a USB device's kUSBSerialNumberString
-/// always appears before its descendant disk node's BSD Name entry.
 pub fn get_usb_serial_for_disk(disk_id: &str) -> Option<String> {
     let output = Command::new("ioreg")
         .args(["-p", "IOService", "-w", "0", "-l"])
@@ -107,137 +110,91 @@ pub fn get_usb_serial_for_disk(disk_id: &str) -> Option<String> {
         .ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
-    let disk_search = format!("\"{}\"", disk_id);
-    let disk_pos = text.find(disk_search.as_str())?;
-
+    let disk_pos = text.find(&format!("\"{}\"", disk_id))?;
     let before = &text[..disk_pos];
     let serial_key = "\"kUSBSerialNumberString\" = \"";
     let serial_pos = before.rfind(serial_key)?;
-
     let after_key = &before[serial_pos + serial_key.len()..];
-    let end_quote = after_key.find('"')?;
-
-    let serial = after_key[..end_quote].to_string();
-    if serial.is_empty() {
-        None
-    } else {
-        Some(serial)
-    }
+    let serial = &after_key[..after_key.find('"')?];
+    (!serial.is_empty()).then(|| serial.to_string())
 }
 
 pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>> {
     let mut readers = Vec::new();
 
-    let output = Command::new("diskutil")
-        .args(["list", "-plist"])
-        .output()
-        .map_err(|e| Error::Io(format!("Failed to run diskutil list: {}", e)))?;
-
-    let disk_list: DiskutilList = plist::from_bytes(&output.stdout)
-        .map_err(|e| Error::Io(format!("Failed to parse diskutil list: {}", e)))?;
-
-    for disk in disk_list.all_disks_and_partitions {
-        let info_output = Command::new("diskutil")
-            .args(["info", "-plist", &disk.device_identifier])
-            .output()
-            .map_err(|e| Error::Io(format!("Failed to run diskutil info: {}", e)))?;
-
-        let disk_info: DiskutilInfo = match plist::from_bytes(&info_output.stdout) {
-            Ok(info) => info,
-            Err(_) => continue,
+    for disk in list_diskutil_disks()? {
+        let Some(disk_info) = query_diskutil_info(&disk.device_identifier)? else {
+            continue;
         };
-
         if is_virtual_or_disk_image(&disk_info) {
             continue;
         }
-
-        let is_removable = disk_info.removable.unwrap_or(false)
-            || disk_info.removable_media.unwrap_or(false);
-        if !is_removable {
+        if !(disk_info.removable.unwrap_or(false) || disk_info.removable_media.unwrap_or(false)) {
             continue;
         }
 
         for partition in &disk.partitions {
-            if let Some(mount_point) = &partition.mount_point {
-                let part_output = Command::new("diskutil")
-                    .args(["info", "-plist", &partition.device_identifier])
-                    .output()
-                    .map_err(|e| Error::Io(format!("Failed to run diskutil info: {}", e)))?;
+            let Some(mount_point) = &partition.mount_point else {
+                continue;
+            };
+            let Some(part_info) = query_diskutil_info(&partition.device_identifier)? else {
+                continue;
+            };
 
-                let part_info: DiskutilInfo = match plist::from_bytes(&part_output.stdout) {
-                    Ok(info) => info,
-                    Err(_) => continue,
-                };
+            let volume_name = partition
+                .volume_name
+                .clone()
+                .or(part_info.volume_name)
+                .unwrap_or_else(|| "Untitled".to_string());
+            let bus_protocol = disk_info
+                .bus_protocol
+                .clone()
+                .unwrap_or_else(|| "Unknown".to_string());
+            let is_internal = disk_info.internal.unwrap_or(false);
+            let usb_serial = (!is_internal)
+                .then(|| get_usb_serial_for_disk(&disk.device_identifier))
+                .flatten();
 
-                let volume_name = partition
-                    .volume_name
+            let mut reader_id = if is_internal {
+                "sdxc-builtin".to_string()
+            } else if let Some(ref serial) = usb_serial {
+                serial.clone()
+            } else {
+                disk_info
+                    .device_tree_path
                     .clone()
-                    .or(part_info.volume_name.clone())
-                    .unwrap_or_else(|| "Untitled".to_string());
+                    .unwrap_or_else(|| disk.device_identifier.clone())
+            };
 
-                let bus_protocol = disk_info
-                    .bus_protocol
+            // Disambiguate multi-slot hubs or identical low-cost readers sharing a USB serial.
+            if readers.iter().any(|r: &CardReaderInfo| r.reader_id == reader_id) {
+                let disambiguator = disk_info
+                    .device_tree_path
                     .clone()
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                let is_internal = disk_info.internal.unwrap_or(false);
-
-                let usb_serial = if is_internal {
-                    None
-                } else {
-                    get_usb_serial_for_disk(&disk.device_identifier)
-                };
-
-                let mut reader_id = if is_internal {
-                    "sdxc-builtin".to_string()
-                } else if let Some(ref serial) = usb_serial {
-                    serial.clone()
-                } else {
-                    disk_info
-                        .device_tree_path
-                        .clone()
-                        .unwrap_or_else(|| disk.device_identifier.clone())
-                };
-
-                // Guard against multi-slot hubs or identical low-cost readers reporting
-                // the same USB serial string: append the physical DeviceTreePath/disk ID
-                // if this reader_id is already taken by another slot in this scan.
-                if readers.iter().any(|r: &CardReaderInfo| r.reader_id == reader_id) {
-                    let disambiguator = disk_info
-                        .device_tree_path
-                        .clone()
-                        .unwrap_or_else(|| disk.device_identifier.clone());
-                    reader_id = format!("{}@{}", reader_id, disambiguator);
-                }
-
-                let display_name = if is_internal {
-                    format!("Built-in {} Reader", bus_protocol)
-                } else {
-                    format!("External {} Reader", bus_protocol)
-                };
-
-                let mount_path = Path::new(mount_point);
-                let file_count = count_jpeg_files(mount_path);
-                let dcim_path = mount_path.join("DCIM");
-                let folder_count = if dcim_path.exists() && dcim_path.is_dir() {
-                    count_folders(&dcim_path)
-                } else {
-                    count_folders(mount_path)
-                };
-
-                readers.push(CardReaderInfo {
-                    reader_id,
-                    usb_serial,
-                    display_name,
-                    mount_point: mount_point.clone(),
-                    volume_name,
-                    bus_protocol,
-                    is_internal,
-                    disk_id: disk.device_identifier.clone(),
-                    file_count,
-                    folder_count,
-                });
+                    .unwrap_or_else(|| disk.device_identifier.clone());
+                reader_id = format!("{}@{}", reader_id, disambiguator);
             }
+
+            let display_name = if is_internal {
+                format!("Built-in {} Reader", bus_protocol)
+            } else {
+                format!("External {} Reader", bus_protocol)
+            };
+
+            let mount_path = Path::new(mount_point);
+            let photo_root = resolve_photo_source_dir(mount_path);
+            readers.push(CardReaderInfo {
+                reader_id,
+                usb_serial,
+                display_name,
+                mount_point: mount_point.clone(),
+                volume_name,
+                bus_protocol,
+                is_internal,
+                disk_id: disk.device_identifier.clone(),
+                file_count: count_jpeg_files(mount_path),
+                folder_count: count_folders(&photo_root),
+            });
         }
     }
 
@@ -245,36 +202,15 @@ pub fn discover_card_readers() -> Result<Vec<CardReaderInfo>> {
 }
 
 /// Discovers mounted external USB / removable drives suitable for instant USB fulfillment.
-/// Explicitly flags volumes containing a `DCIM/` folder (`has_dcim = true`) so staff never
-/// accidentally write a customer order onto a photographer's SD card.
+/// Flags volumes containing a `DCIM/` folder (`has_dcim = true`) as a camera-card guard.
 pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
     let mut drives = Vec::new();
 
-    let output = Command::new("diskutil")
-        .args(["list", "-plist"])
-        .output()
-        .map_err(|e| Error::Io(format!("Failed to run diskutil list: {}", e)))?;
-
-    let disk_list: DiskutilList = plist::from_bytes(&output.stdout)
-        .map_err(|e| Error::Io(format!("Failed to parse diskutil list: {}", e)))?;
-
-    for disk in disk_list.all_disks_and_partitions {
-        let info_output = Command::new("diskutil")
-            .args(["info", "-plist", &disk.device_identifier])
-            .output()
-            .map_err(|e| Error::Io(format!("Failed to run diskutil info: {}", e)))?;
-
-        let disk_info: DiskutilInfo = match plist::from_bytes(&info_output.stdout) {
-            Ok(info) => info,
-            Err(_) => continue,
-        };
-
-        if is_virtual_or_disk_image(&disk_info) {
+    for disk in list_diskutil_disks()? {
+        let Some(disk_info) = query_diskutil_info(&disk.device_identifier)? else {
             continue;
-        }
-
-        let is_internal = disk_info.internal.unwrap_or(false);
-        if is_internal {
+        };
+        if is_virtual_or_disk_image(&disk_info) || disk_info.internal.unwrap_or(false) {
             continue;
         }
         let bus_protocol = disk_info
@@ -282,9 +218,10 @@ pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
             .clone()
             .unwrap_or_else(|| "Unknown".to_string());
         let is_removable = disk_info.removable.unwrap_or(false)
-            || disk_info.removable_media.unwrap_or(false);
-        let is_ejectable = disk_info.ejectable.unwrap_or(false);
-        if !is_removable && !is_ejectable && !bus_protocol.to_lowercase().contains("usb") {
+            || disk_info.removable_media.unwrap_or(false)
+            || disk_info.ejectable.unwrap_or(false)
+            || bus_protocol.to_lowercase().contains("usb");
+        if !is_removable {
             continue;
         }
 
@@ -295,17 +232,9 @@ pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
             if mount_point.is_empty() || mount_point == "/" || mount_point.starts_with("/System") {
                 continue;
             }
-
-            let part_output = Command::new("diskutil")
-                .args(["info", "-plist", &partition.device_identifier])
-                .output()
-                .map_err(|e| Error::Io(format!("Failed to run diskutil info: {}", e)))?;
-
-            let part_info: DiskutilInfo = match plist::from_bytes(&part_output.stdout) {
-                Ok(info) => info,
-                Err(_) => continue,
+            let Some(part_info) = query_diskutil_info(&partition.device_identifier)? else {
+                continue;
             };
-
             if is_virtual_or_disk_image(&part_info)
                 || part_info.writable_volume == Some(false)
                 || part_info.writable_media == Some(false)
@@ -316,7 +245,7 @@ pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
             let volume_name = partition
                 .volume_name
                 .clone()
-                .or(part_info.volume_name.clone())
+                .or(part_info.volume_name)
                 .unwrap_or_else(|| "USB Drive".to_string());
             let total_bytes = part_info
                 .total_size
@@ -328,8 +257,7 @@ pub fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>> {
                 .apfs_container_free
                 .or(part_info.free_space)
                 .unwrap_or(0);
-            let mount_path = Path::new(mount_point);
-            let has_dcim = mount_path.join("DCIM").is_dir();
+            let has_dcim = Path::new(mount_point).join("DCIM").is_dir();
 
             drives.push(UsbDriveInfo {
                 disk_id: disk.device_identifier.clone(),
@@ -376,42 +304,20 @@ mod tests {
     #[test]
     fn filters_out_virtual_and_disk_image_volumes() {
         let dmg = DiskutilInfo {
-            device_tree_path: None,
             bus_protocol: Some("Disk Image".into()),
             virtual_or_physical: Some("Virtual".into()),
-            internal: Some(false),
-            removable: Some(true),
-            removable_media: Some(true),
-            ejectable: Some(true),
-            writable_volume: Some(false),
-            writable_media: Some(false),
-            volume_name: Some("Docker".into()),
-            mount_point: Some("/Volumes/Docker".into()),
             media_name: Some("Disk Image".into()),
-            total_size: None,
-            size: None,
-            free_space: None,
-            apfs_container_free: None,
+            ..Default::default()
         };
         assert!(is_virtual_or_disk_image(&dmg));
 
         let real_sd = DiskutilInfo {
-            device_tree_path: None,
             bus_protocol: Some("Secure Digital".into()),
             virtual_or_physical: Some("Physical".into()),
             internal: Some(true),
             removable: Some(true),
-            removable_media: Some(true),
-            ejectable: Some(true),
-            writable_volume: Some(true),
-            writable_media: Some(true),
-            volume_name: Some("EOS_DIGITAL".into()),
-            mount_point: Some("/Volumes/EOS_DIGITAL".into()),
             media_name: Some("Built In SDXC Reader".into()),
-            total_size: None,
-            size: None,
-            free_space: None,
-            apfs_container_free: None,
+            ..Default::default()
         };
         assert!(!is_virtual_or_disk_image(&real_sd));
     }

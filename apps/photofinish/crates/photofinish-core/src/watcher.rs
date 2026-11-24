@@ -1,4 +1,3 @@
-use chrono::Utc;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -11,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::event::EventBundle;
 use crate::imaging::ImagePipeline;
+use crate::util::{is_jpeg_path, now_iso};
 use crate::{Error, Result};
 
 const DEFAULT_DEBOUNCE_MS: u64 = 1500;
@@ -289,7 +289,7 @@ impl EventWatcherManager {
                                         worker_pipeline.enqueue(&bundle, scan.pending_jobs);
                                     }
                                     if scan.photos_new > 0 || scan.photos_removed > 0 {
-                                        let synced_at = Utc::now().to_rfc3339();
+                                        let synced_at = now_iso();
                                         if let Ok(mut t) = worker_telemetry.lock() {
                                             t.last_sync_at = Some(synced_at.clone());
                                             t.last_added = scan.photos_new;
@@ -391,17 +391,9 @@ pub fn normalize_watch_path(
         }
     }
 
-    let is_jpeg_ext = abs_path
-        .extension()
-        .map(|e| {
-            let l = e.to_string_lossy().to_lowercase();
-            l == "jpg" || l == "jpeg"
-        })
-        .unwrap_or(false);
-
     // Map individual files (whether present or deleted JPEGs) to their parent directory
     // so reconciling handles both adds & single-file deletes cleanly in O(folder size).
-    let target_rel = if abs_path.is_file() || is_jpeg_ext {
+    let target_rel = if abs_path.is_file() || is_jpeg_path(abs_path) {
         rel.parent().unwrap_or_else(|| Path::new(""))
     } else {
         rel
@@ -464,14 +456,8 @@ mod tests {
             EventBundle::create(CreateEventParams {
                 root_path: root.clone(),
                 name: "Watch Meet".into(),
-                description: None,
-                preset_id: Some("gymnastics".into()),
-                subject_label: None,
-                folder_levels: None,
                 order_code: Some("WTC".into()),
-                station_code: Some("A".into()),
-                tax_rate_basis_points: None,
-                scaffold: None,
+                ..Default::default()
             })
             .unwrap(),
         );

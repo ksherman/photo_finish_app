@@ -22,14 +22,51 @@ use photofinish_core::orders::{
 };
 use photofinish_core::preset::{self, EventPreset};
 use photofinish_core::roster::{
-    self, AssignFolderResult, BatchReassignResult, FolderReassignmentInput, ImportRosterResult,
-    IngestBatchSummary, ListFoldersResponse, ParsedRosterFile, RemoveFolderMode,
-    RemoveFolderResult, RosterEntryInput, UnassignedFoldersResponse,
+    self, BatchReassignResult, FolderReassignmentInput, ImportRosterResult, IngestBatchSummary,
+    ListFoldersResponse, ParsedRosterFile, RemoveFolderMode, RemoveFolderResult, RosterEntryInput,
 };
 use photofinish_core::server::{detect_lan_ip, EmbeddedServer, LanServerStatus};
 use photofinish_core::watcher::WatcherStatus;
 
 use crate::AppState;
+
+// =========================================================================
+// Internal Helpers
+// =========================================================================
+
+fn require_event(state: &State<'_, AppState>) -> Result<Arc<EventBundle>, String> {
+    state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())
+}
+
+async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> photofinish_core::Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || f().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+async fn with_event_blocking<T, F>(state: &State<'_, AppState>, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<EventBundle>) -> photofinish_core::Result<T> + Send + 'static,
+{
+    let bundle = require_event(state)?;
+    run_blocking(move || f(bundle)).await
+}
+
+fn err_str<T>(res: photofinish_core::Result<T>) -> Result<T, String> {
+    res.map_err(|e| e.to_string())
+}
+
+// =========================================================================
+// Events & Library
+// =========================================================================
 
 #[tauri::command]
 pub fn list_presets() -> Vec<EventPreset> {
@@ -37,24 +74,17 @@ pub fn list_presets() -> Vec<EventPreset> {
 }
 
 #[tauri::command]
-pub fn list_library_events(state: State<'_, AppState>) -> Result<Vec<LibraryEventEntry>, String> {
-    state.app_db.list_library_events().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn remove_library_event(state: State<'_, AppState>, root_path: String) -> Result<(), String> {
-    state
-        .app_db
-        .remove_library_event(&root_path)
-        .map_err(|e| e.to_string())
+    err_str(state.app_db.remove_library_event(&root_path))
 }
 
 #[tauri::command]
 pub fn get_active_event(state: State<'_, AppState>) -> Result<Option<EventSummary>, String> {
-    match state.active_event.get() {
-        Some(bundle) => bundle.summary().map(Some).map_err(|e| e.to_string()),
-        None => Ok(None),
-    }
+    state
+        .active_event
+        .get()
+        .map(|b| err_str(b.summary()))
+        .transpose()
 }
 
 #[tauri::command]
@@ -62,12 +92,13 @@ pub fn create_event(
     state: State<'_, AppState>,
     params: CreateEventParams,
 ) -> Result<EventSummary, String> {
-    let bundle = Arc::new(EventBundle::create(params).map_err(|e| e.to_string())?);
-    let summary = bundle.summary().map_err(|e| e.to_string())?;
-    state
-        .app_db
-        .upsert_library_event(bundle.root(), &summary.id, &summary.name)
-        .map_err(|e| e.to_string())?;
+    let bundle = Arc::new(err_str(EventBundle::create(params))?);
+    let summary = err_str(bundle.summary())?;
+    err_str(
+        state
+            .app_db
+            .upsert_library_event(bundle.root(), &summary.id, &summary.name),
+    )?;
     state.active_event.set(Some(Arc::clone(&bundle)));
     state.watch_active_bundle(bundle);
     Ok(summary)
@@ -75,12 +106,13 @@ pub fn create_event(
 
 #[tauri::command]
 pub fn open_event(state: State<'_, AppState>, root_path: String) -> Result<EventSummary, String> {
-    let bundle = Arc::new(EventBundle::open(&root_path).map_err(|e| e.to_string())?);
-    let summary = bundle.summary().map_err(|e| e.to_string())?;
-    state
-        .app_db
-        .upsert_library_event(bundle.root(), &summary.id, &summary.name)
-        .map_err(|e| e.to_string())?;
+    let bundle = Arc::new(err_str(EventBundle::open(&root_path))?);
+    let summary = err_str(bundle.summary())?;
+    err_str(
+        state
+            .app_db
+            .upsert_library_event(bundle.root(), &summary.id, &summary.name),
+    )?;
 
     if let Ok(pending) = bundle.list_unprocessed_photos() {
         if !pending.is_empty() {
@@ -112,6 +144,27 @@ pub struct LibraryBundleOverview {
     pub inspect_error: Option<String>,
 }
 
+impl LibraryBundleOverview {
+    fn stub(entry: LibraryEventEntry, inspect_error: Option<String>) -> Self {
+        Self {
+            root_path: entry.root_path,
+            event_id: entry.event_id,
+            name: entry.name,
+            last_opened_at: entry.last_opened_at,
+            exists_on_disk: entry.exists_on_disk,
+            order_code: None,
+            station_code: None,
+            photo_counts: None,
+            subject_count: 0,
+            order_count: 0,
+            paid_order_count: 0,
+            gross_paid_cents: 0,
+            pending_fulfillment_count: 0,
+            inspect_error,
+        }
+    }
+}
+
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryTotals {
@@ -139,8 +192,8 @@ pub async fn get_library_overview(
     state: State<'_, AppState>,
 ) -> Result<LibraryOverviewResponse, String> {
     let app_db = Arc::clone(&state.app_db);
-    tauri::async_runtime::spawn_blocking(move || -> Result<LibraryOverviewResponse, String> {
-        let entries = app_db.list_library_events().map_err(|e| e.to_string())?;
+    run_blocking(move || {
+        let entries = app_db.list_library_events()?;
         let mut events = Vec::with_capacity(entries.len());
         let mut totals = LibraryTotals {
             total_events: entries.len(),
@@ -150,25 +203,9 @@ pub async fn get_library_overview(
 
         for entry in entries {
             if !entry.exists_on_disk {
-                events.push(LibraryBundleOverview {
-                    root_path: entry.root_path,
-                    event_id: entry.event_id,
-                    name: entry.name,
-                    last_opened_at: entry.last_opened_at,
-                    exists_on_disk: false,
-                    order_code: None,
-                    station_code: None,
-                    photo_counts: None,
-                    subject_count: 0,
-                    order_count: 0,
-                    paid_order_count: 0,
-                    gross_paid_cents: 0,
-                    pending_fulfillment_count: 0,
-                    inspect_error: None,
-                });
+                events.push(LibraryBundleOverview::stub(entry, None));
                 continue;
             }
-
             match EventBundle::inspect_readonly(&entry.root_path) {
                 Ok(BundleOverview {
                     event_id,
@@ -192,11 +229,9 @@ pub async fn get_library_overview(
                     totals.paid_orders += paid_order_count;
                     totals.gross_paid_cents += gross_paid_cents;
                     totals.pending_fulfillment_orders += pending_fulfillment_count;
-
                     for num in order_numbers {
                         *seen_orders.entry(num).or_insert(0) += 1;
                     }
-
                     events.push(LibraryBundleOverview {
                         root_path: entry.root_path,
                         event_id,
@@ -215,29 +250,14 @@ pub async fn get_library_overview(
                     });
                 }
                 Err(err) => {
-                    events.push(LibraryBundleOverview {
-                        root_path: entry.root_path,
-                        event_id: entry.event_id,
-                        name: entry.name,
-                        last_opened_at: entry.last_opened_at,
-                        exists_on_disk: true,
-                        order_code: None,
-                        station_code: None,
-                        photo_counts: None,
-                        subject_count: 0,
-                        order_count: 0,
-                        paid_order_count: 0,
-                        gross_paid_cents: 0,
-                        pending_fulfillment_count: 0,
-                        inspect_error: Some(err.to_string()),
-                    });
+                    events.push(LibraryBundleOverview::stub(entry, Some(err.to_string())));
                 }
             }
         }
 
         let mut duplicate_order_numbers: Vec<String> = seen_orders
             .into_iter()
-            .filter_map(|(num, count)| if count > 1 { Some(num) } else { None })
+            .filter_map(|(num, count)| (count > 1).then_some(num))
             .collect();
         duplicate_order_numbers.sort();
 
@@ -248,7 +268,6 @@ pub async fn get_library_overview(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -257,9 +276,8 @@ pub async fn gather_events(
     parent_path: String,
 ) -> Result<Vec<EventSummary>, String> {
     let app_db = Arc::clone(&state.app_db);
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<EventSummary>, String> {
-        let discovered =
-            EventBundle::discover_in_directory(&parent_path).map_err(|e| e.to_string())?;
+    run_blocking(move || {
+        let discovered = EventBundle::discover_in_directory(&parent_path)?;
         for summary in &discovered {
             let _ = app_db.upsert_library_event(
                 &PathBuf::from(&summary.root_path),
@@ -270,28 +288,22 @@ pub async fn gather_events(
         Ok(discovered)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn scan_active_event(state: State<'_, AppState>) -> Result<ScanResult, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-
-    let bundle_clone = Arc::clone(&bundle);
-    let result = tauri::async_runtime::spawn_blocking(move || bundle_clone.scan_directory())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-
+    let bundle = require_event(&state)?;
+    let b = Arc::clone(&bundle);
+    let result = run_blocking(move || b.scan_directory()).await?;
     if !result.pending_jobs.is_empty() {
         state.queue_photo_jobs(&bundle, result.pending_jobs.clone());
     }
-
     Ok(result)
 }
+
+// =========================================================================
+// Watcher, Imaging & Avatars
+// =========================================================================
 
 #[tauri::command]
 pub fn get_watcher_status(state: State<'_, AppState>) -> WatcherStatus {
@@ -303,17 +315,19 @@ pub fn set_auto_watch_enabled(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<WatcherStatus, String> {
-    state
-        .app_db
-        .set_setting("auto_watch_enabled", if enabled { "true" } else { "false" })
-        .map_err(|e| e.to_string())?;
+    err_str(
+        state
+            .app_db
+            .set_setting("auto_watch_enabled", if enabled { "true" } else { "false" }),
+    )?;
     let active = state.active_event.get();
-    state
-        .watcher
-        .lock()
-        .unwrap()
-        .set_enabled(enabled, active, &state.image_pipeline)
-        .map_err(|e| e.to_string())
+    err_str(
+        state
+            .watcher
+            .lock()
+            .unwrap()
+            .set_enabled(enabled, active, &state.image_pipeline),
+    )
 }
 
 #[tauri::command]
@@ -335,28 +349,21 @@ pub async fn generate_event_avatars(
     state: State<'_, AppState>,
     force: Option<bool>,
 ) -> Result<usize, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
     let pipeline = state.avatar_pipeline.clone();
     let force_regen = force.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
-        pipeline
-            .enqueue_event_subjects(&bundle, force_regen)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    with_event_blocking(&state, move |b| pipeline.enqueue_event_subjects(&b, force_regen)).await
 }
+
+// =========================================================================
+// Roster, Folders & Card Naming Queue
+// =========================================================================
 
 #[tauri::command]
 pub fn parse_roster_files(paths: Vec<String>) -> Result<Vec<ParsedRosterFile>, String> {
-    let mut parsed = Vec::with_capacity(paths.len());
-    for p in paths {
-        parsed.push(roster::parse_roster_file(&PathBuf::from(p)).map_err(|e| e.to_string())?);
-    }
-    Ok(parsed)
+    paths
+        .into_iter()
+        .map(|p| err_str(roster::parse_roster_file(&PathBuf::from(p))))
+        .collect()
 }
 
 #[tauri::command]
@@ -364,11 +371,8 @@ pub fn import_roster(
     state: State<'_, AppState>,
     entries: Vec<RosterEntryInput>,
 ) -> Result<ImportRosterResult, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    let res = bundle.import_subjects(&entries).map_err(|e| e.to_string())?;
+    let bundle = require_event(&state)?;
+    let res = err_str(bundle.import_subjects(&entries))?;
     if res.auto_matched_photos > 0 {
         let _ = state.avatar_pipeline.enqueue_event_subjects(&bundle, false);
     }
@@ -384,28 +388,18 @@ pub fn add_subject(
     group_label: Option<String>,
     team_name: Option<String>,
 ) -> Result<SubjectRecord, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .add_subject(
-            number.as_deref(),
-            &first_name,
-            last_name.as_deref(),
-            group_label.as_deref(),
-            team_name.as_deref(),
-        )
-        .map_err(|e| e.to_string())
+    err_str(require_event(&state)?.add_subject(
+        number.as_deref(),
+        &first_name,
+        last_name.as_deref(),
+        group_label.as_deref(),
+        team_name.as_deref(),
+    ))
 }
 
 #[tauri::command]
 pub fn list_subject_groups(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    bundle.list_subject_groups().map_err(|e| e.to_string())
+    err_str(require_event(&state)?.list_subject_groups())
 }
 
 #[tauri::command]
@@ -415,28 +409,16 @@ pub async fn list_subjects(
     group_label: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<SubjectRecord>, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .list_subjects(query.as_deref(), group_label.as_deref(), limit.unwrap_or(500))
-            .map_err(|e| e.to_string())
+    with_event_blocking(&state, move |b| {
+        b.list_subjects(query.as_deref(), group_label.as_deref(), limit.unwrap_or(500))
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn auto_match_photos(state: State<'_, AppState>) -> Result<usize, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    let matched = bundle
-        .auto_match_unassigned_photos()
-        .map_err(|e| e.to_string())?;
+    let bundle = require_event(&state)?;
+    let matched = err_str(bundle.auto_match_unassigned_photos())?;
     if matched > 0 {
         let _ = state.avatar_pipeline.enqueue_event_subjects(&bundle, false);
     }
@@ -444,56 +426,11 @@ pub fn auto_match_photos(state: State<'_, AppState>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-pub fn list_unassigned_folders(
-    state: State<'_, AppState>,
-    parent_filter: Option<String>,
-) -> Result<UnassignedFoldersResponse, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .list_unassigned_folders(parent_filter.as_deref())
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn assign_folder_to_subject(
-    state: State<'_, AppState>,
-    folder_path: String,
-    subject_id: String,
-    rename_on_disk: bool,
-) -> Result<AssignFolderResult, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    let _pause = state.pause_watcher();
-    let res = bundle
-        .assign_folder_to_subject(&folder_path, &subject_id, rename_on_disk)
-        .map_err(|e| e.to_string())?;
-    state
-        .avatar_pipeline
-        .enqueue_subjects(&bundle, [subject_id], false);
-    Ok(res)
-}
-
-#[tauri::command]
 pub async fn list_ingest_batches(
     state: State<'_, AppState>,
     limit: Option<i64>,
 ) -> Result<Vec<IngestBatchSummary>, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .list_ingest_batches(limit.unwrap_or(40))
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    with_event_blocking(&state, move |b| b.list_ingest_batches(limit.unwrap_or(40))).await
 }
 
 #[tauri::command]
@@ -504,22 +441,15 @@ pub async fn list_folders(
     context_parent: Option<String>,
     batch_id: Option<String>,
 ) -> Result<ListFoldersResponse, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .list_folders(
-                parent_filter.as_deref(),
-                only_unassigned,
-                context_parent.as_deref(),
-                batch_id.as_deref(),
-            )
-            .map_err(|e| e.to_string())
+    with_event_blocking(&state, move |b| {
+        b.list_folders(
+            parent_filter.as_deref(),
+            only_unassigned,
+            context_parent.as_deref(),
+            batch_id.as_deref(),
+        )
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -528,32 +458,24 @@ pub async fn apply_folder_reassignments(
     changes: Vec<FolderReassignmentInput>,
     rename_on_disk: bool,
 ) -> Result<BatchReassignResult, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
+    let bundle = require_event(&state)?;
     let affected_subjects: Vec<String> = changes
         .iter()
         .filter_map(|c| c.target_subject_id.clone())
         .collect();
     let pause_guard = state.pause_watcher();
-    let bundle_clone = Arc::clone(&bundle);
-    let res = tauri::async_runtime::spawn_blocking(move || {
+    let b = Arc::clone(&bundle);
+    let res = run_blocking(move || {
         let _pause = pause_guard;
-        bundle_clone
-            .apply_folder_reassignments(&changes, rename_on_disk)
-            .map_err(|e| e.to_string())
+        b.apply_folder_reassignments(&changes, rename_on_disk)
     })
-    .await
-    .map_err(|e| e.to_string())??;
+    .await?;
 
-    // Quietly generate Apple Vision face avatars in the background for newly matched athletes (~100ms each)
     if !affected_subjects.is_empty() {
         state
             .avatar_pipeline
             .enqueue_subjects(&bundle, affected_subjects, false);
     }
-
     Ok(res)
 }
 
@@ -563,20 +485,17 @@ pub async fn remove_folder(
     folder_path: String,
     mode: RemoveFolderMode,
 ) -> Result<RemoveFolderResult, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
     let pause_guard = state.pause_watcher();
-    tauri::async_runtime::spawn_blocking(move || {
+    with_event_blocking(&state, move |b| {
         let _pause = pause_guard;
-        bundle
-            .remove_folder(&folder_path, mode)
-            .map_err(|e| e.to_string())
+        b.remove_folder(&folder_path, mode)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
+
+// =========================================================================
+// Embedded LAN Server
+// =========================================================================
 
 #[tauri::command]
 pub async fn get_lan_server_status(state: State<'_, AppState>) -> Result<LanServerStatus, String> {
@@ -584,7 +503,7 @@ pub async fn get_lan_server_status(state: State<'_, AppState>) -> Result<LanServ
     if let Some(ref server) = *guard {
         Ok(server.status())
     } else {
-        let port: u16 = state
+        let port = state
             .app_db
             .get_setting("lan_port")
             .ok()
@@ -610,12 +529,8 @@ pub async fn start_lan_server(
         return Ok(server.status());
     }
     let target_port = port.unwrap_or(4000);
-    let _ = state
-        .app_db
-        .set_setting("lan_port", &target_port.to_string());
-    let server = EmbeddedServer::start(target_port, state.active_event.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let _ = state.app_db.set_setting("lan_port", &target_port.to_string());
+    let server = err_str(EmbeddedServer::start(target_port, state.active_event.clone()).await)?;
     let status = server.status();
     *guard = Some(server);
     Ok(status)
@@ -636,12 +551,13 @@ pub async fn stop_lan_server(state: State<'_, AppState>) -> Result<LanServerStat
     })
 }
 
+// =========================================================================
+// Card Readers, App Settings & Card Ingest
+// =========================================================================
+
 #[tauri::command]
 pub async fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
-    tauri::async_runtime::spawn_blocking(hardware::discover_card_readers)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    run_blocking(hardware::discover_card_readers).await
 }
 
 #[tauri::command]
@@ -654,12 +570,12 @@ pub fn list_directory(
     } else {
         PathBuf::from(path)
     };
-    hardware::list_directory(&target).map_err(|e| e.to_string())
+    err_str(hardware::list_directory(&target))
 }
 
 #[tauri::command]
 pub fn list_reader_configs(state: State<'_, AppState>) -> Result<Vec<ReaderConfig>, String> {
-    state.app_db.list_reader_configs().map_err(|e| e.to_string())
+    err_str(state.app_db.list_reader_configs())
 }
 
 #[tauri::command]
@@ -667,18 +583,12 @@ pub fn save_reader_config(
     state: State<'_, AppState>,
     config: ReaderConfig,
 ) -> Result<(), String> {
-    state
-        .app_db
-        .save_reader_config(&config)
-        .map_err(|e| e.to_string())
+    err_str(state.app_db.save_reader_config(&config))
 }
 
 #[tauri::command]
 pub fn clear_reader_configs(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .app_db
-        .clear_reader_configs()
-        .map_err(|e| e.to_string())
+    err_str(state.app_db.clear_reader_configs())
 }
 
 #[tauri::command]
@@ -686,26 +596,17 @@ pub fn save_reader_layout(
     state: State<'_, AppState>,
     updates: Vec<ReaderLayoutUpdate>,
 ) -> Result<(), String> {
-    state
-        .app_db
-        .save_reader_layout(&updates)
-        .map_err(|e| e.to_string())
+    err_str(state.app_db.save_reader_layout(&updates))
 }
 
 #[tauri::command]
-pub fn delete_reader_config(
-    state: State<'_, AppState>,
-    reader_id: String,
-) -> Result<(), String> {
-    state
-        .app_db
-        .delete_reader_config(&reader_id)
-        .map_err(|e| e.to_string())
+pub fn delete_reader_config(state: State<'_, AppState>, reader_id: String) -> Result<(), String> {
+    err_str(state.app_db.delete_reader_config(&reader_id))
 }
 
 #[tauri::command]
 pub fn get_app_setting(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
-    state.app_db.get_setting(&key).map_err(|e| e.to_string())
+    err_str(state.app_db.get_setting(&key))
 }
 
 #[tauri::command]
@@ -714,10 +615,7 @@ pub fn set_app_setting(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    state
-        .app_db
-        .set_setting(&key, &value)
-        .map_err(|e| e.to_string())
+    err_str(state.app_db.set_setting(&key, &value))
 }
 
 #[derive(Debug, Deserialize)]
@@ -728,7 +626,6 @@ pub struct IngestRequest {
     pub volume_name: String,
     pub photographer: String,
     pub source_path: String,
-    /// Relative destination path inside the active Event Bundle (e.g. "Gym A/Session 1A/Group 1A/Beam").
     pub destination_rel_path: String,
     pub rename_prefix: Option<String>,
     pub auto_rename: bool,
@@ -761,41 +658,33 @@ pub async fn ingest_from_reader(
         source_path: PathBuf::from(&request.source_path),
         event_root: bundle.root().to_path_buf(),
         destination_rel_path: request.destination_rel_path.clone(),
-        rename_prefix: request.rename_prefix.clone(),
+        rename_prefix: request.rename_prefix,
         auto_rename: request.auto_rename,
-        file_rename_prefix: request.file_rename_prefix.clone(),
-        included_folders: request.included_folders.clone(),
+        file_rename_prefix: request.file_rename_prefix,
+        included_folders: request.included_folders,
     };
-
-    let bundle_clone = Arc::clone(&bundle);
     let meta = IngestBatchMeta {
         reader_id: Some(request.reader_id.clone()),
-        reader_name: Some(request.reader_name.clone()),
-        volume_name: Some(request.volume_name.clone()),
-        photographer: Some(request.photographer.clone()),
-        source_path: Some(request.source_path.clone()),
-        destination_rel_path: request.destination_rel_path.clone(),
+        reader_name: Some(request.reader_name),
+        volume_name: Some(request.volume_name),
+        photographer: Some(request.photographer),
+        source_path: Some(request.source_path),
+        destination_rel_path: request.destination_rel_path,
         tags: request.tags,
     };
 
     let pause_guard = state.pause_watcher();
-    let (batch_id, copied_count, pending_jobs) =
-        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
-            let _pause = pause_guard;
-            let files = hardware::copy_files_into_event(&copy_opts, |ev| {
-                let _ = on_progress.send(ev);
-            })
-            .map_err(|e| e.to_string())?;
-
-            let copied_count = files.len();
-            let (batch_id, pending) = bundle_clone
-                .record_ingest_batch(meta, &files)
-                .map_err(|e| e.to_string())?;
-
-            Ok((batch_id, copied_count, pending))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+    let b = Arc::clone(&bundle);
+    let (batch_id, copied_count, pending_jobs) = run_blocking(move || {
+        let _pause = pause_guard;
+        let files = hardware::copy_files_into_event(&copy_opts, |ev| {
+            let _ = on_progress.send(ev);
+        })?;
+        let copied_count = files.len();
+        let (batch_id, pending) = b.record_ingest_batch(meta, &files)?;
+        Ok((batch_id, copied_count, pending))
+    })
+    .await?;
 
     let queued_count = pending_jobs.len();
     state.queue_photo_jobs(&bundle, pending_jobs);
@@ -814,13 +703,7 @@ pub async fn ingest_from_reader(
 
 #[tauri::command]
 pub async fn list_orders(state: State<'_, AppState>) -> Result<OrderListResponse, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || bundle.list_orders().map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| e.to_string())?
+    with_event_blocking(&state, |b| b.list_orders()).await
 }
 
 #[tauri::command]
@@ -828,17 +711,7 @@ pub async fn update_order_payment(
     state: State<'_, AppState>,
     request: UpdatePaymentRequest,
 ) -> Result<OrderRecord, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .update_order_payment(&request)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    with_event_blocking(&state, move |b| b.update_order_payment(&request)).await
 }
 
 #[tauri::command]
@@ -847,17 +720,7 @@ pub async fn update_order_notes(
     order_id: String,
     notes: Option<String>,
 ) -> Result<OrderRecord, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .update_order_notes(&order_id, notes.as_deref())
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    with_event_blocking(&state, move |b| b.update_order_notes(&order_id, notes.as_deref())).await
 }
 
 #[tauri::command]
@@ -867,26 +730,15 @@ pub async fn update_order_item_fulfillment(
     item_id: String,
     fulfillment_status: String,
 ) -> Result<OrderRecord, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .update_order_item_fulfillment(&order_id, &item_id, &fulfillment_status)
-            .map_err(|e| e.to_string())
+    with_event_blocking(&state, move |b| {
+        b.update_order_item_fulfillment(&order_id, &item_id, &fulfillment_status)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn list_event_products(state: State<'_, AppState>) -> Result<Vec<ProductRecord>, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    bundle.list_products(true).map_err(|e| e.to_string())
+    err_str(require_event(&state)?.list_products(true))
 }
 
 #[tauri::command]
@@ -894,11 +746,7 @@ pub fn upsert_event_product(
     state: State<'_, AppState>,
     input: ProductUpsertInput,
 ) -> Result<ProductRecord, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    bundle.upsert_product(&input).map_err(|e| e.to_string())
+    err_str(require_event(&state)?.upsert_product(&input))
 }
 
 #[tauri::command]
@@ -906,29 +754,17 @@ pub fn update_event_order_settings(
     state: State<'_, AppState>,
     input: EventOrderSettingsInput,
 ) -> Result<EventSummary, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    bundle
-        .update_event_order_settings(&input)
-        .map_err(|e| e.to_string())
+    err_str(require_event(&state)?.update_event_order_settings(&input))
 }
 
 #[tauri::command]
 pub async fn discover_usb_drives() -> Result<Vec<UsbDriveInfo>, String> {
-    tauri::async_runtime::spawn_blocking(hardware::discover_usb_drives)
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    run_blocking(hardware::discover_usb_drives).await
 }
 
 #[tauri::command]
 pub async fn eject_usb_drive(disk_id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || hardware::eject_drive(&disk_id))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    run_blocking(move || hardware::eject_drive(&disk_id)).await
 }
 
 #[tauri::command]
@@ -936,18 +772,10 @@ pub async fn get_order_usb_plan(
     state: State<'_, AppState>,
     order_id: String,
 ) -> Result<UsbOrderPlan, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
-        bundle
-            .resolve_order_usb_copy_plan(&order_id)
-            .map(|(plan, _)| plan)
-            .map_err(|e| e.to_string())
+    with_event_blocking(&state, move |b| {
+        b.resolve_order_usb_copy_plan(&order_id).map(|(plan, _)| plan)
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Deserialize)]
@@ -965,48 +793,36 @@ pub async fn copy_order_to_usb(
     request: CopyOrderToUsbRequest,
     on_progress: Channel<UsbCopyProgressEvent>,
 ) -> Result<UsbCopyResult, String> {
-    let bundle = state
-        .active_event
-        .get()
-        .ok_or_else(|| "No active event open".to_string())?;
-
-    tauri::async_runtime::spawn_blocking(move || -> Result<UsbCopyResult, String> {
-        let (_plan, copy_items) = bundle
-            .resolve_order_usb_copy_plan(&request.order_id)
-            .map_err(|e| e.to_string())?;
-
+    with_event_blocking(&state, move |bundle| {
+        let (_plan, copy_items) = bundle.resolve_order_usb_copy_plan(&request.order_id)?;
         if copy_items.is_empty() {
-            return Err("No ready digital photos found to copy for this order".to_string());
+            return Err(photofinish_core::Error::InvalidInput(
+                "No ready digital photos found to copy for this order".into(),
+            ));
         }
 
         let dest_path = PathBuf::from(&request.destination_dir);
         let (files_copied, bytes_copied, elapsed_secs) =
             hardware::copy_order_files_to_usb(&dest_path, &copy_items, |ev| {
                 let _ = on_progress.send(ev);
-            })
-            .map_err(|e| e.to_string())?;
+            })?;
 
         let items_marked_fulfilled = if request.auto_mark_fulfilled {
-            bundle
-                .mark_usb_items_fulfilled(&request.order_id)
-                .map_err(|e| e.to_string())?
+            bundle.mark_usb_items_fulfilled(&request.order_id)?
         } else {
             0
         };
 
         let mut ejected = false;
         let mut eject_warning = None;
-        if let Some(ref disk_id) = request.eject_disk_id {
-            if !disk_id.trim().is_empty() {
-                match hardware::eject_drive(disk_id) {
-                    Ok(()) => ejected = true,
-                    Err(e) => eject_warning = Some(e.to_string()),
-                }
+        if let Some(disk_id) = request.eject_disk_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            match hardware::eject_drive(disk_id) {
+                Ok(()) => ejected = true,
+                Err(e) => eject_warning = Some(e.to_string()),
             }
         }
 
         let mb_per_sec = (bytes_copied as f64 / (1024.0 * 1024.0)) / elapsed_secs.max(0.001);
-
         Ok(UsbCopyResult {
             destination_dir: request.destination_dir,
             files_copied,
@@ -1019,7 +835,6 @@ pub async fn copy_order_to_usb(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[derive(Debug, Serialize)]
@@ -1041,13 +856,12 @@ pub async fn export_orders_csv(
     let active = state.active_event.get();
     let app_db = Arc::clone(&state.app_db);
 
-    tauri::async_runtime::spawn_blocking(move || -> Result<CsvExportResult, String> {
+    run_blocking(move || {
         let mut collected: Vec<(String, Vec<OrderRecord>)> = Vec::new();
         let mut skipped_events: Vec<String> = Vec::new();
 
         if all_library_events {
-            let entries = app_db.list_library_events().map_err(|e| e.to_string())?;
-            for entry in entries {
+            for entry in app_db.list_library_events()? {
                 if !entry.exists_on_disk {
                     skipped_events.push(format!("{} (drive offline)", entry.name));
                     continue;
@@ -1059,15 +873,14 @@ pub async fn export_orders_csv(
                             skipped_events.push(format!("{} ({})", entry.name, e));
                         }
                     },
-                    Err(e) => {
-                        skipped_events.push(format!("{} ({})", entry.name, e));
-                    }
+                    Err(e) => skipped_events.push(format!("{} ({})", entry.name, e)),
                 }
             }
         } else {
-            let bundle = active.ok_or_else(|| "No active event open".to_string())?;
-            let summary = bundle.summary().map_err(|e| e.to_string())?;
-            let res = bundle.list_orders().map_err(|e| e.to_string())?;
+            let bundle = active
+                .ok_or_else(|| photofinish_core::Error::InvalidInput("No active event open".into()))?;
+            let summary = bundle.summary()?;
+            let res = bundle.list_orders()?;
             collected.push((summary.name, res.orders));
         }
 
@@ -1080,8 +893,9 @@ pub async fn export_orders_csv(
             .sum();
 
         let csv = orders::format_orders_csv(&collected);
-        std::fs::write(&output_path, csv)
-            .map_err(|e| format!("Failed to write CSV to {}: {}", output_path, e))?;
+        std::fs::write(&output_path, csv).map_err(|e| {
+            photofinish_core::Error::Io(format!("Failed to write CSV to {}: {}", output_path, e))
+        })?;
 
         Ok(CsvExportResult {
             output_path,
@@ -1092,5 +906,4 @@ pub async fn export_orders_csv(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
 }

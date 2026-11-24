@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::event::IngestFileInput;
+use crate::util::{is_jpeg_path, unique_filename_in_dir};
 use crate::{Error, Result};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -170,24 +171,14 @@ where
                 .map_err(|e| Error::Io(format!("{}: {}", parent.display(), e)))?;
         }
 
-        // Avoid silent overwrites if two photos somehow collide on the same destination path
+        // Avoid silent overwrites if two photos collide on the same destination path
         if dest_path.exists() {
-            let stem = dest_path
-                .file_stem()
+            let parent = dest_path.parent().unwrap_or(destination_dir);
+            let filename = dest_path
+                .file_name()
                 .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "photo".into());
-            let ext = dest_path
-                .extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_default();
-            let parent = dest_path.parent().unwrap_or(destination_dir).to_path_buf();
-            for n in 2..10_000 {
-                let candidate = parent.join(format!("{}_{}{}", stem, n, ext));
-                if !candidate.exists() {
-                    dest_path = candidate;
-                    break;
-                }
-            }
+                .unwrap_or_else(|| "photo.jpg".into());
+            dest_path = parent.join(unique_filename_in_dir(parent, &filename));
         }
 
         let bytes = fs::copy(&item.source_abs_path, &dest_path).map_err(|e| {
@@ -299,22 +290,8 @@ pub(crate) fn count_jpeg_files(path: &Path) -> u32 {
     WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            if e.file_name().to_string_lossy().starts_with('.') {
-                return false;
-            }
-            is_jpeg_path(e.path())
-        })
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.') && is_jpeg_path(e.path()))
         .count() as u32
-}
-
-fn is_jpeg_path(path: &Path) -> bool {
-    path.extension()
-        .map(|ext| {
-            let ext_lower = ext.to_string_lossy().to_lowercase();
-            ext_lower == "jpg" || ext_lower == "jpeg"
-        })
-        .unwrap_or(false)
 }
 
 fn apply_folder_rename(relative_path: &Path, prefix: &str, re: &regex::Regex) -> PathBuf {

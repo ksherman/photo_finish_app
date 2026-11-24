@@ -8,6 +8,7 @@ pub mod orders;
 pub mod preset;
 pub mod roster;
 pub mod server;
+pub mod util;
 pub mod watcher;
 
 use thiserror::Error;

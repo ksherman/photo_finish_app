@@ -8,19 +8,14 @@ use photofinish_core::imaging::{
     active_engine_name, generate_derivatives_pure_rust, generate_derivatives_with_resizer,
     StageTimingsMs,
 };
+use photofinish_core::util::is_jpeg_path;
 use walkdir::WalkDir;
 
 fn collect_jpegs(dir: &Path, limit: usize) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_type().is_file()
-                && e.path()
-                    .extension()
-                    .map(|ext| matches!(ext.to_string_lossy().to_lowercase().as_str(), "jpg" | "jpeg"))
-                    .unwrap_or(false)
-        })
+        .filter(|e| e.file_type().is_file() && is_jpeg_path(e.path()))
         .map(|e| e.path().to_path_buf())
         .take(limit)
         .collect()

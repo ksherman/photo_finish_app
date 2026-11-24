@@ -121,7 +121,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_presets,
-            commands::list_library_events,
             commands::get_library_overview,
             commands::remove_library_event,
             commands::get_active_event,
@@ -140,8 +139,6 @@ pub fn run() {
             commands::list_subject_groups,
             commands::list_subjects,
             commands::auto_match_photos,
-            commands::list_unassigned_folders,
-            commands::assign_folder_to_subject,
             commands::list_ingest_batches,
             commands::list_folders,
             commands::apply_folder_reassignments,

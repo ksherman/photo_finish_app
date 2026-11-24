@@ -1,9 +1,11 @@
-use chrono::Utc;
+use regex::Regex;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::id;
+use crate::util::{now_iso, trim_non_empty, trim_owned};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,55 +83,21 @@ pub const LARGE_PRINT_SHIPPING_CENTS: i64 = 1000;
 /// Extracts the largest integer edge (in inches) from a print size or name string
 /// such as `"5x7"`, `"8x10"`, `"11×14"`, or `"16x20 Poster Print"`.
 pub fn parse_max_print_dimension_inches(text: &str) -> Option<u32> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    let mut best: Option<u32> = None;
-
-    while i < chars.len() {
-        if chars[i].is_ascii_digit() {
-            let start1 = i;
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                i += 1;
-            }
-            let first: u32 = match chars[start1..i].iter().collect::<String>().parse() {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-
-            let mut j = i;
-            while j < chars.len() && chars[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < chars.len() && matches!(chars[j], 'x' | 'X' | '×') {
-                j += 1;
-                while j < chars.len() && chars[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                let start2 = j;
-                while j < chars.len() && chars[j].is_ascii_digit() {
-                    j += 1;
-                }
-                if j > start2 {
-                    if let Ok(second) = chars[start2..j].iter().collect::<String>().parse::<u32>() {
-                        let max_edge = first.max(second);
-                        best = Some(best.map_or(max_edge, |prev| prev.max(max_edge)));
-                        i = j;
-                        continue;
-                    }
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    best
+    static DIM_RE: OnceLock<Regex> = OnceLock::new();
+    let re = DIM_RE.get_or_init(|| Regex::new(r"(\d+)\s*[xX×]\s*(\d+)").unwrap());
+    re.captures_iter(text)
+        .filter_map(|cap| {
+            let a = cap.get(1)?.as_str().parse::<u32>().ok()?;
+            let b = cap.get(2)?.as_str().parse::<u32>().ok()?;
+            Some(a.max(b))
+        })
+        .max()
 }
 
 /// Calculates flat untaxed print shipping & handling for a list of products in an order:
-/// - No print items → `$0.00` (`0` cents)
-/// - Any print `11×14` or larger (max edge ≥ 11") → `$10.00` (`1000` cents)
-/// - Print orders with all prints ≤ `8×10` → `$3.00` (`300` cents)
+/// - No print items -> `$0.00` (`0` cents)
+/// - Any print `11×14` or larger (max edge >= 11") -> `$10.00` (`1000` cents)
+/// - Print orders with all prints <= `8×10` -> `$3.00` (`300` cents)
 pub fn calculate_print_shipping_cents<'a, I>(products: I) -> i64
 where
     I: IntoIterator<Item = &'a ProductRecord>,
@@ -189,7 +157,7 @@ pub struct OrderListResponse {
 pub struct UpdatePaymentRequest {
     pub order_id: String,
     pub payment_status: String, // pending | paid | refunded
-    pub payment_method: Option<String>, // square_qr | square_terminal | cash | check | other
+    pub payment_method: Option<String>,
     pub payment_reference: Option<String>,
     pub notes: Option<String>,
 }
@@ -256,35 +224,84 @@ pub struct OrderRecord {
     pub notes: Option<String>,
     pub created_at: String,
     pub items: Vec<OrderItemRecord>,
-    /// Offline-safe Square POS URL (`square-commerce-v1://payment/create?data=...`)
-    /// encoded into a QR code on the kiosk confirmation screen.
+    /// Offline-safe Square POS URL (`square-commerce-v1://payment/create?data=...`).
     pub square_pos_url: String,
 }
 
+const ORDER_SELECT_COLS: &str = "id, order_number, station_code, customer_name, customer_email,
+    customer_phone, shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
+    tax_cents, total_cents, payment_status, payment_method, payment_reference, paid_at, notes,
+    created_at";
+
+struct RawOrderRow {
+    id: String,
+    order_number: String,
+    station_code: String,
+    customer_name: String,
+    customer_email: Option<String>,
+    customer_phone: Option<String>,
+    shipping_json: Option<String>,
+    subtotal_cents: i64,
+    shipping_cents: i64,
+    tax_rate_basis_points: i64,
+    tax_cents: i64,
+    total_cents: i64,
+    payment_status: String,
+    payment_method: Option<String>,
+    payment_reference: Option<String>,
+    paid_at: Option<String>,
+    notes: Option<String>,
+    created_at: String,
+}
+
+fn map_raw_order(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawOrderRow> {
+    Ok(RawOrderRow {
+        id: r.get(0)?,
+        order_number: r.get(1)?,
+        station_code: r.get(2)?,
+        customer_name: r.get(3)?,
+        customer_email: r.get(4)?,
+        customer_phone: r.get(5)?,
+        shipping_json: r.get(6)?,
+        subtotal_cents: r.get(7)?,
+        shipping_cents: r.get(8)?,
+        tax_rate_basis_points: r.get(9)?,
+        tax_cents: r.get(10)?,
+        total_cents: r.get(11)?,
+        payment_status: r.get(12)?,
+        payment_method: r.get(13)?,
+        payment_reference: r.get(14)?,
+        paid_at: r.get(15)?,
+        notes: r.get(16)?,
+        created_at: r.get(17)?,
+    })
+}
+
 pub fn list_products(conn: &Connection, include_unavailable: bool) -> Result<Vec<ProductRecord>> {
-    let sql = if include_unavailable {
-        "SELECT id, product_type, name, size, price_cents, is_available, display_order
-         FROM products ORDER BY display_order ASC, name ASC"
+    let where_clause = if include_unavailable {
+        ""
     } else {
-        "SELECT id, product_type, name, size, price_cents, is_available, display_order
-         FROM products WHERE is_available = 1 ORDER BY display_order ASC, name ASC"
+        "WHERE is_available = 1"
     };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([], |r| {
-        Ok(ProductRecord {
-            id: r.get(0)?,
-            product_type: r.get(1)?,
-            name: r.get(2)?,
-            size: r.get(3)?,
-            price_cents: r.get(4)?,
-            is_available: r.get::<_, i64>(5)? != 0,
-            display_order: r.get(6)?,
-        })
-    })?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
+    let sql = format!(
+        "SELECT id, product_type, name, size, price_cents, is_available, display_order
+         FROM products {} ORDER BY display_order ASC, name ASC",
+        where_clause
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let out = stmt
+        .query_map([], |r| {
+            Ok(ProductRecord {
+                id: r.get(0)?,
+                product_type: r.get(1)?,
+                name: r.get(2)?,
+                size: r.get(3)?,
+                price_cents: r.get(4)?,
+                is_available: r.get::<_, i64>(5)? != 0,
+                display_order: r.get(6)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(out)
 }
 
@@ -297,28 +314,11 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
         return Err(Error::InvalidInput("Order must contain at least one item".into()));
     }
 
-    let customer_email = req
-        .customer_email
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let customer_phone = req
-        .customer_phone
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let notes = req
-        .notes
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let customer_email = trim_owned(req.customer_email.as_deref());
+    let customer_phone = trim_owned(req.customer_phone.as_deref());
+    let notes = trim_owned(req.notes.as_deref());
 
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-    // Load authoritative product catalog
     let catalog: HashMap<String, ProductRecord> = list_products(&tx, false)?
         .into_iter()
         .map(|p| (p.id.clone(), p))
@@ -342,20 +342,19 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
     }
 
     if has_print {
-        let valid_addr = req.shipping_address.as_ref().map(|a| {
+        let valid_addr = req.shipping_address.as_ref().is_some_and(|a| {
             !a.street.trim().is_empty()
                 && !a.city.trim().is_empty()
                 && !a.state.trim().is_empty()
                 && !a.zip.trim().is_empty()
         });
-        if valid_addr != Some(true) {
+        if !valid_addr {
             return Err(Error::InvalidInput(
                 "Shipping address (street, city, state, zip) is required for print orders".into(),
             ));
         }
     }
 
-    // Atomically increment order number and read event order settings
     tx.execute(
         "UPDATE event_config SET next_order_number = next_order_number + 1",
         [],
@@ -376,11 +375,12 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
     let total_cents = subtotal_cents + shipping_cents + tax_cents;
 
     let order_id = id::order_id();
-    let now = Utc::now().to_rfc3339();
-    let shipping_json = match &req.shipping_address {
-        Some(addr) => Some(serde_json::to_string(addr)?),
-        None => None,
-    };
+    let now = now_iso();
+    let shipping_json = req
+        .shipping_address
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
 
     tx.execute(
         "INSERT INTO orders (
@@ -408,7 +408,6 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
     )?;
 
     for (prod, input, qty, line_total) in resolved_items {
-        let item_id = id::order_item_id();
         tx.execute(
             "INSERT INTO order_items (
                 id, order_id, product_id, subject_id, photo_id,
@@ -417,7 +416,7 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
                 fulfillment_status, created_at, updated_at
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, ?13)",
             rusqlite::params![
-                item_id,
+                id::order_item_id(),
                 order_id,
                 prod.id,
                 input.subject_id,
@@ -440,86 +439,18 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
         .ok_or_else(|| Error::NotFound(format!("Order {} not found after creation", order_number)))
 }
 
-pub fn get_order_by_number(conn: &Connection, order_number: &str) -> Result<Option<OrderRecord>> {
-    let row = conn
-        .query_row(
-            "SELECT id, order_number, station_code, customer_name, customer_email, customer_phone,
-                    shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
-                    tax_cents, total_cents, payment_status, payment_method, payment_reference,
-                    paid_at, notes, created_at
-             FROM orders WHERE order_number = ?1",
-            [order_number],
-            extract_order_row,
-        )
-        .optional()?;
+fn get_order_where(conn: &Connection, column: &str, value: &str) -> Result<Option<OrderRecord>> {
+    let sql = format!("SELECT {} FROM orders WHERE {} = ?1", ORDER_SELECT_COLS, column);
+    let row = conn.query_row(&sql, [value], map_raw_order).optional()?;
+    row.map(|raw| hydrate_order(conn, raw)).transpose()
+}
 
-    match row {
-        Some(raw) => Ok(Some(hydrate_order(conn, raw)?)),
-        None => Ok(None),
-    }
+pub fn get_order_by_number(conn: &Connection, order_number: &str) -> Result<Option<OrderRecord>> {
+    get_order_where(conn, "order_number", order_number)
 }
 
 pub fn get_order_by_id(conn: &Connection, order_id: &str) -> Result<Option<OrderRecord>> {
-    let row = conn
-        .query_row(
-            "SELECT id, order_number, station_code, customer_name, customer_email, customer_phone,
-                    shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
-                    tax_cents, total_cents, payment_status, payment_method, payment_reference,
-                    paid_at, notes, created_at
-             FROM orders WHERE id = ?1",
-            [order_id],
-            extract_order_row,
-        )
-        .optional()?;
-
-    match row {
-        Some(raw) => Ok(Some(hydrate_order(conn, raw)?)),
-        None => Ok(None),
-    }
-}
-
-type RawOrderTuple = (
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    i64,
-    i64,
-    i64,
-    i64,
-    i64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-);
-
-fn extract_order_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawOrderTuple> {
-    Ok((
-        r.get(0)?,
-        r.get(1)?,
-        r.get(2)?,
-        r.get(3)?,
-        r.get(4)?,
-        r.get(5)?,
-        r.get(6)?,
-        r.get(7)?,
-        r.get(8)?,
-        r.get(9)?,
-        r.get(10)?,
-        r.get(11)?,
-        r.get(12)?,
-        r.get(13)?,
-        r.get(14)?,
-        r.get(15)?,
-        r.get(16)?,
-        r.get(17)?,
-    ))
+    get_order_where(conn, "id", order_id)
 }
 
 fn load_items_for_order(conn: &Connection, order_id: &str) -> Result<Vec<OrderItemRecord>> {
@@ -534,7 +465,7 @@ fn load_items_for_order(conn: &Connection, order_id: &str) -> Result<Vec<OrderIt
          WHERE oi.order_id = ?1
          ORDER BY oi.created_at ASC",
     )?;
-    let items: Vec<OrderItemRecord> = stmt
+    let items = stmt
         .query_map([order_id], |r| {
             Ok(OrderItemRecord {
                 id: r.get(0)?,
@@ -554,74 +485,48 @@ fn load_items_for_order(conn: &Connection, order_id: &str) -> Result<Vec<OrderIt
                 fulfilled_at: r.get(14)?,
             })
         })?
-        .collect::<std::result::Result<_, _>>()?;
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(items)
 }
 
-fn hydrate_order(conn: &Connection, raw: RawOrderTuple) -> Result<OrderRecord> {
-    let (
-        id,
-        order_number,
-        station_code,
-        customer_name,
-        customer_email,
-        customer_phone,
-        shipping_json,
-        subtotal_cents,
-        shipping_cents,
-        tax_rate_basis_points,
-        tax_cents,
-        total_cents,
-        payment_status,
-        payment_method,
-        payment_reference,
-        paid_at,
-        notes,
-        created_at,
-    ) = raw;
-
-    let items = load_items_for_order(conn, &id)?;
-    let shipping_address: Option<ShippingAddress> = match shipping_json {
-        Some(j) => serde_json::from_str(&j).ok(),
-        None => None,
-    };
-    let square_pos_url = build_square_pos_url(&order_number, &customer_name, total_cents, &items);
+fn hydrate_order(conn: &Connection, raw: RawOrderRow) -> Result<OrderRecord> {
+    let items = load_items_for_order(conn, &raw.id)?;
+    let shipping_address = raw
+        .shipping_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<ShippingAddress>(j).ok());
+    let square_pos_url =
+        build_square_pos_url(&raw.order_number, &raw.customer_name, raw.total_cents, &items);
 
     Ok(OrderRecord {
-        id,
-        order_number,
-        station_code,
-        customer_name,
-        customer_email,
-        customer_phone,
+        id: raw.id,
+        order_number: raw.order_number,
+        station_code: raw.station_code,
+        customer_name: raw.customer_name,
+        customer_email: raw.customer_email,
+        customer_phone: raw.customer_phone,
         shipping_address,
-        subtotal_cents,
-        shipping_cents,
-        tax_rate_basis_points,
-        tax_cents,
-        total_cents,
-        payment_status,
-        payment_method,
-        payment_reference,
-        paid_at,
-        notes,
-        created_at,
+        subtotal_cents: raw.subtotal_cents,
+        shipping_cents: raw.shipping_cents,
+        tax_rate_basis_points: raw.tax_rate_basis_points,
+        tax_cents: raw.tax_cents,
+        total_cents: raw.total_cents,
+        payment_status: raw.payment_status,
+        payment_method: raw.payment_method,
+        payment_reference: raw.payment_reference,
+        paid_at: raw.paid_at,
+        notes: raw.notes,
+        created_at: raw.created_at,
         items,
         square_pos_url,
     })
 }
 
 pub fn list_orders(conn: &Connection) -> Result<OrderListResponse> {
-    let mut stmt = conn.prepare(
-        "SELECT id, order_number, station_code, customer_name, customer_email, customer_phone,
-                shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
-                tax_cents, total_cents, payment_status, payment_method, payment_reference,
-                paid_at, notes, created_at
-         FROM orders
-         ORDER BY created_at DESC",
-    )?;
-    let raw_orders: Vec<RawOrderTuple> = stmt
-        .query_map([], extract_order_row)?
+    let sql = format!("SELECT {} FROM orders ORDER BY created_at DESC", ORDER_SELECT_COLS);
+    let mut stmt = conn.prepare(&sql)?;
+    let raw_orders: Vec<RawOrderRow> = stmt
+        .query_map([], map_raw_order)?
         .collect::<std::result::Result<_, _>>()?;
 
     let mut stats = OrderStats::default();
@@ -638,27 +543,21 @@ pub fn list_orders(conn: &Connection) -> Result<OrderListResponse> {
                 stats.shipping_paid_cents += ord.shipping_cents;
                 stats.tax_paid_cents += ord.tax_cents;
             }
-            "refunded" => {
-                stats.refunded_count += 1;
-            }
+            "refunded" => stats.refunded_count += 1,
             _ => {
                 stats.pending_payment_count += 1;
                 stats.pending_revenue_cents += ord.total_cents;
             }
         }
         if ord.payment_status != "refunded" {
-            let has_pending_usb = ord
+            if ord
                 .items
                 .iter()
-                .any(|i| i.product_type == "usb_addon" && i.fulfillment_status != "fulfilled");
-            if has_pending_usb {
+                .any(|i| i.product_type == "usb_addon" && i.fulfillment_status != "fulfilled")
+            {
                 stats.pending_usb_count += 1;
             }
-            let has_pending_item = ord
-                .items
-                .iter()
-                .any(|i| i.fulfillment_status != "fulfilled");
-            if has_pending_item {
+            if ord.items.iter().any(|i| i.fulfillment_status != "fulfilled") {
                 stats.pending_fulfillment_count += 1;
             }
         }
@@ -674,71 +573,40 @@ pub fn update_order_payment(
 ) -> Result<OrderRecord> {
     let status = req.payment_status.trim();
     if !matches!(status, "pending" | "paid" | "refunded") {
-        return Err(Error::InvalidInput(format!(
-            "Invalid payment status '{}'",
-            status
-        )));
+        return Err(Error::InvalidInput(format!("Invalid payment status '{}'", status)));
     }
-    let method = req
-        .payment_method
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let reference = req
-        .payment_reference
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let now = Utc::now().to_rfc3339();
+    let method = trim_non_empty(req.payment_method.as_deref());
+    let reference = trim_non_empty(req.payment_reference.as_deref());
+    let now = now_iso();
 
-    let existing_paid_at: Option<Option<String>> = conn
+    let existing: Option<(Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT paid_at FROM orders WHERE id = ?1",
+            "SELECT paid_at, notes FROM orders WHERE id = ?1",
             [&req.order_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let Some(prev_paid_at) = existing_paid_at else {
+    let Some((prev_paid_at, prev_notes)) = existing else {
         return Err(Error::NotFound(format!("Order '{}' not found", req.order_id)));
     };
 
-    let paid_at: Option<String> = match status {
+    let paid_at = match status {
         "paid" => Some(prev_paid_at.unwrap_or_else(|| now.clone())),
         "refunded" => prev_paid_at,
         _ => None,
     };
+    let next_notes = match req.notes.as_deref() {
+        Some(n) => trim_owned(Some(n)),
+        None => prev_notes,
+    };
 
-    if let Some(ref notes) = req.notes {
-        let clean_notes = notes.trim();
-        let notes_opt = if clean_notes.is_empty() {
-            None
-        } else {
-            Some(clean_notes)
-        };
-        conn.execute(
-            "UPDATE orders
-             SET payment_status = ?2, payment_method = ?3, payment_reference = ?4,
-                 paid_at = ?5, notes = ?6, updated_at = ?7
-             WHERE id = ?1",
-            rusqlite::params![
-                req.order_id,
-                status,
-                method,
-                reference,
-                paid_at,
-                notes_opt,
-                now
-            ],
-        )?;
-    } else {
-        conn.execute(
-            "UPDATE orders
-             SET payment_status = ?2, payment_method = ?3, payment_reference = ?4,
-                 paid_at = ?5, updated_at = ?6
-             WHERE id = ?1",
-            rusqlite::params![req.order_id, status, method, reference, paid_at, now],
-        )?;
-    }
+    conn.execute(
+        "UPDATE orders
+         SET payment_status = ?2, payment_method = ?3, payment_reference = ?4,
+             paid_at = ?5, notes = ?6, updated_at = ?7
+         WHERE id = ?1",
+        rusqlite::params![req.order_id, status, method, reference, paid_at, next_notes, now],
+    )?;
 
     get_order_by_id(conn, &req.order_id)?
         .ok_or_else(|| Error::NotFound(format!("Order '{}' not found", req.order_id)))
@@ -749,11 +617,10 @@ pub fn update_order_notes(
     order_id: &str,
     notes: Option<&str>,
 ) -> Result<OrderRecord> {
-    let clean = notes.map(str::trim).filter(|s| !s.is_empty());
-    let now = Utc::now().to_rfc3339();
+    let clean = trim_non_empty(notes);
     let changed = conn.execute(
         "UPDATE orders SET notes = ?2, updated_at = ?3 WHERE id = ?1",
-        rusqlite::params![order_id, clean, now],
+        rusqlite::params![order_id, clean, now_iso()],
     )?;
     if changed == 0 {
         return Err(Error::NotFound(format!("Order '{}' not found", order_id)));
@@ -774,12 +641,8 @@ pub fn update_order_item_fulfillment(
             fulfillment_status
         )));
     }
-    let now = Utc::now().to_rfc3339();
-    let fulfilled_at: Option<&str> = if fulfillment_status == "fulfilled" {
-        Some(now.as_str())
-    } else {
-        None
-    };
+    let now = now_iso();
+    let fulfilled_at = (fulfillment_status == "fulfilled").then_some(now.as_str());
     let changed = conn.execute(
         "UPDATE order_items
          SET fulfillment_status = ?3, fulfilled_at = ?4, updated_at = ?5
@@ -794,12 +657,11 @@ pub fn update_order_item_fulfillment(
 }
 
 pub fn mark_usb_items_fulfilled(conn: &mut Connection, order_id: &str) -> Result<usize> {
-    let now = Utc::now().to_rfc3339();
     let changed = conn.execute(
         "UPDATE order_items
          SET fulfillment_status = 'fulfilled', fulfilled_at = ?2, updated_at = ?2
          WHERE order_id = ?1 AND product_type = 'usb_addon' AND fulfillment_status != 'fulfilled'",
-        rusqlite::params![order_id, now],
+        rusqlite::params![order_id, now_iso()],
     )?;
     Ok(changed)
 }
@@ -817,18 +679,11 @@ pub fn upsert_product(conn: &mut Connection, input: &ProductUpsertInput) -> Resu
         ptype,
         "single_digital" | "full_digital" | "usb_addon" | "print" | "custom"
     ) {
-        return Err(Error::InvalidInput(format!(
-            "Invalid product type '{}'",
-            ptype
-        )));
+        return Err(Error::InvalidInput(format!("Invalid product type '{}'", ptype)));
     }
-    let size = input
-        .size
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let avail: i64 = if input.is_available { 1 } else { 0 };
-    let now = Utc::now().to_rfc3339();
+    let size = trim_non_empty(input.size.as_deref());
+    let avail = i64::from(input.is_available);
+    let now = now_iso();
 
     let prod_id = if let Some(ref existing_id) = input.id {
         let changed = conn.execute(
@@ -891,25 +746,18 @@ pub fn update_event_order_settings(
     let order_code = input.order_code.trim().to_uppercase();
     let station_code = input.station_code.trim().to_uppercase();
     if order_code.is_empty() || order_code.len() > 8 {
-        return Err(Error::InvalidInput(
-            "Order code must be 1–8 characters".into(),
-        ));
+        return Err(Error::InvalidInput("Order code must be 1–8 characters".into()));
     }
     if station_code.is_empty() || station_code.len() > 4 {
-        return Err(Error::InvalidInput(
-            "Station code must be 1–4 characters".into(),
-        ));
+        return Err(Error::InvalidInput("Station code must be 1–4 characters".into()));
     }
     if !(0..=2500).contains(&input.tax_rate_basis_points) {
-        return Err(Error::InvalidInput(
-            "Tax rate must be between 0% and 25%".into(),
-        ));
+        return Err(Error::InvalidInput("Tax rate must be between 0% and 25%".into()));
     }
-    let now = Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE event_config
          SET order_code = ?1, station_code = ?2, tax_rate_basis_points = ?3, updated_at = ?4",
-        rusqlite::params![order_code, station_code, input.tax_rate_basis_points, now],
+        rusqlite::params![order_code, station_code, input.tax_rate_basis_points, now_iso()],
     )?;
     Ok(())
 }
@@ -927,11 +775,8 @@ pub fn format_orders_csv(event_orders: &[(String, Vec<OrderRecord>)]) -> String 
                 .shipping_address
                 .as_ref()
                 .map(|a| {
-                    let s2 = a
-                        .street2
-                        .as_deref()
-                        .filter(|s| !s.trim().is_empty())
-                        .map(|s| format!(" {}", s.trim()))
+                    let s2 = trim_non_empty(a.street2.as_deref())
+                        .map(|s| format!(" {}", s))
                         .unwrap_or_default();
                     format!(
                         "{}{}, {}, {} {}",
@@ -945,36 +790,40 @@ pub fn format_orders_csv(event_orders: &[(String, Vec<OrderRecord>)]) -> String 
                 .unwrap_or_default();
 
             for item in &ord.items {
-                let cols: Vec<String> = vec![
-                    event_name.clone(),
-                    ord.order_number.clone(),
-                    ord.station_code.clone(),
-                    ord.created_at.clone(),
-                    ord.payment_status.clone(),
-                    ord.payment_method.clone().unwrap_or_default(),
-                    ord.payment_reference.clone().unwrap_or_default(),
-                    ord.paid_at.clone().unwrap_or_default(),
-                    ord.customer_name.clone(),
-                    ord.customer_email.clone().unwrap_or_default(),
-                    ord.customer_phone.clone().unwrap_or_default(),
-                    addr.clone(),
-                    item.product_type.clone(),
-                    item.product_name.clone(),
-                    item.product_size.clone().unwrap_or_default(),
-                    item.subject_display_name.clone().unwrap_or_default(),
-                    item.photo_filename.clone().unwrap_or_default(),
-                    item.quantity.to_string(),
-                    format_dollars(item.unit_price_cents),
-                    format_dollars(item.line_total_cents),
-                    item.fulfillment_status.clone(),
-                    format_dollars(ord.subtotal_cents),
-                    format_dollars(ord.shipping_cents),
-                    format_dollars(ord.tax_cents),
-                    format_dollars(ord.total_cents),
-                    ord.notes.clone().unwrap_or_default(),
+                let cols = [
+                    event_name.as_str(),
+                    &ord.order_number,
+                    &ord.station_code,
+                    &ord.created_at,
+                    &ord.payment_status,
+                    ord.payment_method.as_deref().unwrap_or(""),
+                    ord.payment_reference.as_deref().unwrap_or(""),
+                    ord.paid_at.as_deref().unwrap_or(""),
+                    &ord.customer_name,
+                    ord.customer_email.as_deref().unwrap_or(""),
+                    ord.customer_phone.as_deref().unwrap_or(""),
+                    &addr,
+                    &item.product_type,
+                    &item.product_name,
+                    item.product_size.as_deref().unwrap_or(""),
+                    item.subject_display_name.as_deref().unwrap_or(""),
+                    item.photo_filename.as_deref().unwrap_or(""),
+                    &item.quantity.to_string(),
+                    &format_dollars(item.unit_price_cents),
+                    &format_dollars(item.line_total_cents),
+                    &item.fulfillment_status,
+                    &format_dollars(ord.subtotal_cents),
+                    &format_dollars(ord.shipping_cents),
+                    &format_dollars(ord.tax_cents),
+                    &format_dollars(ord.total_cents),
+                    ord.notes.as_deref().unwrap_or(""),
                 ];
-                let line: Vec<String> = cols.into_iter().map(csv_escape).collect();
-                out.push_str(&line.join(","));
+                for (i, col) in cols.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    push_csv_field(&mut out, col);
+                }
                 out.push('\n');
             }
         }
@@ -989,17 +838,17 @@ fn format_dollars(cents: i64) -> String {
     format!("{}{}.{:02}", sign, abs / 100, abs % 100)
 }
 
-fn csv_escape(s: String) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
-        format!("\"{}\"", s.replace('"', "\"\""))
+fn push_csv_field(out: &mut String, s: &str) {
+    if s.contains([',', '"', '\n', '\r']) {
+        out.push('"');
+        out.push_str(&s.replace('"', "\"\""));
+        out.push('"');
     } else {
-        s
+        out.push_str(s);
     }
 }
 
-/// Builds an offline-safe Square Point of Sale API deep-link URL (`square-commerce-v1://`)
-/// so a staff iPhone scanning the kiosk QR code opens Square POS pre-filled with the exact
-/// total and reconciliation note.
+/// Builds an offline-safe Square Point of Sale API deep-link URL (`square-commerce-v1://`).
 pub fn build_square_pos_url(
     order_number: &str,
     customer_name: &str,
@@ -1031,9 +880,10 @@ pub fn build_square_pos_url(
         }
     });
 
-    let payload_str = payload.to_string();
-    let encoded = urlencoding::encode(&payload_str);
-    format!("square-commerce-v1://payment/create?data={}", encoded)
+    format!(
+        "square-commerce-v1://payment/create?data={}",
+        urlencoding::encode(&payload.to_string())
+    )
 }
 
 #[cfg(test)]
@@ -1063,18 +913,15 @@ mod tests {
         assert_eq!(parse_max_print_dimension_inches("24 x 30"), Some(30));
         assert_eq!(parse_max_print_dimension_inches("Digital Package"), None);
 
-        // Digital / USB only -> $0
         let digital = sample_product("full_digital", "All Photos Digital", None);
         let usb = sample_product("usb_addon", "Instant Dual USB", None);
         assert_eq!(calculate_print_shipping_cents([&digital, &usb]), 0);
 
-        // Prints up to 8x10 -> $3.00 flat
         let p57 = sample_product("print", "5x7 Lustre Print", Some("5x7"));
         let p810 = sample_product("print", "8x10 Lustre Print", Some("8x10"));
         assert_eq!(calculate_print_shipping_cents([&p57]), 300);
         assert_eq!(calculate_print_shipping_cents([&p57, &p810, &digital]), 300);
 
-        // Any print 11x14 or larger -> $10.00 flat
         let p1114 = sample_product("print", "11x14 Print", Some("11x14"));
         let p1620 = sample_product("print", "16x20 Poster Print", Some("16x20"));
         let p2430 = sample_product("print", "24×30 Collage", None);
@@ -1082,7 +929,6 @@ mod tests {
         assert_eq!(calculate_print_shipping_cents([&p57, &p1620]), 1000);
         assert_eq!(calculate_print_shipping_cents([&p2430]), 1000);
 
-        // Unsized custom print defaults to small tier ($3.00)
         let custom_print = sample_product("print", "Custom Wallet Set", None);
         assert_eq!(calculate_print_shipping_cents([&custom_print]), 300);
     }
@@ -1093,14 +939,9 @@ mod tests {
         let bundle = EventBundle::create(CreateEventParams {
             root_path: dir.path().join("shipping-meet"),
             name: "Shipping Test Meet".into(),
-            description: None,
-            preset_id: Some("gymnastics".into()),
-            subject_label: None,
-            folder_levels: None,
             order_code: Some("SHP".into()),
-            station_code: Some("A".into()),
-            tax_rate_basis_points: Some(1000), // 10% makes tax math crystal clear
-            scaffold: None,
+            tax_rate_basis_points: Some(1000),
+            ..Default::default()
         })
         .unwrap();
 
@@ -1114,7 +955,6 @@ mod tests {
             .find(|p| p.product_type == "print" && p.size.as_deref() == Some("11x14"))
             .unwrap();
 
-        // Missing shipping address must fail for print orders
         let missing_addr_err = bundle
             .place_order(CreateOrderRequest {
                 customer_name: "Parent No Address".into(),
@@ -1140,7 +980,6 @@ mod tests {
             zip: "60123".into(),
         };
 
-        // Small print order: 2x 5x7 ($36.00) + $3.00 untaxed S&H + $3.60 tax (10% of $36 only) = $42.60
         let small_order = bundle
             .place_order(CreateOrderRequest {
                 customer_name: "Small Print Parent".into(),
@@ -1158,10 +997,9 @@ mod tests {
             .unwrap();
         assert_eq!(small_order.subtotal_cents, 3600);
         assert_eq!(small_order.shipping_cents, 300);
-        assert_eq!(small_order.tax_cents, 360); // strictly 10% of 3600, NOT 3900
+        assert_eq!(small_order.tax_cents, 360);
         assert_eq!(small_order.total_cents, 4260);
 
-        // Large print order: 5x7 ($18) + 11x14 ($40) = $58.00 + $10.00 untaxed S&H + $5.80 tax = $73.80
         let large_order = bundle
             .place_order(CreateOrderRequest {
                 customer_name: "Large Print Parent".into(),
@@ -1187,30 +1025,21 @@ mod tests {
             .unwrap();
         assert_eq!(large_order.subtotal_cents, 5800);
         assert_eq!(large_order.shipping_cents, 1000);
-        assert_eq!(large_order.tax_cents, 580); // strictly 10% of 5800, NOT 6800
+        assert_eq!(large_order.tax_cents, 580);
         assert_eq!(large_order.total_cents, 7380);
-        // Square POS URL must encode the exact total including untaxed shipping
         assert!(large_order.square_pos_url.contains("7380"));
 
-        // Mark both paid and verify OrderStats reconciles subtotal + shipping + tax == gross
-        bundle
-            .update_order_payment(&UpdatePaymentRequest {
-                order_id: small_order.id.clone(),
-                payment_status: "paid".into(),
-                payment_method: Some("square_qr".into()),
-                payment_reference: None,
-                notes: None,
-            })
-            .unwrap();
-        bundle
-            .update_order_payment(&UpdatePaymentRequest {
-                order_id: large_order.id.clone(),
-                payment_status: "paid".into(),
-                payment_method: Some("square_qr".into()),
-                payment_reference: None,
-                notes: None,
-            })
-            .unwrap();
+        for oid in [&small_order.id, &large_order.id] {
+            bundle
+                .update_order_payment(&UpdatePaymentRequest {
+                    order_id: oid.clone(),
+                    payment_status: "paid".into(),
+                    payment_method: Some("square_qr".into()),
+                    payment_reference: None,
+                    notes: None,
+                })
+                .unwrap();
+        }
 
         let listed = bundle.list_orders().unwrap();
         assert_eq!(listed.stats.subtotal_paid_cents, 3600 + 5800);

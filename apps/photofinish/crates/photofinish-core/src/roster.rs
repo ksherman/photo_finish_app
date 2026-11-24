@@ -36,40 +36,6 @@ pub struct ImportRosterResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UnassignedFolder {
-    pub folder_path: String,
-    pub parent_path: String,
-    pub leaf_folder: String,
-    pub photo_count: i64,
-    pub sample_photo_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FolderParentSummary {
-    pub parent_path: String,
-    pub folder_count: usize,
-    pub photo_count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UnassignedFoldersResponse {
-    pub parents: Vec<FolderParentSummary>,
-    pub folders: Vec<UnassignedFolder>,
-    pub total_unassigned_photos: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssignFolderResult {
-    pub photos_updated: usize,
-    pub new_folder_path: String,
-    pub renamed_on_disk: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FolderItem {
     pub folder_path: String,
     pub parent_path: String,
@@ -106,9 +72,8 @@ pub struct ListFoldersResponse {
     pub subject_sample_photos: BTreeMap<String, String>,
     /// Apparatus / section name inferred from the active folder location (e.g. "Beam", "Floor").
     pub section_label: Option<String>,
-    /// Subjects already matched in another rotation/group on the SAME apparatus/section
-    /// in this session (subject_id -> short group/location label like "Group 1A"), so the
-    /// naming UI can grey out already-photographed athletes as a session progresses.
+    /// Subjects already matched on the SAME apparatus/section in this session
+    /// (subject_id -> short group/location label like "Group 1A").
     pub section_matched_subjects: BTreeMap<String, String>,
 }
 
@@ -177,14 +142,6 @@ pub struct RemoveFolderResult {
 }
 
 /// Parses a `.txt` or `.csv` roster file into structured `RosterEntryInput` rows.
-///
-/// Supported formats:
-/// - `.txt`: `<number> <First> [Last...]` (e.g. `143 Avery W`, CRLF or LF safe),
-///   or `<First> [Last...]` for unnumbered events. Group label defaults to filename stem
-///   (e.g. `Session 1A.txt` -> `Session 1A`).
-/// - `.csv`: Header-aware CSV supporting `number`/`competitor_number`/`bib`,
-///   `first_name`/`first`, `last_name`/`last`, `name`/`display_name`,
-///   `group`/`group_label`/`session`/`division`, `team`/`team_name`/`club`, `external_id`.
 pub fn parse_roster_file(path: &Path) -> Result<ParsedRosterFile> {
     let content = fs::read_to_string(path)
         .map_err(|e| Error::Io(format!("Failed to read {}: {}", path.display(), e)))?;
@@ -199,8 +156,7 @@ pub fn parse_roster_file(path: &Path) -> Result<ParsedRosterFile> {
 
     let is_csv = path
         .extension()
-        .map(|e| e.to_string_lossy().eq_ignore_ascii_case("csv"))
-        .unwrap_or(false);
+        .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case("csv"));
 
     let (entries, warnings) = if is_csv {
         parse_csv_content(&content, default_group_label.as_deref())
@@ -230,7 +186,6 @@ pub fn parse_txt_content(
             continue;
         }
 
-        // Split into leading token and remainder
         let mut parts = line.splitn(2, char::is_whitespace);
         let first_tok = parts.next().unwrap_or("").trim();
         let rest = parts.next().unwrap_or("").trim();
@@ -239,35 +194,25 @@ pub fn parse_txt_content(
             && first_tok.chars().all(|c| c.is_ascii_digit())
             && !rest.is_empty();
 
-        if looks_like_number {
-            let (first_name, last_name) = split_name(rest);
-            if first_name.is_empty() {
-                warnings.push(format!("Line {}: missing name after number '{}'", idx + 1, first_tok));
-                continue;
-            }
-            entries.push(RosterEntryInput {
-                number: Some(first_tok.to_string()),
-                first_name,
-                last_name,
-                group_label: default_group_label.map(str::to_string),
-                team_name: None,
-                external_id: None,
-            });
+        let (number, name_src) = if looks_like_number {
+            (Some(first_tok.to_string()), rest)
         } else {
-            let (first_name, last_name) = split_name(line);
-            if first_name.is_empty() {
-                warnings.push(format!("Line {}: could not parse '{}'", idx + 1, line));
-                continue;
-            }
-            entries.push(RosterEntryInput {
-                number: None,
-                first_name,
-                last_name,
-                group_label: default_group_label.map(str::to_string),
-                team_name: None,
-                external_id: None,
-            });
+            (None, line)
+        };
+        let (first_name, last_name) = split_name(name_src);
+        if first_name.is_empty() {
+            warnings.push(format!("Line {}: could not parse '{}'", idx + 1, line));
+            continue;
         }
+
+        entries.push(RosterEntryInput {
+            number,
+            first_name,
+            last_name,
+            group_label: default_group_label.map(str::to_string),
+            team_name: None,
+            external_id: None,
+        });
     }
 
     (entries, warnings)
@@ -303,9 +248,7 @@ pub fn parse_csv_content(
     let col_ext = find_col(&headers, &["external_id", "usag", "usag_id", "member_id"]);
 
     if col_first.is_none() && col_full.is_none() {
-        warnings.push(
-            "CSV header must include a 'first_name' or 'name' column".to_string(),
-        );
+        warnings.push("CSV header must include a 'first_name' or 'name' column".to_string());
         return (entries, warnings);
     }
 
@@ -357,11 +300,7 @@ fn split_name(name: &str) -> (String, Option<String>) {
             let last = rest.trim();
             (
                 first.trim().to_string(),
-                if last.is_empty() {
-                    None
-                } else {
-                    Some(last.to_string())
-                },
+                (!last.is_empty()).then(|| last.to_string()),
             )
         }
         None => (trimmed.to_string(), None),

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use crate::util::{now_iso, trim_non_empty};
 use crate::{Error, Result};
 
 /// Visible, self-identifying metadata folder inside every portable Event Bundle.
@@ -125,10 +126,6 @@ pub fn backup_sqlite_db(src_conn: &Connection, dst_path: &Path) -> Result<()> {
 /// One-time migration helper for moving an existing machine-local `photofinish_app.db`
 /// from a legacy bundle identifier directory (e.g. `com.photofinish.app`) into the
 /// finalized directory (e.g. `com.photofinish.desktop`).
-///
-/// Uses SQLite's online backup API so WAL-mode changes are cleanly folded into the
-/// new file without mutating or deleting the original legacy directory, and writes via
-/// a temporary sibling file + atomic rename so partial copies never leave a corrupt DB.
 pub fn migrate_legacy_app_db(legacy_db: &Path, new_db: &Path) -> Result<bool> {
     if new_db.exists() || !legacy_db.is_file() {
         return Ok(false);
@@ -139,9 +136,7 @@ pub fn migrate_legacy_app_db(legacy_db: &Path, new_db: &Path) -> Result<bool> {
 
     let src_conn = open_rw_connection(legacy_db)?;
     let tmp_path = new_db.with_extension("db.migrating");
-    if tmp_path.exists() {
-        let _ = fs::remove_file(&tmp_path);
-    }
+    let _ = fs::remove_file(&tmp_path);
 
     let copy_res = backup_sqlite_db(&src_conn, &tmp_path);
     drop(src_conn);
@@ -177,12 +172,10 @@ pub fn run_migrations(
             app_version: latest_version,
         });
     }
-
     if current_version == latest_version {
         return Ok(current_version);
     }
 
-    // Automatically snapshot existing databases before migrating
     if current_version > 0 {
         if let Some(dir) = backup_dir {
             let stamp = Utc::now().format("%Y-%m-%dT%H-%M-%SZ");
@@ -194,10 +187,9 @@ pub fn run_migrations(
     for migration in migrations.iter().filter(|m| m.version > current_version) {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch(migration.sql)?;
-        let now = Utc::now().to_rfc3339();
         tx.execute(
             "INSERT OR REPLACE INTO _schema_migrations (version, name, applied_at, app_version) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![migration.version, migration.name, now, APP_VERSION],
+            rusqlite::params![migration.version, migration.name, now_iso(), APP_VERSION],
         )?;
         tx.pragma_update(None, "user_version", migration.version)?;
         tx.commit()?;
@@ -232,8 +224,6 @@ pub struct ReaderConfig {
     pub sort_order: i64,
     pub destination: String,
     pub photographer: String,
-    pub camera_brand: String,
-    pub camera_folder_path: String,
     pub rename_prefix: String,
     pub auto_rename: bool,
     pub file_rename_prefix: Option<String>,
@@ -265,7 +255,6 @@ impl AppDb {
 
     pub fn upsert_library_event(&self, root_path: &Path, event_id: &str, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO library_events (root_path, event_id, name, last_opened_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -273,7 +262,7 @@ impl AppDb {
                event_id = excluded.event_id,
                name = excluded.name,
                last_opened_at = excluded.last_opened_at",
-            rusqlite::params![root_path.to_string_lossy().as_ref(), event_id, name, now],
+            rusqlite::params![root_path.to_string_lossy().as_ref(), event_id, name, now_iso()],
         )?;
         Ok(())
     }
@@ -285,21 +274,19 @@ impl AppDb {
              FROM library_events
              ORDER BY last_opened_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let root_path: String = row.get(0)?;
-            let exists_on_disk = is_event_bundle(Path::new(&root_path));
-            Ok(LibraryEventEntry {
-                root_path,
-                event_id: row.get(1)?,
-                name: row.get(2)?,
-                last_opened_at: row.get(3)?,
-                exists_on_disk,
-            })
-        })?;
-        let mut entries = Vec::new();
-        for row in rows {
-            entries.push(row?);
-        }
+        let entries = stmt
+            .query_map([], |row| {
+                let root_path: String = row.get(0)?;
+                let exists_on_disk = is_event_bundle(Path::new(&root_path));
+                Ok(LibraryEventEntry {
+                    root_path,
+                    event_id: row.get(1)?,
+                    name: row.get(2)?,
+                    last_opened_at: row.get(3)?,
+                    exists_on_disk,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(entries)
     }
 
@@ -313,57 +300,42 @@ impl AppDb {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT reader_id, display_name, custom_label, group_name, sort_order,
-                    destination, photographer, camera_brand,
-                    camera_folder_path, rename_prefix, auto_rename, file_rename_prefix,
-                    require_subfolder, current_order
+                    destination, photographer, rename_prefix, auto_rename,
+                    file_rename_prefix, require_subfolder, current_order
              FROM reader_configs
              ORDER BY COALESCE(group_name, '') ASC, sort_order ASC, display_name ASC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ReaderConfig {
-                reader_id: row.get(0)?,
-                display_name: row.get(1)?,
-                custom_label: row.get(2)?,
-                group_name: row.get(3)?,
-                sort_order: row.get(4)?,
-                destination: row.get(5)?,
-                photographer: row.get(6)?,
-                camera_brand: row.get(7)?,
-                camera_folder_path: row.get(8)?,
-                rename_prefix: row.get(9)?,
-                auto_rename: row.get::<_, i64>(10)? != 0,
-                file_rename_prefix: row.get(11)?,
-                require_subfolder: row.get::<_, i64>(12)? != 0,
-                current_order: row.get::<_, u32>(13)?,
-            })
-        })?;
-        let mut configs = Vec::new();
-        for row in rows {
-            configs.push(row?);
-        }
+        let configs = stmt
+            .query_map([], |row| {
+                Ok(ReaderConfig {
+                    reader_id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    custom_label: row.get(2)?,
+                    group_name: row.get(3)?,
+                    sort_order: row.get(4)?,
+                    destination: row.get(5)?,
+                    photographer: row.get(6)?,
+                    rename_prefix: row.get(7)?,
+                    auto_rename: row.get::<_, i64>(8)? != 0,
+                    file_rename_prefix: row.get(9)?,
+                    require_subfolder: row.get::<_, i64>(10)? != 0,
+                    current_order: row.get::<_, u32>(11)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(configs)
     }
 
     pub fn save_reader_config(&self, cfg: &ReaderConfig) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
-        let clean_label = cfg
-            .custom_label
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let clean_group = cfg
-            .group_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+        let clean_label = trim_non_empty(cfg.custom_label.as_deref());
+        let clean_group = trim_non_empty(cfg.group_name.as_deref());
         conn.execute(
             "INSERT INTO reader_configs (
                 reader_id, display_name, custom_label, group_name, sort_order,
-                destination, photographer, camera_brand,
-                camera_folder_path, rename_prefix, auto_rename, file_rename_prefix,
-                require_subfolder, current_order, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                destination, photographer, rename_prefix, auto_rename,
+                file_rename_prefix, require_subfolder, current_order, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(reader_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 custom_label = excluded.custom_label,
@@ -371,8 +343,6 @@ impl AppDb {
                 sort_order = excluded.sort_order,
                 destination = excluded.destination,
                 photographer = excluded.photographer,
-                camera_brand = excluded.camera_brand,
-                camera_folder_path = excluded.camera_folder_path,
                 rename_prefix = excluded.rename_prefix,
                 auto_rename = excluded.auto_rename,
                 file_rename_prefix = excluded.file_rename_prefix,
@@ -387,14 +357,12 @@ impl AppDb {
                 cfg.sort_order,
                 cfg.destination,
                 cfg.photographer,
-                cfg.camera_brand,
-                cfg.camera_folder_path,
                 cfg.rename_prefix,
-                if cfg.auto_rename { 1 } else { 0 },
+                i64::from(cfg.auto_rename),
                 cfg.file_rename_prefix,
-                if cfg.require_subfolder { 1 } else { 0 },
+                i64::from(cfg.require_subfolder),
                 cfg.current_order,
-                now,
+                now_iso(),
             ],
         )?;
         Ok(())
@@ -402,7 +370,7 @@ impl AppDb {
 
     pub fn save_reader_layout(&self, updates: &[ReaderLayoutUpdate]) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
+        let now = now_iso();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
@@ -411,11 +379,7 @@ impl AppDb {
                  WHERE reader_id = ?1",
             )?;
             for u in updates {
-                let clean_group = u
-                    .group_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
+                let clean_group = trim_non_empty(u.group_name.as_deref());
                 stmt.execute(rusqlite::params![u.reader_id, clean_group, u.sort_order, now])?;
             }
         }
@@ -431,10 +395,9 @@ impl AppDb {
 
     pub fn increment_reader_order(&self, reader_id: &str) -> Result<u32> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE reader_configs SET current_order = current_order + 1, updated_at = ?2 WHERE reader_id = ?1",
-            rusqlite::params![reader_id, now],
+            rusqlite::params![reader_id, now_iso()],
         )?;
         let order: Option<u32> = conn
             .query_row(
@@ -489,10 +452,8 @@ mod tests {
         let v = run_migrations(&mut conn, EVENT_MIGRATIONS, Some(&backup_path), "photofinish")
             .unwrap();
         assert_eq!(v, latest);
-        // Fresh init should not create a backup
         assert!(!backup_path.exists());
 
-        // Simulate upgrading from latest -> latest + 1
         let next_ver = latest + 1;
         let mut future_migrations = EVENT_MIGRATIONS.to_vec();
         future_migrations.push(Migration {
@@ -509,7 +470,6 @@ mod tests {
         .unwrap();
         assert_eq!(upgraded, next_ver);
 
-        // Pre-migration backup must exist and be readable at the previous schema version
         let backups: Vec<_> = fs::read_dir(&backup_path)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -521,7 +481,6 @@ mod tests {
             .unwrap();
         assert_eq!(backup_ver, latest);
 
-        // Opening the future DB with an older app must fail safely
         let err = run_migrations(&mut conn, EVENT_MIGRATIONS, Some(&backup_path), "photofinish")
             .unwrap_err();
         assert!(matches!(
@@ -547,8 +506,6 @@ mod tests {
             sort_order: order,
             destination: format!("{}/{}", group, label),
             photographer: "KDS".into(),
-            camera_brand: "sony".into(),
-            camera_folder_path: "DCIM".into(),
             rename_prefix: "Gymnast".into(),
             auto_rename: true,
             file_rename_prefix: None,
@@ -566,7 +523,6 @@ mod tests {
         assert_eq!(list[1].reader_id, "USB-2");
         assert_eq!(list[1].custom_label.as_deref(), Some("Beam"));
 
-        // Reorder & move USB-2 to Gym B
         app_db
             .save_reader_layout(&[
                 ReaderLayoutUpdate {
@@ -603,13 +559,9 @@ mod tests {
                 .unwrap();
         }
 
-        // First migration should copy WAL contents cleanly
         assert!(migrate_legacy_app_db(&legacy_db, &new_db).unwrap());
         assert!(new_db.is_file());
-        // Legacy file remains untouched as backup
         assert!(legacy_db.is_file());
-
-        // Second call must be a no-op once new_db exists
         assert!(!migrate_legacy_app_db(&legacy_db, &new_db).unwrap());
 
         let migrated = AppDb::open(&new_db).unwrap();

@@ -34,8 +34,7 @@ impl SharedActiveEvent {
     }
 
     pub fn set(&self, bundle: Option<Arc<EventBundle>>) {
-        let mut guard = self.inner.write().unwrap();
-        *guard = bundle;
+        *self.inner.write().unwrap() = bundle;
     }
 
     pub fn get(&self) -> Option<Arc<EventBundle>> {
@@ -118,7 +117,6 @@ pub fn build_router(active_event: SharedActiveEvent) -> Router {
         .route("/api/kiosk/showcase", get(api_showcase))
         .route("/api/subjects", get(api_search_subjects))
         .route("/api/subjects/{id}", get(api_subject_detail))
-        .route("/api/subjects/{id}/photos", get(api_subject_photos))
         .route("/api/products", get(api_products))
         .route("/api/orders", post(api_place_order))
         .route("/api/orders/{order_number}", get(api_get_order))
@@ -131,6 +129,54 @@ pub fn build_router(active_event: SharedActiveEvent) -> Router {
 }
 
 #[derive(Serialize)]
+struct ApiErrorBody {
+    error: String,
+}
+
+struct ApiError(StatusCode, String);
+
+impl ApiError {
+    fn not_found(msg: &str) -> Self {
+        Self(StatusCode::NOT_FOUND, msg.into())
+    }
+}
+
+impl From<Error> for ApiError {
+    fn from(err: Error) -> Self {
+        match err {
+            Error::InvalidInput(msg) => Self(StatusCode::UNPROCESSABLE_ENTITY, msg),
+            other => Self(StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(ApiErrorBody { error: self.1 })).into_response()
+    }
+}
+
+type ApiResult<T> = std::result::Result<T, ApiError>;
+
+fn require_bundle(active: &SharedActiveEvent) -> ApiResult<Arc<EventBundle>> {
+    active
+        .get()
+        .ok_or_else(|| ApiError(StatusCode::SERVICE_UNAVAILABLE, "No active event open".into()))
+}
+
+fn jpeg_response(bytes: Vec<u8>, cache: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CACHE_CONTROL, cache),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiStatusResponse {
     service: &'static str,
@@ -139,11 +185,10 @@ struct ApiStatusResponse {
 }
 
 async fn api_status(State(active): State<SharedActiveEvent>) -> impl IntoResponse {
-    let summary = active.get().and_then(|b| b.summary().ok());
     Json(ApiStatusResponse {
         service: "photofinish",
         version: env!("CARGO_PKG_VERSION"),
-        active_event: summary,
+        active_event: active.get().and_then(|b| b.summary().ok()),
     })
 }
 
@@ -153,12 +198,12 @@ struct ShowcaseResponse {
     photo_ids: Vec<String>,
 }
 
-async fn api_showcase(State(active): State<SharedActiveEvent>) -> Response {
-    let Some(bundle) = active.get() else {
-        return Json(ShowcaseResponse { photo_ids: vec![] }).into_response();
-    };
-    let photo_ids = bundle.list_showcase_photo_ids(24).unwrap_or_default();
-    Json(ShowcaseResponse { photo_ids }).into_response()
+async fn api_showcase(State(active): State<SharedActiveEvent>) -> impl IntoResponse {
+    let photo_ids = active
+        .get()
+        .and_then(|b| b.list_showcase_photo_ids(24).ok())
+        .unwrap_or_default();
+    Json(ShowcaseResponse { photo_ids })
 }
 
 #[derive(Deserialize)]
@@ -176,14 +221,9 @@ fn default_limit() -> i64 {
 async fn api_search_subjects(
     State(active): State<SharedActiveEvent>,
     Query(params): Query<SearchParams>,
-) -> Response {
-    let Some(bundle) = active.get() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
-    };
-    match bundle.search_subjects(&params.q, params.limit.clamp(1, 10_000)) {
-        Ok(subjects) => Json(subjects).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+) -> ApiResult<Json<Vec<SubjectRecord>>> {
+    let bundle = require_bundle(&active)?;
+    Ok(Json(bundle.search_subjects(&params.q, params.limit.clamp(1, 10_000))?))
 }
 
 #[derive(Serialize)]
@@ -197,19 +237,12 @@ struct SubjectDetailResponse {
 async fn api_subject_detail(
     State(active): State<SharedActiveEvent>,
     AxumPath(subject_id): AxumPath<String>,
-) -> Response {
-    let Some(bundle) = active.get() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
-    };
-    let subject = match bundle.get_subject(&subject_id) {
-        Ok(Some(s)) => s,
-        Ok(None) => return (StatusCode::NOT_FOUND, "Subject not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    let photos = match bundle.list_subject_photos(&subject_id) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+) -> ApiResult<Json<SubjectDetailResponse>> {
+    let bundle = require_bundle(&active)?;
+    let subject = bundle
+        .get_subject(&subject_id)?
+        .ok_or_else(|| ApiError::not_found("Subject not found"))?;
+    let photos = bundle.list_subject_photos(&subject_id)?;
 
     let mut sections: Vec<String> = Vec::new();
     for p in &photos {
@@ -218,25 +251,11 @@ async fn api_subject_detail(
         }
     }
 
-    Json(SubjectDetailResponse {
+    Ok(Json(SubjectDetailResponse {
         subject,
         photos,
         sections,
-    })
-    .into_response()
-}
-
-async fn api_subject_photos(
-    State(active): State<SharedActiveEvent>,
-    AxumPath(subject_id): AxumPath<String>,
-) -> Response {
-    let Some(bundle) = active.get() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
-    };
-    match bundle.list_subject_photos(&subject_id) {
-        Ok(photos) => Json(photos).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    }))
 }
 
 #[derive(Serialize)]
@@ -248,74 +267,35 @@ struct ProductsResponse {
     event_name: String,
 }
 
-async fn api_products(State(active): State<SharedActiveEvent>) -> Response {
-    let Some(bundle) = active.get() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
-    };
-    let summary = match bundle.summary() {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    let products = match bundle.list_products(false) {
-        Ok(p) => p,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    Json(ProductsResponse {
+async fn api_products(State(active): State<SharedActiveEvent>) -> ApiResult<Json<ProductsResponse>> {
+    let bundle = require_bundle(&active)?;
+    let summary = bundle.summary()?;
+    let products = bundle.list_products(false)?;
+    Ok(Json(ProductsResponse {
         products,
         tax_rate_basis_points: summary.tax_rate_basis_points,
         subject_label: summary.subject_label,
         event_name: summary.name,
-    })
-    .into_response()
-}
-
-#[derive(Serialize)]
-struct ApiErrorBody {
-    error: String,
+    }))
 }
 
 async fn api_place_order(
     State(active): State<SharedActiveEvent>,
     Json(req): Json<CreateOrderRequest>,
-) -> Response {
-    let Some(bundle) = active.get() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiErrorBody {
-                error: "No active event open".into(),
-            }),
-        )
-            .into_response();
-    };
-    match bundle.place_order(req) {
-        Ok(order) => (StatusCode::CREATED, Json(order)).into_response(),
-        Err(Error::InvalidInput(msg)) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiErrorBody { error: msg }),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiErrorBody {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
-    }
+) -> ApiResult<(StatusCode, Json<crate::orders::OrderRecord>)> {
+    let bundle = require_bundle(&active)?;
+    Ok((StatusCode::CREATED, Json(bundle.place_order(req)?)))
 }
 
 async fn api_get_order(
     State(active): State<SharedActiveEvent>,
     AxumPath(order_number): AxumPath<String>,
-) -> Response {
-    let Some(bundle) = active.get() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "No active event open").into_response();
-    };
-    match bundle.get_order_by_number(&order_number) {
-        Ok(Some(order)) => Json(order).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "Order not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+) -> ApiResult<Json<crate::orders::OrderRecord>> {
+    let bundle = require_bundle(&active)?;
+    let order = bundle
+        .get_order_by_number(&order_number)?
+        .ok_or_else(|| ApiError::not_found("Order not found"))?;
+    Ok(Json(order))
 }
 
 async fn serve_thumbnail(
@@ -337,8 +317,7 @@ async fn serve_subject_avatar(
     AxumPath(subject_id): AxumPath<String>,
 ) -> Response {
     if subject_id.is_empty()
-        || subject_id.contains('/')
-        || subject_id.contains('\\')
+        || subject_id.contains(['/', '\\'])
         || subject_id.contains("..")
     {
         return StatusCode::BAD_REQUEST.into_response();
@@ -348,17 +327,8 @@ async fn serve_subject_avatar(
     };
 
     // 1. Prefer cached Vision face/saliency square avatar
-    let avatar_path = subject_avatar_path(bundle.root(), &subject_id);
-    if let Ok(bytes) = tokio::fs::read(&avatar_path).await {
-        return (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/jpeg"),
-                (header::CACHE_CONTROL, "public, max-age=3600"),
-            ],
-            bytes,
-        )
-            .into_response();
+    if let Ok(bytes) = tokio::fs::read(subject_avatar_path(bundle.root(), &subject_id)).await {
+        return jpeg_response(bytes, "public, max-age=3600");
     }
 
     // 2. Fallback to subject's first ready thumbnail (no-cache so browsers upgrade once Vision finishes)
@@ -368,15 +338,7 @@ async fn serve_subject_avatar(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     match tokio::fs::read(&fallback_path).await {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/jpeg"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => jpeg_response(bytes, "no-cache"),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -390,23 +352,14 @@ async fn serve_derivative(active: SharedActiveEvent, photo_id: &str, preview: bo
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-
     match tokio::fs::read(&path).await {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "image/jpeg"),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => jpeg_response(bytes, "public, max-age=31536000, immutable"),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
 /// Serves the compiled Vue Kiosk SPA (embedded via `rust-embed` in release builds,
-/// and reading fresh `kiosk-dist/` files from disk first in debug builds for instant UI iteration).
+/// reading fresh `kiosk-dist/` files from disk first in debug builds for instant UI iteration).
 async fn serve_kiosk_spa(uri: Uri) -> Response {
     let raw_path = uri.path().trim_start_matches('/');
     if raw_path.starts_with("api/") || raw_path.starts_with("photos/") {
@@ -422,8 +375,6 @@ async fn serve_kiosk_spa(uri: Uri) -> Response {
     if let Some(resp) = read_kiosk_asset(candidate).await {
         return resp;
     }
-
-    // SPA client-side route fallback (e.g. /subject/sub_xxx, /cart, /checkout, /order/XLR-A0001)
     if let Some(resp) = read_kiosk_asset("index.html").await {
         return resp;
     }
@@ -444,36 +395,27 @@ async fn read_kiosk_asset(rel_path: &str) -> Option<Response> {
         "no-cache"
     };
 
-    // In debug builds, check the live kiosk-dist directory first so `pnpm build:kiosk`
-    // updates the LAN server immediately without recompiling Rust.
     #[cfg(debug_assertions)]
-    {
+    let bytes: Option<Vec<u8>> = {
         let disk_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("kiosk-dist")
             .join(rel_path);
-        if let Ok(bytes) = tokio::fs::read(&disk_path).await {
-            return Some(
-                (
-                    StatusCode::OK,
-                    [
-                        (header::CONTENT_TYPE, mime),
-                        (header::CACHE_CONTROL, cache.to_string()),
-                    ],
-                    bytes,
-                )
-                    .into_response(),
-            );
-        }
-    }
+        tokio::fs::read(&disk_path)
+            .await
+            .ok()
+            .or_else(|| KioskAssets::get(rel_path).map(|f| f.data.into_owned()))
+    };
+    #[cfg(not(debug_assertions))]
+    let bytes: Option<Vec<u8>> = KioskAssets::get(rel_path).map(|f| f.data.into_owned());
 
-    KioskAssets::get(rel_path).map(|file| {
+    bytes.map(|body| {
         (
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, mime),
                 (header::CACHE_CONTROL, cache.to_string()),
             ],
-            file.data.into_owned(),
+            body,
         )
             .into_response()
     })
@@ -506,14 +448,9 @@ mod tests {
             EventBundle::create(CreateEventParams {
                 root_path: dir.path().join("sample-meet"),
                 name: "Test Meet".into(),
-                description: None,
-                preset_id: Some("gymnastics".into()),
-                subject_label: None,
-                folder_levels: None,
                 order_code: Some("TST".into()),
-                station_code: Some("A".into()),
                 tax_rate_basis_points: Some(850),
-                scaffold: None,
+                ..Default::default()
             })
             .unwrap(),
         );
@@ -529,7 +466,6 @@ mod tests {
 
         let app = build_router(SharedActiveEvent::new(Some(Arc::clone(&bundle))));
 
-        // Numeric ordering + exact match ranking: "105" must come BEFORE "1050" and "1000"
         let resp = app
             .clone()
             .oneshot(
@@ -546,7 +482,6 @@ mod tests {
         let nums: Vec<&str> = list.iter().filter_map(|s| s.number.as_deref()).collect();
         assert_eq!(nums, vec!["105", "1000", "1050"]);
 
-        // Place an order with Full Digital + USB Add-On + Print
         let products = bundle.list_products(false).unwrap();
         let full_dig = products.iter().find(|p| p.product_type == "full_digital").unwrap();
         let usb = products.iter().find(|p| p.product_type == "usb_addon").unwrap();
@@ -606,8 +541,8 @@ mod tests {
         let order: OrderRecord = serde_json::from_slice(&body).unwrap();
         assert_eq!(order.order_number, "TST-A0001");
         assert_eq!(order.subtotal_cents, 8500 + 1000 + 2800);
-        assert_eq!(order.shipping_cents, 300); // 8x10 print -> $3.00 untaxed S&H
-        assert_eq!(order.tax_cents, 1046); // 8.5% strictly on $123.00 subtotal (not on shipping)
+        assert_eq!(order.shipping_cents, 300);
+        assert_eq!(order.tax_cents, 1046);
         assert_eq!(order.total_cents, 13646);
         assert!(order.square_pos_url.starts_with("square-commerce-v1://payment/create?data="));
     }

@@ -69,7 +69,7 @@ pub fn active_avatar_engine_name() -> &'static str {
 /// using up to 8 already-generated `1280px` previews (never touching 24MP originals).
 ///
 /// On macOS Apple Silicon, runs Apple's native Vision framework (`VNDetectFaceCaptureQualityRequest`
-/// + `VNGenerateAttentionBasedSaliencyImageRequest`) on the Neural Engine to isolate the solo
+/// and `VNGenerateAttentionBasedSaliencyImageRequest`) on the Neural Engine to isolate the solo
 /// foreground gymnast and frame face + hair + leotard cleanly (~100 ms/athlete).
 pub fn generate_subject_avatar(
     bundle: &EventBundle,

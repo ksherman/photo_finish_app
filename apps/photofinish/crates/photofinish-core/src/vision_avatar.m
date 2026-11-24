@@ -112,6 +112,17 @@ static BOOL pf_write_square_avatar(CGImageRef srcImg, CGRect cropRect, NSString 
     return YES;
 }
 
+static BOOL pf_point_in_salient(NSArray<NSValue *> *salientBoxes, CGPoint pt) {
+    for (NSValue *v in salientBoxes) {
+        CGRect sb;
+        [v getValue:&sb];
+        if (CGRectContainsPoint(CGRectInset(sb, -0.05, -0.05), pt)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 int pf_vision_is_available(void) {
     return 1;
 }
@@ -200,15 +211,7 @@ int pf_vision_generate_avatar(
                     float q = f.faceCaptureQuality ? f.faceCaptureQuality.floatValue : 0.0f;
                     BOOL bigEnough = (bb.size.width >= 0.03 || bb.size.height >= 0.03);
                     CGPoint fc = CGPointMake(CGRectGetMidX(bb), CGRectGetMidY(bb));
-                    BOOL inSal = NO;
-                    for (NSValue *v in salientBoxes) {
-                        CGRect sb;
-                        [v getValue:&sb];
-                        if (CGRectContainsPoint(CGRectInset(sb, -0.05, -0.05), fc)) {
-                            inSal = YES;
-                            break;
-                        }
-                    }
+                    BOOL inSal = pf_point_in_salient(salientBoxes, fc);
                     if (bigEnough && (inSal || q >= 0.25f)) {
                         prominentCount += 1;
                     }
@@ -222,15 +225,7 @@ int pf_vision_generate_avatar(
                     float q = face.faceCaptureQuality ? face.faceCaptureQuality.floatValue : 0.0f;
                     double area = (double)(bb.size.width * bb.size.height);
                     CGPoint fc = CGPointMake(CGRectGetMidX(bb), CGRectGetMidY(bb));
-                    BOOL inSal = NO;
-                    for (NSValue *v in salientBoxes) {
-                        CGRect sb;
-                        [v getValue:&sb];
-                        if (CGRectContainsPoint(CGRectInset(sb, -0.05, -0.05), fc)) {
-                            inSal = YES;
-                            break;
-                        }
-                    }
+                    BOOL inSal = pf_point_in_salient(salientBoxes, fc);
 
                     double dx = fabs((double)CGRectGetMidX(bb) - 0.5);
                     double dy = fabs((double)CGRectGetMidY(bb) - 0.58);
