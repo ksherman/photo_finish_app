@@ -3,8 +3,10 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
 import { useIngestStore } from "@/stores/ingest";
+import CardNamingQueueStrip from "@/components/CardNamingQueueStrip.vue";
 import ReaderDashboardCard from "@/components/ReaderDashboardCard.vue";
 import ReaderSetupModal from "@/components/ReaderSetupModal.vue";
+import { trimSlashes } from "@/utils/format";
 import type { CardReaderInfo, ReaderLayoutUpdate } from "@/types";
 
 const eventStore = useEventStore();
@@ -151,6 +153,12 @@ async function confirmRemoveGroup(name: string) {
     if (!ok) return;
   }
   await ingestStore.removeGroup(name);
+}
+
+function canMoveRightInBucket(bucket: CardReaderInfo[], readerId: string, idx: number): boolean {
+  if (!ingestStore.readerConfigs[readerId]) return false;
+  const configuredCount = bucket.filter((x) => Boolean(ingestStore.readerConfigs[x.reader_id])).length;
+  return idx + 1 < configuredCount;
 }
 
 async function nudgeReaderInList(
@@ -339,7 +347,7 @@ async function startLocalFolderIngest() {
   }
   const params = {
     sourcePath: localSourcePath.value.trim(),
-    destinationRelPath: localDestRelPath.value.trim().replace(/^\/+|\/+$/g, ""),
+    destinationRelPath: trimSlashes(localDestRelPath.value),
     label: localLabel.value.trim() || "Folder Ingest",
     photographer: localPhotographer.value.trim() || "Manual",
     autoRename: localAutoRename.value,
@@ -475,85 +483,12 @@ async function confirmResetConfigs() {
       Open or create an Event Bundle in the <strong>Events</strong> tab before ingesting memory cards.
     </div>
 
-    <!-- Live Card Naming Queue Strip (Active Downloads + Finished Cards Awaiting Naming) -->
-    <div
+    <!-- Live Card Naming Queue Strip -->
+    <CardNamingQueueStrip
       v-if="eventStore.activeEvent && (ingestStore.activeCopies.length > 0 || ingestStore.pendingNamingBatches.length > 0)"
-      class="bg-white rounded-xl border border-indigo-200/80 shadow-xs px-4 py-3 space-y-2.5"
-    >
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
-          <span>Card Naming Queue</span>
-          <span
-            v-if="ingestStore.pendingNamingBatches.length > 0"
-            class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-semibold normal-case"
-          >
-            {{ ingestStore.pendingNamingBatches.length }} card{{ ingestStore.pendingNamingBatches.length === 1 ? '' : 's' }} ready to name
-          </span>
-          <span
-            v-if="ingestStore.activeCopies.length > 0"
-            class="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold normal-case animate-pulse"
-          >
-            {{ ingestStore.activeCopies.length }} copying now
-          </span>
-        </div>
-        <span class="text-xs text-slate-400">
-          Click any finished card to jump straight to naming its folders
-        </span>
-      </div>
-
-      <div class="flex flex-wrap gap-2">
-        <!-- Actively copying cards / folders -->
-        <div
-          v-for="copy in ingestStore.activeCopies"
-          :key="copy.readerId"
-          class="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-blue-200 bg-blue-50/70 text-xs"
-        >
-          <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse shrink-0" />
-          <div class="min-w-0">
-            <div class="font-semibold text-blue-900 truncate max-w-[200px]">{{ copy.readerLabel }}</div>
-            <div class="font-mono text-[11px] text-blue-700 truncate max-w-[240px]">
-              {{ copy.destinationRelPath || "(event root)" }}
-            </div>
-          </div>
-          <span class="font-mono font-semibold text-blue-700 pl-1">
-            {{ Math.round(copy.progress?.percentage || 0) }}%
-          </span>
-        </div>
-
-        <!-- Finished cards with unnamed folders -->
-        <button
-          v-for="batch in ingestStore.pendingNamingBatches"
-          :key="batch.id"
-          @click="eventStore.openBatchForNaming(batch.id)"
-          class="group flex items-center gap-2.5 px-3 py-2 rounded-lg border border-amber-200 bg-amber-50/70 hover:bg-indigo-50 hover:border-indigo-300 transition-colors text-left text-xs"
-        >
-          <span class="px-1.5 py-0.5 rounded bg-white border border-amber-200 font-mono font-bold text-slate-700">
-            #{{ batch.sequenceNum }}
-          </span>
-          <div class="min-w-0">
-            <div class="font-semibold text-slate-900 truncate max-w-[220px]">
-              {{ batch.readerName || batch.volumeName || "Card" }}
-            </div>
-            <div class="font-mono text-[11px] text-slate-600 truncate max-w-[260px]">
-              {{ batch.destinationRelPath || "(event root)" }}
-            </div>
-          </div>
-          <div class="pl-1 text-right shrink-0">
-            <div class="font-semibold text-amber-800 group-hover:text-indigo-700">
-              {{ batch.unassignedFolders }} to name &rarr;
-            </div>
-            <div class="text-[10px] text-slate-500">
-              <template v-if="batch.pendingPhotos > 0">
-                {{ batch.readyPhotos }}/{{ batch.totalPhotos }} thumbs
-              </template>
-              <template v-else>
-                {{ batch.totalPhotos }} ready ✓
-              </template>
-            </div>
-          </div>
-        </button>
-      </div>
-    </div>
+      hint="Click any finished card to jump straight to naming its folders"
+      @select-batch="eventStore.openBatchForNaming($event)"
+    />
 
     <!-- ================= NAMED GROUPS (e.g. Gym A, Gym B) ================= -->
     <div v-if="namedGroups.length > 0" class="space-y-5">
@@ -638,10 +573,7 @@ async function confirmResetConfigs() {
             :key="reader.reader_id"
             :reader="reader"
             :can-move-left="Boolean(ingestStore.readerConfigs[reader.reader_id]) && rIdx > 0"
-            :can-move-right="
-              Boolean(ingestStore.readerConfigs[reader.reader_id]) &&
-              rIdx + 1 < group.readers.filter((x) => Boolean(ingestStore.readerConfigs[x.reader_id])).length
-            "
+            :can-move-right="canMoveRightInBucket(group.readers, reader.reader_id, rIdx)"
             :is-dragging="draggingReader?.reader_id === reader.reader_id"
             :drop-side="hoverTargetReaderId === reader.reader_id ? hoverDropSide : null"
             @configure="openConfigure($event, group.name)"
@@ -690,10 +622,7 @@ async function confirmResetConfigs() {
           :key="reader.reader_id"
           :reader="reader"
           :can-move-left="Boolean(ingestStore.readerConfigs[reader.reader_id]) && rIdx > 0"
-          :can-move-right="
-            Boolean(ingestStore.readerConfigs[reader.reader_id]) &&
-            rIdx + 1 < ungroupedReaders.filter((x) => Boolean(ingestStore.readerConfigs[x.reader_id])).length
-          "
+          :can-move-right="canMoveRightInBucket(ungroupedReaders, reader.reader_id, rIdx)"
           :is-dragging="draggingReader?.reader_id === reader.reader_id"
           :drop-side="hoverTargetReaderId === reader.reader_id ? hoverDropSide : null"
           @configure="openConfigure($event, null)"

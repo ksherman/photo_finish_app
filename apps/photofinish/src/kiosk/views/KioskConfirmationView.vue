@@ -2,6 +2,7 @@
 import { ref, onMounted, watch } from "vue";
 import QRCode from "qrcode";
 import { formatCents, useKioskStore } from "../store";
+import { formatShippingAddress } from "@/utils/format";
 import type { KioskOrder } from "../types";
 
 const props = defineProps<{
@@ -116,8 +117,7 @@ watch(() => props.orderNumber, loadOrder);
           class="pt-2 mt-1 border-t border-slate-100 text-xs text-slate-500"
         >
           <span class="font-semibold text-slate-600">Mailing prints to:</span>
-          {{ order.shippingAddress.street }}<template v-if="order.shippingAddress.street2"> {{ order.shippingAddress.street2 }}</template>,
-          {{ order.shippingAddress.city }}, {{ order.shippingAddress.state }} {{ order.shippingAddress.zip }}
+          {{ formatShippingAddress(order.shippingAddress) }}
         </div>
       </div>
 

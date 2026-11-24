@@ -52,14 +52,6 @@ export interface EventSummary {
   createdAt: string;
 }
 
-export interface LibraryEventEntry {
-  root_path: string;
-  event_id: string;
-  name: string;
-  last_opened_at: string;
-  exists_on_disk: boolean;
-}
-
 export interface LibraryBundleOverview {
   rootPath: string;
   eventId: string;
@@ -137,8 +129,6 @@ export interface ReaderConfig {
   sortOrder: number;
   destination: string;
   photographer: string;
-  cameraBrand: string;
-  cameraFolderPath: string;
   renamePrefix: string;
   autoRename: boolean;
   fileRenamePrefix?: string | null;
@@ -245,32 +235,6 @@ export interface ImportRosterResult {
   autoMatchedPhotos: number;
 }
 
-export interface UnassignedFolder {
-  folderPath: string;
-  parentPath: string;
-  leafFolder: string;
-  photoCount: number;
-  samplePhotoIds: string[];
-}
-
-export interface FolderParentSummary {
-  parentPath: string;
-  folderCount: number;
-  photoCount: number;
-}
-
-export interface UnassignedFoldersResponse {
-  parents: FolderParentSummary[];
-  folders: UnassignedFolder[];
-  totalUnassignedPhotos: number;
-}
-
-export interface AssignFolderResult {
-  photosUpdated: number;
-  newFolderPath: string;
-  renamedOnDisk: boolean;
-}
-
 export interface FolderItem {
   folderPath: string;
   parentPath: string;
@@ -364,7 +328,7 @@ export interface ProductRecord {
 
 export interface ShippingAddress {
   street: string;
-  street2: string | null;
+  street2?: string | null;
   city: string;
   state: string;
   zip: string;

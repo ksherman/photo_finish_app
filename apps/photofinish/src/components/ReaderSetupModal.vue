@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
 import { useIngestStore } from "@/stores/ingest";
+import { trimSlashes } from "@/utils/format";
 import type { CardReaderInfo, DirectoryEntry } from "@/types";
 
 const props = defineProps<{
@@ -105,10 +106,8 @@ async function save() {
     customLabel: customLabel.value.trim() || null,
     groupName: nextGroup,
     sortOrder,
-    destination: destination.value.trim().replace(/^\/+|\/+$/g, ""),
+    destination: trimSlashes(destination.value),
     photographer: photographer.value.trim(),
-    cameraBrand: "auto",
-    cameraFolderPath: "",
     renamePrefix: renamePrefix.value.trim(),
     autoRename: autoRename.value,
     fileRenamePrefix: fileRenamePrefix.value.trim() || null,

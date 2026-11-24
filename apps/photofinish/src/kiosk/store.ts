@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { formatCents } from "@/utils/format";
 import type {
   CartItem,
   KioskEventSummary,
@@ -10,6 +11,8 @@ import type {
   KioskSubject,
   ShippingAddress,
 } from "./types";
+
+export { formatCents };
 
 const CART_STORAGE_KEY = "photofinish_kiosk_cart_v1";
 
@@ -51,10 +54,6 @@ export function calculatePrintShippingCents(items: CartItem[]): number {
   return hasLargePrint ? LARGE_PRINT_SHIPPING_CENTS : SMALL_PRINT_SHIPPING_CENTS;
 }
 
-export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 export function parseRoute(pathname: string): KioskRoute {
   const clean = pathname.replace(/\/+$/, "") || "/";
   if (clean === "/") return { name: "home" };
@@ -91,6 +90,32 @@ function loadSavedCart(): CartItem[] {
   }
 }
 
+function makeCartItem(
+  key: string,
+  prod: KioskProduct,
+  extra: Partial<
+    Pick<
+      CartItem,
+      "subjectId" | "subjectDisplayName" | "subjectPhotoCount" | "photoId" | "photoFilename"
+    >
+  > = {}
+): CartItem {
+  return {
+    key,
+    productId: prod.id,
+    productType: prod.productType,
+    productName: prod.name,
+    productSize: prod.size,
+    unitPriceCents: prod.priceCents,
+    quantity: 1,
+    subjectId: extra.subjectId ?? null,
+    subjectDisplayName: extra.subjectDisplayName ?? null,
+    subjectPhotoCount: extra.subjectPhotoCount,
+    photoId: extra.photoId ?? null,
+    photoFilename: extra.photoFilename ?? null,
+  };
+}
+
 export const useKioskStore = defineStore("kiosk", {
   state: () => ({
     route: parseRoute(window.location.pathname) as KioskRoute,
@@ -112,20 +137,15 @@ export const useKioskStore = defineStore("kiosk", {
       s.products.find((p) => p.productType === "full_digital") || null,
     usbAddonProduct: (s) =>
       s.products.find((p) => p.productType === "usb_addon") || null,
-    printProducts: (s) =>
-      s.products.filter((p) => p.productType === "print"),
+    printProducts: (s) => s.products.filter((p) => p.productType === "print"),
 
     cartCount: (s) => s.cart.reduce((sum, item) => sum + item.quantity, 0),
     subtotalCents: (s) =>
       s.cart.reduce((sum, item) => sum + item.unitPriceCents * item.quantity, 0),
     shippingCents: (s) => calculatePrintShippingCents(s.cart),
     shippingTierLabel(): string {
-      if (this.shippingCents === LARGE_PRINT_SHIPPING_CENTS) {
-        return "Prints 11×14+";
-      }
-      if (this.shippingCents === SMALL_PRINT_SHIPPING_CENTS) {
-        return "Prints up to 8×10";
-      }
+      if (this.shippingCents === LARGE_PRINT_SHIPPING_CENTS) return "Prints 11×14+";
+      if (this.shippingCents === SMALL_PRINT_SHIPPING_CENTS) return "Prints up to 8×10";
       return "";
     },
     taxCents(): number {
@@ -137,19 +157,13 @@ export const useKioskStore = defineStore("kiosk", {
     },
     hasPrints: (s) => s.cart.some((i) => i.productType === "print"),
     hasDigital: (s) =>
-      s.cart.some(
-        (i) => i.productType === "full_digital" || i.productType === "single_digital"
-      ),
+      s.cart.some((i) => i.productType === "full_digital" || i.productType === "single_digital"),
     hasUsbAddon: (s) => s.cart.some((i) => i.productType === "usb_addon"),
 
     hasFullDigitalForSubject: (s) => (subjectId: string) =>
-      s.cart.some(
-        (i) => i.productType === "full_digital" && i.subjectId === subjectId
-      ),
+      s.cart.some((i) => i.productType === "full_digital" && i.subjectId === subjectId),
     hasSingleDigitalForPhoto: (s) => (photoId: string) =>
-      s.cart.some(
-        (i) => i.productType === "single_digital" && i.photoId === photoId
-      ),
+      s.cart.some((i) => i.productType === "single_digital" && i.photoId === photoId),
     printCountForPhoto: (s) => (photoId: string) =>
       s.cart
         .filter((i) => i.productType === "print" && i.photoId === photoId)
@@ -238,11 +252,7 @@ export const useKioskStore = defineStore("kiosk", {
           }
         }
         if (this.activeEvent) {
-          await Promise.all([
-            this.loadProducts(),
-            this.loadRoster(),
-            this.loadShowcase(),
-          ]);
+          await Promise.all([this.loadProducts(), this.loadRoster(), this.loadShowcase()]);
         }
       } finally {
         this.loading = false;
@@ -276,93 +286,67 @@ export const useKioskStore = defineStore("kiosk", {
       }
     },
 
-    toggleFullDigital(subject: KioskSubject) {
+    setFullDigitalForSubject(subjectId: string, displayName: string, photoCount?: number) {
       const prod = this.fullDigitalProduct;
       if (!prod) return;
+      // Remove any redundant single digitals for this subject automatically
+      this.cart = this.cart.filter(
+        (i) => !(i.productType === "single_digital" && i.subjectId === subjectId)
+      );
+      const key = `full:${subjectId}`;
+      if (!this.cart.some((i) => i.key === key)) {
+        this.cart.push(
+          makeCartItem(key, prod, {
+            subjectId,
+            subjectDisplayName: displayName,
+            subjectPhotoCount: photoCount,
+          })
+        );
+      }
+    },
+
+    toggleFullDigital(subject: KioskSubject) {
       const key = `full:${subject.id}`;
       const existingIdx = this.cart.findIndex((i) => i.key === key);
       if (existingIdx >= 0) {
         this.cart.splice(existingIdx, 1);
       } else {
-        // Remove any redundant single digitals for this subject automatically
-        this.cart = this.cart.filter(
-          (i) => !(i.productType === "single_digital" && i.subjectId === subject.id)
-        );
-        this.cart.push({
-          key,
-          productId: prod.id,
-          productType: prod.productType,
-          productName: prod.name,
-          productSize: prod.size,
-          unitPriceCents: prod.priceCents,
-          quantity: 1,
-          subjectId: subject.id,
-          subjectDisplayName: subject.displayName,
-          subjectPhotoCount: subject.photoCount,
-          photoId: null,
-          photoFilename: null,
-        });
+        this.setFullDigitalForSubject(subject.id, subject.displayName, subject.photoCount);
       }
       this.cleanupUsbIfNoDigital();
       this.persistCart();
     },
 
     upgradeSubjectToFullDigital(subjectId: string) {
-      const prod = this.fullDigitalProduct;
-      if (!prod) return;
       const sample = this.cart.find(
         (i) => i.productType === "single_digital" && i.subjectId === subjectId
       );
-      const displayName = sample?.subjectDisplayName || "Athlete";
-      const photoCount = sample?.subjectPhotoCount;
-
-      this.cart = this.cart.filter(
-        (i) => !(i.productType === "single_digital" && i.subjectId === subjectId)
+      this.setFullDigitalForSubject(
+        subjectId,
+        sample?.subjectDisplayName || "Athlete",
+        sample?.subjectPhotoCount
       );
-      const key = `full:${subjectId}`;
-      if (!this.cart.some((i) => i.key === key)) {
-        this.cart.push({
-          key,
-          productId: prod.id,
-          productType: prod.productType,
-          productName: prod.name,
-          productSize: prod.size,
-          unitPriceCents: prod.priceCents,
-          quantity: 1,
-          subjectId,
-          subjectDisplayName: displayName,
-          subjectPhotoCount: photoCount,
-          photoId: null,
-          photoFilename: null,
-        });
-      }
       this.persistCart();
     },
 
     toggleSingleDigital(subject: KioskSubject, photo: KioskPhoto) {
       const prod = this.singleDigitalProduct;
-      if (!prod) return;
-      if (this.hasFullDigitalForSubject(subject.id)) return;
+      if (!prod || this.hasFullDigitalForSubject(subject.id)) return;
 
       const key = `single:${photo.id}`;
       const existingIdx = this.cart.findIndex((i) => i.key === key);
       if (existingIdx >= 0) {
         this.cart.splice(existingIdx, 1);
       } else {
-        this.cart.push({
-          key,
-          productId: prod.id,
-          productType: prod.productType,
-          productName: prod.name,
-          productSize: prod.size,
-          unitPriceCents: prod.priceCents,
-          quantity: 1,
-          subjectId: subject.id,
-          subjectDisplayName: subject.displayName,
-          subjectPhotoCount: subject.photoCount,
-          photoId: photo.id,
-          photoFilename: photo.filename,
-        });
+        this.cart.push(
+          makeCartItem(key, prod, {
+            subjectId: subject.id,
+            subjectDisplayName: subject.displayName,
+            subjectPhotoCount: subject.photoCount,
+            photoId: photo.id,
+            photoFilename: photo.filename,
+          })
+        );
       }
       this.cleanupUsbIfNoDigital();
       this.persistCart();
@@ -374,19 +358,14 @@ export const useKioskStore = defineStore("kiosk", {
       if (existing) {
         existing.quantity += 1;
       } else {
-        this.cart.push({
-          key,
-          productId: product.id,
-          productType: product.productType,
-          productName: product.name,
-          productSize: product.size,
-          unitPriceCents: product.priceCents,
-          quantity: 1,
-          subjectId: subject.id,
-          subjectDisplayName: subject.displayName,
-          photoId: photo.id,
-          photoFilename: photo.filename,
-        });
+        this.cart.push(
+          makeCartItem(key, product, {
+            subjectId: subject.id,
+            subjectDisplayName: subject.displayName,
+            photoId: photo.id,
+            photoFilename: photo.filename,
+          })
+        );
       }
       this.persistCart();
     },
@@ -400,19 +379,12 @@ export const useKioskStore = defineStore("kiosk", {
         this.cart.splice(idx, 1);
       } else {
         const firstSubject = this.cart.find((i) => i.subjectId);
-        this.cart.push({
-          key,
-          productId: prod.id,
-          productType: prod.productType,
-          productName: prod.name,
-          productSize: prod.size,
-          unitPriceCents: prod.priceCents,
-          quantity: 1,
-          subjectId: firstSubject?.subjectId ?? null,
-          subjectDisplayName: firstSubject?.subjectDisplayName ?? null,
-          photoId: null,
-          photoFilename: null,
-        });
+        this.cart.push(
+          makeCartItem(key, prod, {
+            subjectId: firstSubject?.subjectId ?? null,
+            subjectDisplayName: firstSubject?.subjectDisplayName ?? null,
+          })
+        );
       }
       this.persistCart();
     },

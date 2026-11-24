@@ -25,27 +25,23 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="store.loading && !store.activeEvent" class="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6 text-center">
-    <div class="space-y-4">
-      <BrandMark class="w-16 h-16 mx-auto drop-shadow-lg" />
-      <p class="text-slate-400 text-lg">Connecting to PhotoFinish server...</p>
-    </div>
-  </div>
-
   <div
-    v-else-if="!store.activeEvent"
+    v-if="!store.activeEvent"
     class="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6 text-center"
   >
     <div class="max-w-md space-y-4">
       <BrandMark class="w-16 h-16 mx-auto drop-shadow-lg" />
-      <h1 class="text-3xl font-extrabold">PhotoFinish Kiosk</h1>
-      <p class="text-slate-400">Waiting for operator to open an event on the station...</p>
-      <button
-        @click="store.bootstrap()"
-        class="mt-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold"
-      >
-        Retry
-      </button>
+      <p v-if="store.loading" class="text-slate-400 text-lg">Connecting to PhotoFinish server...</p>
+      <template v-else>
+        <h1 class="text-3xl font-extrabold">PhotoFinish Kiosk</h1>
+        <p class="text-slate-400">Waiting for operator to open an event on the station...</p>
+        <button
+          @click="store.bootstrap()"
+          class="mt-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold"
+        >
+          Retry
+        </button>
+      </template>
     </div>
   </div>
 

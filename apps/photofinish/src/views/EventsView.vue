@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
-import type { CsvExportResult, EventSummary } from "@/types";
+import StatusBanners from "@/components/StatusBanners.vue";
+import { exportOrdersCsvDialog } from "@/utils/csv";
+import { formatCents } from "@/utils/format";
+import type { EventSummary } from "@/types";
 
 const emit = defineEmits<{
   opened: [];
@@ -52,12 +54,6 @@ const overviewTotals = computed(() => eventStore.libraryOverview?.totals ?? null
 const duplicateOrderNumbers = computed(
   () => eventStore.libraryOverview?.duplicateOrderNumbers ?? []
 );
-
-function formatCents(cents: number): string {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  return `${sign}$${(abs / 100).toFixed(2)}`;
-}
 
 async function refreshLibraryStatus() {
   isRefreshingLibrary.value = true;
@@ -193,24 +189,14 @@ async function handleGatherFolder() {
 async function handleExportConsolidatedCsv() {
   errorMessage.value = null;
   bannerMessage.value = null;
-  const targetPath = await save({
-    defaultPath: "photofinish-consolidated-orders.csv",
-    filters: [{ name: "CSV Spreadsheet", extensions: ["csv"] }],
-    title: "Export Consolidated Orders CSV (All Online Library Bundles)",
-  });
-  if (!targetPath) return;
-
   isExportingAll.value = true;
   try {
-    const res = await invoke<CsvExportResult>("export_orders_csv", {
-      outputPath: targetPath,
+    const msg = await exportOrdersCsvDialog({
       allLibraryEvents: true,
+      defaultFilename: "photofinish-consolidated-orders.csv",
+      title: "Export Consolidated Orders CSV (All Online Library Bundles)",
     });
-    const skippedNote =
-      res.skippedEvents.length > 0
-        ? ` (Skipped ${res.skippedEvents.length}: ${res.skippedEvents.join(", ")})`
-        : "";
-    bannerMessage.value = `Exported ${res.orderCount} order(s) (${res.itemRowCount} line items across ${res.eventCount} event${res.eventCount === 1 ? "" : "s"}) to ${res.outputPath}.${skippedNote}`;
+    if (msg) bannerMessage.value = msg;
   } catch (err) {
     errorMessage.value = String(err);
   } finally {
@@ -265,15 +251,12 @@ onMounted(() => {
       </div>
     </div>
 
-    <div v-if="errorMessage" class="p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-4">
-      <span>{{ errorMessage }}</span>
-      <button @click="errorMessage = null" class="text-red-500 font-bold">&times;</button>
-    </div>
-
-    <div v-if="bannerMessage" class="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800 flex items-center justify-between gap-4">
-      <span>{{ bannerMessage }}</span>
-      <button @click="bannerMessage = null" class="text-emerald-600 font-bold">&times;</button>
-    </div>
+    <StatusBanners
+      :banner-message="bannerMessage"
+      :error-message="errorMessage"
+      @clear-banner="bannerMessage = null"
+      @clear-error="errorMessage = null"
+    />
 
     <div
       v-if="gatheredResult"

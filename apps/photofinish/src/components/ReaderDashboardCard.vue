@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useEventStore } from "@/stores/event";
 import { useIngestStore } from "@/stores/ingest";
+import { trimSlashes } from "@/utils/format";
 import type { CardReaderInfo, DirectoryEntry } from "@/types";
 
 const props = defineProps<{
@@ -58,11 +59,11 @@ const shortReaderId = computed(() => {
   return `SN …${id.slice(-8)}`;
 });
 
-const cleanSubPath = computed(() => customSubPath.value.trim().replace(/^\/+|\/+$/g, ""));
+const cleanSubPath = computed(() => trimSlashes(customSubPath.value));
 const subfolderRequired = computed(() => Boolean(config.value?.requireSubfolder && !cleanSubPath.value));
 
 const destinationRelPath = computed(() => {
-  const base = config.value?.destination?.trim().replace(/^\/+|\/+$/g, "") || "";
+  const base = trimSlashes(config.value?.destination || "");
   if (base && cleanSubPath.value) return `${base}/${cleanSubPath.value}`;
   return base || cleanSubPath.value;
 });
@@ -159,7 +160,7 @@ async function startCopy() {
 
 onMounted(loadFolderList);
 watch(
-  () => [props.reader.volume_name, props.reader.mount_point, config.value?.cameraFolderPath],
+  () => [props.reader.volume_name, props.reader.mount_point],
   ([newVol]) => {
     if (newVol !== "Offline") {
       loadFolderList();

@@ -5,7 +5,6 @@ import type {
   EventPreset,
   EventSummary,
   LanServerStatus,
-  LibraryEventEntry,
   LibraryOverviewResponse,
   ProcessingMetrics,
   ScanResult,
@@ -17,7 +16,6 @@ let syncNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 export const useEventStore = defineStore("event", {
   state: () => ({
     presets: [] as EventPreset[],
-    library: [] as LibraryEventEntry[],
     libraryOverview: null as LibraryOverviewResponse | null,
     machineStationCode: "A",
     activeEvent: null as EventSummary | null,
@@ -113,12 +111,7 @@ export const useEventStore = defineStore("event", {
     },
 
     async refreshLibrary() {
-      const [entries, overview] = await Promise.all([
-        invoke<LibraryEventEntry[]>("list_library_events"),
-        invoke<LibraryOverviewResponse>("get_library_overview"),
-      ]);
-      this.library = entries;
-      this.libraryOverview = overview;
+      this.libraryOverview = await invoke<LibraryOverviewResponse>("get_library_overview");
     },
 
     async refreshActiveEvent() {

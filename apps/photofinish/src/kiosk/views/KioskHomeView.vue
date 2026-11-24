@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from "vue";
 import { formatCents, useKioskStore } from "../store";
 import BrandMark from "@/components/BrandMark.vue";
+import { rankAndFilterSubjects } from "@/utils/subjects";
 import type { KioskSubject } from "../types";
 
 const store = useKioskStore();
@@ -20,83 +21,32 @@ const groups = computed(() => {
   );
 });
 
-const showcaseRows = computed(() => {
+const marqueeRows = computed(() => {
   const ids = store.showcasePhotoIds;
-  if (ids.length === 0) return { row1: [] as string[], row2: [] as string[], row3: [] as string[] };
-  // Distribute across 3 distinct rows and tile each half-track to at least 12 photos
-  // so translating 0% <-> -50% always fills ultra-wide displays seamlessly.
-  const r1: string[] = [];
-  const r2: string[] = [];
-  const r3: string[] = [];
-  ids.forEach((id, i) => {
-    if (i % 3 === 0) r1.push(id);
-    else if (i % 3 === 1) r2.push(id);
-    else r3.push(id);
-  });
+  if (ids.length === 0) return [];
+  const buckets: [string[], string[], string[]] = [[], [], []];
+  ids.forEach((id, i) => buckets[i % 3].push(id));
+
   const buildTrack = (src: string[]) => {
     const base = src.length > 0 ? src : ids;
     const half: string[] = [];
-    while (half.length < 12) {
-      half.push(...base);
-    }
-    // Exactly 2 identical halves so translateX(0) <-> translateX(-50%) loops seamlessly
+    while (half.length < 12) half.push(...base);
     return [...half, ...half];
   };
-  return {
-    row1: buildTrack(r1),
-    row2: buildTrack(r2),
-    row3: buildTrack(r3),
-  };
+
+  return [
+    { key: "r1", heightClass: "h-[22vh]", trackClass: "kiosk-marquee-left", pathPrefix: "/photos/thumbnail", ids: buildTrack(buckets[0]) },
+    { key: "r2", heightClass: "h-[56vh]", trackClass: "kiosk-marquee-right", pathPrefix: "/photos/preview", ids: buildTrack(buckets[1]) },
+    { key: "r3", heightClass: "h-[22vh]", trackClass: "kiosk-marquee-left-slow", pathPrefix: "/photos/thumbnail", ids: buildTrack(buckets[2]) },
+  ];
 });
 
-function bibNum(s: KioskSubject): number {
-  if (!s.number) return Number.MAX_SAFE_INTEGER;
-  const n = parseInt(s.number, 10);
-  return Number.isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
-}
-
-/// Instant 0ms client-side search with exact-bib -> bib-prefix -> name-prefix -> substring ranking
-/// and proper numeric bib ordering (105 before 1000!).
 const filteredSubjects = computed<KioskSubject[]>(() => {
-  const raw = query.value.trim().toLowerCase();
+  const raw = query.value.trim();
   const group = selectedGroup.value;
   if (!raw && !group) return [];
-
-  const matches: Array<{ subject: KioskSubject; rank: number; bib: number }> = [];
-  for (const s of store.subjects) {
-    if (group && s.groupLabel !== group) continue;
-    if (!raw) {
-      matches.push({ subject: s, rank: 0, bib: bibNum(s) });
-      continue;
-    }
-
-    const num = (s.number || "").toLowerCase();
-    const first = s.firstName.toLowerCase();
-    const last = (s.lastName || "").toLowerCase();
-    const disp = s.displayName.toLowerCase();
-    const team = (s.teamName || "").toLowerCase();
-
-    let rank = -1;
-    if (num === raw) rank = 0;
-    else if (num.startsWith(raw)) rank = 1;
-    else if (first.startsWith(raw) || last.startsWith(raw)) rank = 2;
-    else if (disp.includes(raw) || team.includes(raw)) rank = 3;
-
-    if (rank >= 0) {
-      matches.push({ subject: s, rank, bib: bibNum(s) });
-    }
-  }
-
-  matches.sort((a, b) => {
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    if (a.bib !== b.bib) return a.bib - b.bib;
-    return a.subject.displayName.localeCompare(b.subject.displayName, undefined, {
-      numeric: true,
-      sensitivity: "base",
-    });
-  });
-
-  return matches.slice(0, 60).map((m) => m.subject);
+  const pool = group ? store.subjects.filter((s) => s.groupLabel === group) : store.subjects;
+  return rankAndFilterSubjects(pool, raw).slice(0, 60);
 });
 
 const subjectLabelLower = computed(() =>
@@ -104,7 +54,6 @@ const subjectLabelLower = computed(() =>
 );
 
 onMounted(() => {
-  // Refresh roster counts & showcase in background whenever returning to Home
   if (store.activeEvent) {
     store.loadRoster();
     if (store.showcasePhotoIds.length === 0) {
@@ -118,37 +67,15 @@ onMounted(() => {
   <div class="min-h-screen bg-slate-950 relative overflow-hidden flex flex-col">
     <!-- Ambient 3-Row Photo Showcase Marquee -->
     <div
-      v-if="showcaseRows.row1.length > 0"
+      v-if="marqueeRows.length > 0"
       class="absolute inset-0 flex flex-col gap-1.5 opacity-45 pointer-events-none overflow-hidden"
     >
-      <div class="h-[22vh] w-full overflow-hidden">
-        <div class="kiosk-marquee-left flex gap-1.5 h-full w-max">
+      <div v-for="row in marqueeRows" :key="row.key" :class="row.heightClass" class="w-full overflow-hidden">
+        <div :class="row.trackClass" class="flex gap-1.5 h-full w-max">
           <img
-            v-for="(pid, idx) in showcaseRows.row1"
-            :key="`r1-${idx}`"
-            :src="`/photos/thumbnail/${pid}`"
-            decoding="async"
-            class="h-full aspect-[2/3] shrink-0 object-cover bg-slate-800"
-          />
-        </div>
-      </div>
-      <div class="h-[56vh] w-full overflow-hidden">
-        <div class="kiosk-marquee-right flex gap-1.5 h-full w-max">
-          <img
-            v-for="(pid, idx) in showcaseRows.row2"
-            :key="`r2-${idx}`"
-            :src="`/photos/preview/${pid}`"
-            decoding="async"
-            class="h-full aspect-[2/3] shrink-0 object-cover bg-slate-800"
-          />
-        </div>
-      </div>
-      <div class="h-[22vh] w-full overflow-hidden">
-        <div class="kiosk-marquee-left-slow flex gap-1.5 h-full w-max">
-          <img
-            v-for="(pid, idx) in showcaseRows.row3"
-            :key="`r3-${idx}`"
-            :src="`/photos/thumbnail/${pid}`"
+            v-for="(pid, idx) in row.ids"
+            :key="`${row.key}-${idx}`"
+            :src="`${row.pathPrefix}/${pid}`"
             decoding="async"
             class="h-full aspect-[2/3] shrink-0 object-cover bg-slate-800"
           />
@@ -156,7 +83,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Top Floating Cart Button (visible if family already started an order for sibling #1) -->
+    <!-- Top Floating Cart Button -->
     <div v-if="store.cartCount > 0" class="relative z-20 flex justify-end p-5">
       <button
         @click="store.navigate({ name: 'cart' })"
@@ -182,7 +109,6 @@ onMounted(() => {
           </p>
         </div>
 
-        <!-- Search + Session Filter -->
         <div class="flex flex-col sm:flex-row gap-2.5">
           <div class="relative flex-1">
             <input
@@ -192,7 +118,7 @@ onMounted(() => {
               autocomplete="off"
               autocorrect="off"
               spellcheck="false"
-              :placeholder="`Type # or name (e.g. 105 or Julia)...`"
+              placeholder="Type # or name (e.g. 105 or Julia)..."
               class="w-full pl-5 pr-11 py-4 text-lg rounded-2xl border-2 border-slate-200 bg-white text-slate-900 focus:border-indigo-500 focus:outline-none"
             />
             <button
@@ -214,7 +140,6 @@ onMounted(() => {
           </select>
         </div>
 
-        <!-- Live Search Results -->
         <div
           v-if="query.trim() || selectedGroup"
           class="rounded-2xl border border-slate-200 overflow-hidden bg-white max-h-[46vh] overflow-y-auto divide-y divide-slate-100"
@@ -262,9 +187,7 @@ onMounted(() => {
               <span
                 class="px-3 py-1 rounded-full text-sm font-semibold"
                 :class="
-                  s.photoCount > 0
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'bg-slate-100 text-slate-400'
+                  s.photoCount > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-400'
                 "
               >
                 {{ s.photoCount }} photos
@@ -274,7 +197,6 @@ onMounted(() => {
           </button>
         </div>
 
-        <!-- Subtle footer stats when idle -->
         <div v-else class="text-center text-xs text-slate-400 pt-1">
           {{ store.activeEvent?.photoCounts.ready.toLocaleString() || 0 }} photos ready across
           {{ store.subjects.length.toLocaleString() }} {{ subjectLabelLower }}s
@@ -286,20 +208,12 @@ onMounted(() => {
 
 <style scoped>
 @keyframes kiosk-left {
-  0% {
-    transform: translate3d(0, 0, 0);
-  }
-  100% {
-    transform: translate3d(-50%, 0, 0);
-  }
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-50%, 0, 0); }
 }
 @keyframes kiosk-right {
-  0% {
-    transform: translate3d(-50%, 0, 0);
-  }
-  100% {
-    transform: translate3d(0, 0, 0);
-  }
+  0% { transform: translate3d(-50%, 0, 0); }
+  100% { transform: translate3d(0, 0, 0); }
 }
 .kiosk-marquee-left {
   will-change: transform;

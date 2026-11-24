@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { formatCents, useKioskStore } from "../store";
+import KioskTotalsRows from "../components/KioskTotalsRows.vue";
 
 const store = useKioskStore();
 
@@ -80,25 +81,16 @@ async function submit() {
 
       <!-- Summary Box -->
       <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-2">
-        <div class="flex justify-between text-sm text-slate-600">
-          <span>Subtotal ({{ store.cartCount }} item{{ store.cartCount === 1 ? "" : "s" }})</span>
-          <span class="font-mono">{{ formatCents(store.subtotalCents) }}</span>
-        </div>
-        <div v-if="store.shippingCents > 0" class="flex justify-between text-sm text-slate-600">
-          <span>
-            Shipping &amp; Handling
-            <span class="text-xs text-slate-400">({{ store.shippingTierLabel }} · not taxed)</span>
-          </span>
-          <span class="font-mono">{{ formatCents(store.shippingCents) }}</span>
-        </div>
-        <div class="flex justify-between text-sm text-slate-600">
-          <span>Tax ({{ (store.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
-          <span class="font-mono">{{ formatCents(store.taxCents) }}</span>
-        </div>
-        <div class="border-t border-slate-200 pt-2 flex justify-between text-lg font-extrabold text-slate-900">
-          <span>Total Due</span>
-          <span class="font-mono">{{ formatCents(store.totalCents) }}</span>
-        </div>
+        <KioskTotalsRows
+          :subtotal-label="`Subtotal (${store.cartCount} item${store.cartCount === 1 ? '' : 's'})`"
+          total-label="Total Due"
+          :subtotal-cents="store.subtotalCents"
+          :shipping-cents="store.shippingCents"
+          :shipping-tier-label="store.shippingTierLabel"
+          :tax-rate-basis-points="store.taxRateBasisPoints"
+          :tax-cents="store.taxCents"
+          :total-cents="store.totalCents"
+        />
       </div>
 
       <!-- Contact & Shipping Form -->

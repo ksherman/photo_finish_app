@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { formatCents, useKioskStore } from "../store";
+import KioskTotalsRows from "../components/KioskTotalsRows.vue";
 
 const store = useKioskStore();
 </script>
@@ -175,25 +176,14 @@ const store = useKioskStore();
 
         <!-- Totals & Proceed -->
         <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-3 shadow-xs">
-          <div class="flex justify-between text-sm text-slate-600">
-            <span>Subtotal</span>
-            <span class="font-mono">{{ formatCents(store.subtotalCents) }}</span>
-          </div>
-          <div v-if="store.shippingCents > 0" class="flex justify-between text-sm text-slate-600">
-            <span>
-              Shipping &amp; Handling
-              <span class="text-xs text-slate-400">({{ store.shippingTierLabel }} · not taxed)</span>
-            </span>
-            <span class="font-mono">{{ formatCents(store.shippingCents) }}</span>
-          </div>
-          <div class="flex justify-between text-sm text-slate-600">
-            <span>Tax ({{ (store.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
-            <span class="font-mono">{{ formatCents(store.taxCents) }}</span>
-          </div>
-          <div class="border-t border-slate-200 pt-3 flex justify-between text-lg font-extrabold text-slate-900">
-            <span>Total</span>
-            <span class="font-mono">{{ formatCents(store.totalCents) }}</span>
-          </div>
+          <KioskTotalsRows
+            :subtotal-cents="store.subtotalCents"
+            :shipping-cents="store.shippingCents"
+            :shipping-tier-label="store.shippingTierLabel"
+            :tax-rate-basis-points="store.taxRateBasisPoints"
+            :tax-cents="store.taxCents"
+            :total-cents="store.totalCents"
+          />
 
           <button
             @click="store.navigate({ name: 'checkout' })"
