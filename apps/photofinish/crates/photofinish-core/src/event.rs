@@ -947,6 +947,9 @@ impl EventBundle {
                     })
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
+            if only_unassigned {
+                selected_rows.retain(|r| r.unassigned_count > 0);
+            }
         }
 
         let mut locations: Vec<FolderLocationSummary> = loc_map.into_values().collect();
@@ -3991,5 +3994,17 @@ mod tests {
             .unwrap();
         let after_batches = bundle.list_ingest_batches(20).unwrap();
         assert_eq!(after_batches[0].unassigned_folders, 0);
+
+        // In Card View with `only_unassigned = true`, completed card cleanly returns 0 folders,
+        // while `only_unassigned = false` still allows reviewing all named folders on that card.
+        let card_remaining = bundle
+            .list_folders(None, true, None, Some(&batch2))
+            .unwrap();
+        assert_eq!(card_remaining.folders.len(), 0);
+        let card_all = bundle
+            .list_folders(None, false, None, Some(&batch2))
+            .unwrap();
+        assert_eq!(card_all.folders.len(), 1);
+        assert_eq!(card_all.folders[0].assigned_subject_id.as_deref(), Some(sub102.id.as_str()));
     }
 }

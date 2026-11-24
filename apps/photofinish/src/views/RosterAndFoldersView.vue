@@ -48,6 +48,7 @@ const newTeam = ref("");
 // Folder manager state
 const folderMode = ref<FolderMode>("unassigned");
 const activeBatchId = ref<string | null>(null);
+const cardShowAllFolders = ref(false);
 const nextCardToName = ref<IngestBatchSummary | null>(null);
 const hideMatchedSubjects = ref(
   localStorage.getItem("photofinish:hideMatchedSubjects") === "true"
@@ -257,7 +258,7 @@ interface PickerSubjectItem {
 }
 
 const isFixingExistingRotation = computed(
-  () => !activeBatchId.value && folderMode.value === "all"
+  () => (!activeBatchId.value && folderMode.value === "all") || (Boolean(activeBatchId.value) && cardShowAllFolders.value)
 );
 
 const classifiedPickerSubjects = computed<PickerSubjectItem[]>(() => {
@@ -445,7 +446,9 @@ async function loadFolders(contextParentOverride?: string | null) {
   try {
     const res = await invoke<ListFoldersResponse>("list_folders", {
       parentFilter: activeBatchId.value ? null : selectedParent.value || null,
-      onlyUnassigned: activeBatchId.value ? false : folderMode.value === "unassigned",
+      onlyUnassigned: activeBatchId.value
+        ? !cardShowAllFolders.value
+        : folderMode.value === "unassigned",
       contextParent: contextParentOverride ?? selectedFolder.value?.parentPath ?? null,
       batchId: activeBatchId.value,
     });
@@ -504,9 +507,10 @@ async function loadFolders(contextParentOverride?: string | null) {
   }
 }
 
-function selectIngestBatch(batchId: string) {
+function selectIngestBatch(batchId: string, showAll = false) {
   subTab.value = "folders";
   activeBatchId.value = batchId;
+  cardShowAllFolders.value = showAll;
   nextCardToName.value = null;
   stagedMap.value = {};
   selectedFolderPath.value = null;
@@ -515,8 +519,17 @@ function selectIngestBatch(batchId: string) {
   loadFolders();
 }
 
+function toggleCardShowAll(showAll: boolean) {
+  if (cardShowAllFolders.value === showAll) return;
+  cardShowAllFolders.value = showAll;
+  stagedMap.value = {};
+  selectedFolderPath.value = null;
+  loadFolders();
+}
+
 function exitCardView() {
   activeBatchId.value = null;
+  cardShowAllFolders.value = false;
   nextCardToName.value = null;
   stagedMap.value = {};
   selectedFolderPath.value = null;
@@ -1238,7 +1251,30 @@ watch(
               </div>
             </div>
 
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="inline-flex rounded-lg bg-slate-100 p-0.5 text-xs font-medium border border-slate-200">
+                <button
+                  @click="toggleCardShowAll(false)"
+                  class="px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5"
+                  :class="!cardShowAllFolders ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+                >
+                  Unnamed Only
+                  <span
+                    v-if="activeBatch.unassignedFolders > 0"
+                    class="px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 text-[11px]"
+                  >
+                    {{ activeBatch.unassignedFolders }}
+                  </span>
+                </button>
+                <button
+                  @click="toggleCardShowAll(true)"
+                  class="px-2.5 py-1 rounded-md transition-colors"
+                  :class="cardShowAllFolders ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'"
+                >
+                  All on Card ({{ activeBatch.totalFolders }})
+                </button>
+              </div>
+
               <label class="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                 <input v-model="renameOnDisk" type="checkbox" class="rounded" />
                 <span>Rename folders on disk</span>
@@ -1355,23 +1391,57 @@ watch(
           </div>
         </div>
 
-        <!-- Empty State -->
-        <div v-if="folderData.folders.length === 0" class="bg-white rounded-xl border border-slate-200 p-12 text-center space-y-2">
-          <div class="text-lg font-semibold text-emerald-700">
-            {{ folderMode === 'unassigned' ? 'All folders matched!' : 'No folders in this location' }}
-          </div>
-          <p class="text-sm text-slate-500">
-            <template v-if="folderMode === 'unassigned'">
-              There are no unassigned photo folders. Switch to
-              <button @click="switchFolderMode('all')" class="text-blue-600 font-medium underline">
-                All Folders (Fix Rotations)
+        <!-- Empty / Card Completed State -->
+        <div v-if="folderData.folders.length === 0" class="bg-white rounded-xl border border-slate-200 p-12 text-center space-y-3">
+          <template v-if="activeBatch">
+            <div class="text-lg font-semibold text-emerald-700">
+              Card #{{ activeBatch.sequenceNum }} complete! ✓
+            </div>
+            <p class="text-sm text-slate-500">
+              All <strong>{{ activeBatch.totalFolders }}</strong> folder{{ activeBatch.totalFolders === 1 ? '' : 's' }}
+              ({{ activeBatch.totalPhotos.toLocaleString() }} photos) in
+              <code class="text-xs font-mono text-slate-700">{{ activeBatch.destinationRelPath || "(event root)" }}</code>
+              are named and matched.
+            </p>
+            <div class="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+              <button
+                v-if="ingestStore.pendingNamingBatches.length > 0"
+                @click="selectIngestBatch(ingestStore.pendingNamingBatches[0].id)"
+                class="px-4 py-2 text-sm font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+              >
+                Next Card (#{{ ingestStore.pendingNamingBatches[0].sequenceNum }} · {{ ingestStore.pendingNamingBatches[0].readerName || ingestStore.pendingNamingBatches[0].destinationRelPath.split('/').slice(-2).join('/') }}) &rarr;
               </button>
-              to fix out-of-order rotations or rename existing folders.
-            </template>
-            <template v-else>
-              Select another location above or clear your location filter.
-            </template>
-          </p>
+              <button
+                @click="toggleCardShowAll(true)"
+                class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              >
+                Review All {{ activeBatch.totalFolders }} Folders on Card
+              </button>
+              <button
+                @click="exitCardView"
+                class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              >
+                Back to All Locations
+              </button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="text-lg font-semibold text-emerald-700">
+              {{ folderMode === 'unassigned' ? 'All folders matched!' : 'No folders in this location' }}
+            </div>
+            <p class="text-sm text-slate-500">
+              <template v-if="folderMode === 'unassigned'">
+                There are no unassigned photo folders. Switch to
+                <button @click="switchFolderMode('all')" class="text-blue-600 font-medium underline">
+                  All Folders (Fix Rotations)
+                </button>
+                to fix out-of-order rotations or rename existing folders.
+              </template>
+              <template v-else>
+                Select another location above or clear your location filter.
+              </template>
+            </p>
+          </template>
         </div>
 
         <!-- Two-Column Folder + Roster Picker -->
@@ -1381,7 +1451,12 @@ watch(
             <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
               <div>
                 <h2 class="text-sm font-semibold text-slate-800">
-                  {{ folderMode === 'unassigned' ? 'Unassigned Folders' : 'Rotation Folders' }}
+                  <template v-if="activeBatch">
+                    Card #{{ activeBatch.sequenceNum }} — {{ cardShowAllFolders ? 'All Folders' : 'Unnamed Folders' }}
+                  </template>
+                  <template v-else>
+                    {{ folderMode === 'unassigned' ? 'Unassigned Folders' : 'Rotation Folders' }}
+                  </template>
                   ({{ folderData.folders.length }})
                 </h2>
                 <p class="text-xs text-slate-500">

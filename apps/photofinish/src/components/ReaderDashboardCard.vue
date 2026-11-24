@@ -39,6 +39,11 @@ watch(autoEjectAfterIngest, (val) => {
 
 const config = computed(() => ingestStore.getReaderConfig(props.reader.reader_id));
 const copyState = computed(() => ingestStore.getCopyState(props.reader.reader_id));
+const lastBatchSummary = computed(() => {
+  const bid = copyState.value.lastResult?.batchId;
+  if (!bid) return null;
+  return ingestStore.ingestBatches.find((b) => b.id === bid) || null;
+});
 const isConfigured = computed(() => Boolean(config.value));
 const isOffline = computed(() => props.reader.volume_name === "Offline");
 
@@ -398,16 +403,24 @@ watch(
           <button @click="ingestStore.resetCopyState(reader.reader_id); lastEjected = false" class="text-emerald-600 font-bold leading-none">&times;</button>
         </div>
         <button
-          v-if="copyState.lastResult.batchId"
+          v-if="copyState.lastResult.batchId && (!lastBatchSummary || lastBatchSummary.unassignedFolders > 0)"
           @click="eventStore.openBatchForNaming(copyState.lastResult.batchId)"
           class="w-full px-2.5 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-1"
         >
-          <span>Name Folders</span>
+          <span>
+            Name Folders{{ lastBatchSummary ? ` (${lastBatchSummary.unassignedFolders})` : "" }}
+          </span>
           <span v-if="copyState.lastResult.destinationRelPath" class="font-mono font-normal opacity-90 truncate max-w-[170px]">
-            ({{ copyState.lastResult.destinationRelPath.split('/').slice(-2).join('/') }})
+            · {{ copyState.lastResult.destinationRelPath.split('/').slice(-2).join('/') }}
           </span>
           <span>&rarr;</span>
         </button>
+        <div
+          v-else-if="copyState.lastResult.batchId && lastBatchSummary && lastBatchSummary.unassignedFolders === 0"
+          class="text-[11px] font-semibold text-emerald-700"
+        >
+          All {{ lastBatchSummary.totalFolders }} folders named ✓
+        </div>
       </div>
 
       <div
