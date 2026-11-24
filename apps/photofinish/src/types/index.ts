@@ -201,6 +201,16 @@ export interface ProcessingMetrics {
   avgDbFlushMs: number;
 }
 
+export interface AvatarMetrics {
+  engine: string;
+  queued: number;
+  inFlight: number;
+  completed: number;
+  errors: number;
+  totalWithPhotos: number;
+  cachedAvatars: number;
+}
+
 export interface SubjectRecord {
   id: string;
   number: string | null;

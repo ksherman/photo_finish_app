@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
 import { useIngestStore } from "@/stores/ingest";
 import type {
+  AvatarMetrics,
   BatchReassignResult,
   FolderItem,
   ImportRosterResult,
@@ -99,6 +101,41 @@ const previewBaseUrl = computed(() => {
   const port = eventStore.lanStatus.port || 4000;
   return `http://127.0.0.1:${port}/photos/preview`;
 });
+const avatarBaseUrl = computed(() => {
+  const port = eventStore.lanStatus.port || 4000;
+  return `http://127.0.0.1:${port}/photos/avatar`;
+});
+
+// Vision avatar generation status & live cache-buster
+const avatarMetrics = ref<AvatarMetrics | null>(null);
+const avatarVersion = ref(1);
+const isGeneratingAvatars = computed(
+  () => ((avatarMetrics.value?.queued ?? 0) + (avatarMetrics.value?.inFlight ?? 0)) > 0
+);
+
+async function loadAvatarMetrics() {
+  if (!eventStore.activeEvent) return;
+  try {
+    avatarMetrics.value = await invoke<AvatarMetrics>("get_avatar_metrics");
+  } catch {
+    avatarMetrics.value = null;
+  }
+}
+
+async function triggerGenerateAvatars(force = false) {
+  errorMessage.value = null;
+  try {
+    const queued = await invoke<number>("generate_event_avatars", { force });
+    await loadAvatarMetrics();
+    if (queued > 0) {
+      bannerMessage.value = `Queued ${queued.toLocaleString()} athlete portrait avatar(s) using ${avatarMetrics.value?.engine || "Apple Vision"} — portraits will appear automatically as they finish.`;
+    } else {
+      bannerMessage.value = "All matched athletes with ready photos already have cached portrait avatars.";
+    }
+  } catch (err) {
+    errorMessage.value = String(err);
+  }
+}
 
 const totalParsedEntries = computed(() =>
   parsedFiles.value.reduce((sum, f) => sum + f.entries.length, 0)
@@ -838,6 +875,8 @@ async function runAutoMatch() {
 }
 
 let liveRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let unlistenAvatars: UnlistenFn | null = null;
+let avatarBumpTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function consumePendingBatch() {
   const bid = eventStore.pendingBatchToName;
@@ -849,8 +888,16 @@ async function consumePendingBatch() {
 
 onMounted(async () => {
   window.addEventListener("keydown", onLightboxKeyDown);
+  unlistenAvatars = await listen("avatars-updated", () => {
+    if (avatarBumpTimer) clearTimeout(avatarBumpTimer);
+    avatarBumpTimer = setTimeout(() => {
+      avatarVersion.value += 1;
+      loadAvatarMetrics();
+    }, 450);
+  });
+
   if (eventStore.activeEvent) {
-    await Promise.all([loadRosterData(), ingestStore.loadIngestBatches()]);
+    await Promise.all([loadRosterData(), ingestStore.loadIngestBatches(), loadAvatarMetrics()]);
     if (eventStore.pendingBatchToName) {
       await consumePendingBatch();
     } else {
@@ -861,7 +908,11 @@ onMounted(async () => {
   // While thumbnails for freshly downloaded cards are finishing (or other cards are downloading),
   // quietly stream updated thumbnails & queue badges without disturbing staged selections.
   liveRefreshTimer = setInterval(async () => {
-    if (!eventStore.activeEvent || subTab.value !== "folders") return;
+    if (!eventStore.activeEvent) return;
+    if (isGeneratingAvatars.value) {
+      await loadAvatarMetrics();
+    }
+    if (subTab.value !== "folders") return;
     const hasPendingThumbs = eventStore.activeEvent.photoCounts.pending > 0;
     const hasActiveCopies = ingestStore.activeCopies.length > 0;
     if (!hasPendingThumbs && !hasActiveCopies) return;
@@ -879,6 +930,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener("keydown", onLightboxKeyDown);
   if (liveRefreshTimer) clearInterval(liveRefreshTimer);
+  if (unlistenAvatars) unlistenAvatars();
+  if (avatarBumpTimer) clearTimeout(avatarBumpTimer);
 });
 
 watch(
@@ -902,6 +955,7 @@ watch(
     if (eventStore.activeEvent) {
       loadRosterData();
       ingestStore.loadIngestBatches();
+      loadAvatarMetrics();
       loadFolders();
     }
   }
@@ -1007,6 +1061,27 @@ watch(
           </div>
 
           <div class="flex flex-wrap items-center gap-2">
+            <button
+              v-if="avatarMetrics && avatarMetrics.totalWithPhotos > 0"
+              @click="triggerGenerateAvatars(false)"
+              :disabled="isGeneratingAvatars"
+              :title="`Engine: ${avatarMetrics.engine}. Click to generate missing square face/leotard portraits from ready previews.`"
+              class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-60 flex items-center gap-1.5"
+            >
+              <span
+                v-if="isGeneratingAvatars"
+                class="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"
+              />
+              <span v-if="isGeneratingAvatars">
+                Portraits ({{ avatarMetrics.cachedAvatars }}/{{ avatarMetrics.totalWithPhotos }})&hellip;
+              </span>
+              <span v-else-if="avatarMetrics.cachedAvatars < avatarMetrics.totalWithPhotos">
+                Generate Portraits ({{ avatarMetrics.totalWithPhotos - avatarMetrics.cachedAvatars }})
+              </span>
+              <span v-else>
+                Portraits Ready ({{ avatarMetrics.cachedAvatars }}) ✓
+              </span>
+            </button>
             <button
               @click="runAutoMatch"
               class="px-3.5 py-2 text-sm font-medium rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
@@ -1132,11 +1207,24 @@ watch(
               </thead>
               <tbody class="divide-y divide-slate-100">
                 <tr v-for="s in filteredRosterSubjects" :key="s.id" class="hover:bg-slate-50">
-                  <td class="px-4 py-2.5 font-mono text-slate-600">{{ s.number || "—" }}</td>
-                  <td class="px-4 py-2.5 font-medium text-slate-900">{{ s.displayName }}</td>
-                  <td class="px-4 py-2.5 text-slate-600">{{ s.groupLabel || "—" }}</td>
-                  <td class="px-4 py-2.5 text-slate-500">{{ s.teamName || "—" }}</td>
-                  <td class="px-4 py-2.5 text-right font-mono">
+                  <td class="px-4 py-2 font-mono text-slate-600">{{ s.number || "—" }}</td>
+                  <td class="px-4 py-2 font-medium text-slate-900">
+                    <div class="flex items-center gap-2.5">
+                      <div class="w-9 h-9 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center">
+                        <img
+                          v-if="s.photoCount > 0 && eventStore.lanStatus.running"
+                          :src="`${avatarBaseUrl}/${s.id}?v=${avatarVersion}`"
+                          loading="lazy"
+                          class="w-full h-full object-cover object-top"
+                        />
+                        <span v-else class="text-[10px] font-mono text-slate-400">{{ s.number || "—" }}</span>
+                      </div>
+                      <span>{{ s.displayName }}</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-2 text-slate-600">{{ s.groupLabel || "—" }}</td>
+                  <td class="px-4 py-2 text-slate-500">{{ s.teamName || "—" }}</td>
+                  <td class="px-4 py-2 text-right font-mono">
                     <span :class="s.photoCount > 0 ? 'text-emerald-700 font-semibold' : 'text-slate-400'">
                       {{ s.photoCount }}
                     </span>
@@ -1716,16 +1804,16 @@ watch(
                 ]"
               >
                 <div class="flex items-center gap-3 min-w-0">
-                  <!-- Cross-apparatus reference thumbnail (e.g. Floor photo while naming Beam!) -->
+                  <!-- Smart square Vision portrait avatar (face + leotard crop!) with clean fallback -->
                   <div
-                    class="w-9 h-12 rounded overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center"
+                    class="w-11 h-11 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center"
                     :class="item.dimmed ? 'grayscale-[70%]' : ''"
                   >
                     <img
-                      v-if="folderData.subjectSamplePhotos[item.subject.id] && eventStore.lanStatus.running"
-                      :src="`${thumbBaseUrl}/${folderData.subjectSamplePhotos[item.subject.id]}`"
+                      v-if="(item.subject.photoCount > 0 || folderData.subjectSamplePhotos[item.subject.id]) && eventStore.lanStatus.running"
+                      :src="`${avatarBaseUrl}/${item.subject.id}?v=${avatarVersion}`"
                       loading="lazy"
-                      class="w-full h-full object-cover"
+                      class="w-full h-full object-cover object-top"
                     />
                     <span v-else class="text-[10px] text-slate-400 font-mono">
                       {{ item.subject.number || "—" }}

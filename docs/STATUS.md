@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-23  
 **Active codebase:** `apps/photofinish/` (Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum)  
-**Verified test suite:** `cargo test --workspace` (25/25 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
+**Verified test suite:** `cargo test --workspace` (26/26 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
 
 ---
 
@@ -23,9 +23,10 @@
 - Persistent **drag-and-drop reader groups & left-to-right ordering** (e.g., `Gym A: Floor → Beam`) + custom reader labels locked to hardware `reader_id` (slots remain pinned when cards are ejected).
 - Per-folder copy toggles, folder/file auto-rename, Enter-to-ingest for USB barcode scanners, non-blocking copy progress via Tauri Channels, chronological `ingest_batches` audit log, per-card `⏏ Eject`, `Auto-eject after ingest`, and `⏏ Eject All`.
 
-### 4. High-Speed Thumbnail & Preview Engine (`imaging.rs`)
+### 4. High-Speed Thumbnail, Preview & Apple Vision Portrait Engine (`imaging.rs`, `avatars.rs`, `vision_avatar.m`)
 - macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (`1280px` preview → `320px` thumbnail) achieving **~170–180 photos/sec** on M4 Max (verified across 146,830 real 24MP meet photos with 0 errors), with an optimized pure-Rust SIMD fallback (`image` + `fast_image_resize`).
 - Dedicated worker pool + 64-photo batched SQLite commit flusher + live telemetry.
+- **Native macOS Apple Vision Portrait Avatars (`_photofinish/avatars/{subject_id}.jpg`):** Runs strictly on already-generated `1280px` previews via `VNDetectFaceCaptureQualityRequest` + `VNGenerateAttentionBasedSaliencyImageRequest` with foreground saliency & solo-face scoring (ignoring spectators and coach high-fives) to crop crisp `256×256` face + leotard square portraits (~100 ms/athlete on the Neural Engine). Auto-generates in the background when folders are matched, with a one-click `Generate Portraits` backfill button and graceful thumbnail fallback on `/photos/avatar/{subject_id}` for Roster & Folders and the Kiosk SPA.
 
 ### 5. Roster Import & Rotation Folder Management (`RosterAndFoldersView.vue`, `roster.rs`, `event.rs`)
 - Multi-file `.txt` and `.csv` roster import with filename-inferred session/group labels, idempotent upsert, and instant automatic photo matching (verified 99.995% auto-match on a 146,830-photo meet).

@@ -227,9 +227,20 @@ onMounted(() => {
             v-for="s in filteredSubjects"
             :key="s.id"
             @click="store.navigate({ name: 'subject', subjectId: s.id })"
-            class="w-full px-5 py-4 text-left flex items-center justify-between gap-4 hover:bg-indigo-50 active:bg-indigo-100 transition-colors"
+            class="w-full px-5 py-3.5 text-left flex items-center justify-between gap-4 hover:bg-indigo-50 active:bg-indigo-100 transition-colors"
           >
             <div class="flex items-center gap-3.5 min-w-0">
+              <div
+                v-if="s.photoCount > 0"
+                class="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0"
+              >
+                <img
+                  :src="`/photos/avatar/${s.id}`"
+                  loading="lazy"
+                  decoding="async"
+                  class="w-full h-full object-cover object-top"
+                />
+              </div>
               <span
                 v-if="s.number"
                 class="px-2.5 py-1 rounded-lg bg-slate-100 font-mono text-base font-bold text-slate-800 flex-shrink-0 min-w-[3.5rem] text-center"

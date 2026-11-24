@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
+use photofinish_core::avatars::AvatarMetrics;
 use photofinish_core::db::{LibraryEventEntry, ReaderConfig, ReaderLayoutUpdate};
 use photofinish_core::event::{
     BundleOverview, CreateEventParams, EventBundle, EventSummary, IngestBatchMeta, PhotoCounts,
@@ -321,6 +322,35 @@ pub fn get_processing_metrics(state: State<'_, AppState>) -> ProcessingMetrics {
 }
 
 #[tauri::command]
+pub async fn get_avatar_metrics(state: State<'_, AppState>) -> Result<AvatarMetrics, String> {
+    let active = state.active_event.get();
+    let pipeline = state.avatar_pipeline.clone();
+    tauri::async_runtime::spawn_blocking(move || pipeline.metrics(active.as_deref()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn generate_event_avatars(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<usize, String> {
+    let bundle = state
+        .active_event
+        .get()
+        .ok_or_else(|| "No active event open".to_string())?;
+    let pipeline = state.avatar_pipeline.clone();
+    let force_regen = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        pipeline
+            .enqueue_event_subjects(&bundle, force_regen)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn parse_roster_files(paths: Vec<String>) -> Result<Vec<ParsedRosterFile>, String> {
     let mut parsed = Vec::with_capacity(paths.len());
     for p in paths {
@@ -338,7 +368,11 @@ pub fn import_roster(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
-    bundle.import_subjects(&entries).map_err(|e| e.to_string())
+    let res = bundle.import_subjects(&entries).map_err(|e| e.to_string())?;
+    if res.auto_matched_photos > 0 {
+        let _ = state.avatar_pipeline.enqueue_event_subjects(&bundle, false);
+    }
+    Ok(res)
 }
 
 #[tauri::command]
@@ -400,9 +434,13 @@ pub fn auto_match_photos(state: State<'_, AppState>) -> Result<usize, String> {
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
-    bundle
+    let matched = bundle
         .auto_match_unassigned_photos()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if matched > 0 {
+        let _ = state.avatar_pipeline.enqueue_event_subjects(&bundle, false);
+    }
+    Ok(matched)
 }
 
 #[tauri::command]
@@ -431,9 +469,13 @@ pub fn assign_folder_to_subject(
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
     let _pause = state.pause_watcher();
-    bundle
+    let res = bundle
         .assign_folder_to_subject(&folder_path, &subject_id, rename_on_disk)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state
+        .avatar_pipeline
+        .enqueue_subjects(&bundle, [subject_id], false);
+    Ok(res)
 }
 
 #[tauri::command]
@@ -490,15 +532,29 @@ pub async fn apply_folder_reassignments(
         .active_event
         .get()
         .ok_or_else(|| "No active event open".to_string())?;
+    let affected_subjects: Vec<String> = changes
+        .iter()
+        .filter_map(|c| c.target_subject_id.clone())
+        .collect();
     let pause_guard = state.pause_watcher();
-    tauri::async_runtime::spawn_blocking(move || {
+    let bundle_clone = Arc::clone(&bundle);
+    let res = tauri::async_runtime::spawn_blocking(move || {
         let _pause = pause_guard;
-        bundle
+        bundle_clone
             .apply_folder_reassignments(&changes, rename_on_disk)
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+
+    // Quietly generate Apple Vision face avatars in the background for newly matched athletes (~100ms each)
+    if !affected_subjects.is_empty() {
+        state
+            .avatar_pipeline
+            .enqueue_subjects(&bundle, affected_subjects, false);
+    }
+
+    Ok(res)
 }
 
 #[tauri::command]

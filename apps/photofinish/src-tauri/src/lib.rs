@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
+use photofinish_core::avatars::AvatarPipeline;
 use photofinish_core::db::AppDb;
 use photofinish_core::event::{EventBundle, PendingPhotoJob};
 use photofinish_core::imaging::ImagePipeline;
@@ -15,6 +16,7 @@ pub struct AppState {
     pub active_event: SharedActiveEvent,
     pub lan_server: Mutex<Option<EmbeddedServer>>,
     pub image_pipeline: ImagePipeline,
+    pub avatar_pipeline: AvatarPipeline,
     pub watcher: std::sync::Mutex<EventWatcherManager>,
 }
 
@@ -101,11 +103,17 @@ pub fn run() {
                 })),
             ));
 
+            let avatar_emit = app.handle().clone();
+            let avatar_pipeline = AvatarPipeline::start(Some(Arc::new(move |ev| {
+                let _ = avatar_emit.emit("avatars-updated", &ev);
+            })));
+
             app.manage(AppState {
                 app_db,
                 active_event,
                 lan_server: Mutex::new(initial_server),
                 image_pipeline,
+                avatar_pipeline,
                 watcher,
             });
 
@@ -124,6 +132,8 @@ pub fn run() {
             commands::get_watcher_status,
             commands::set_auto_watch_enabled,
             commands::get_processing_metrics,
+            commands::get_avatar_metrics,
+            commands::generate_event_avatars,
             commands::parse_roster_files,
             commands::import_roster,
             commands::add_subject,

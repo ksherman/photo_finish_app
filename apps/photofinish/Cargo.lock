@@ -2956,6 +2956,7 @@ name = "photofinish-core"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cc",
  "chrono",
  "fast_image_resize",
  "image",

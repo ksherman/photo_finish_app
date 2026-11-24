@@ -1,3 +1,4 @@
+pub mod avatars;
 pub mod db;
 pub mod event;
 pub mod hardware;

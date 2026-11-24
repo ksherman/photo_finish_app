@@ -15,6 +15,7 @@ pub const EVENT_DB_FILENAME: &str = "photofinish.db";
 pub const BACKUPS_DIR_NAME: &str = "backups";
 pub const THUMBNAILS_DIR_NAME: &str = "thumbnails";
 pub const PREVIEWS_DIR_NAME: &str = "previews";
+pub const AVATARS_DIR_NAME: &str = "avatars";
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -62,6 +63,14 @@ pub fn thumbnails_dir(event_root: &Path) -> PathBuf {
 
 pub fn previews_dir(event_root: &Path) -> PathBuf {
     bundle_dir(event_root).join(PREVIEWS_DIR_NAME)
+}
+
+pub fn avatars_dir(event_root: &Path) -> PathBuf {
+    bundle_dir(event_root).join(AVATARS_DIR_NAME)
+}
+
+pub fn subject_avatar_path(event_root: &Path, subject_id: &str) -> PathBuf {
+    avatars_dir(event_root).join(format!("{}.jpg", subject_id))
 }
 
 pub fn is_event_bundle(path: &Path) -> bool {

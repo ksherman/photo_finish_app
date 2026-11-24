@@ -2813,6 +2813,86 @@ impl EventBundle {
             .optional()?;
         Ok(rel.flatten().map(|r| self.root.join(r)))
     }
+
+    /// Samples up to `max_samples` already-generated `1280px` preview paths for a subject,
+    /// spread across start/middle/finish frames so Vision sees standing salute & clear poses.
+    pub fn sample_subject_preview_paths(
+        &self,
+        subject_id: &str,
+        max_samples: usize,
+    ) -> Result<Vec<PathBuf>> {
+        if max_samples == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT preview_rel_path FROM photos
+             WHERE subject_id = ?1 AND +status = 'ready' AND preview_rel_path IS NOT NULL
+             ORDER BY filename ASC",
+        )?;
+        let all_paths: Vec<PathBuf> = stmt
+            .query_map([subject_id], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .map(|rel| self.root.join(rel))
+            .filter(|p| p.is_file())
+            .collect();
+
+        let n = all_paths.len();
+        if n <= max_samples {
+            return Ok(all_paths);
+        }
+
+        // Spread indices across start, middle, and finish frames (e.g. 0, 1, n/6, n/3, n/2, 2n/3, n-2, n-1)
+        let mut sampled = Vec::with_capacity(max_samples);
+        let mut seen = HashSet::new();
+        for i in 0..max_samples {
+            let idx = if i == 0 {
+                0
+            } else if i == 1 {
+                1.min(n - 1)
+            } else if i == max_samples - 1 {
+                n - 1
+            } else if i == max_samples - 2 {
+                n.saturating_sub(2)
+            } else {
+                ((i - 1) * (n - 1)) / (max_samples - 2)
+            };
+            if seen.insert(idx) {
+                sampled.push(all_paths[idx].clone());
+            }
+        }
+        Ok(sampled)
+    }
+
+    /// Lists all active subject IDs that currently have at least one `ready` preview photo.
+    pub fn list_subject_ids_with_ready_photos(&self) -> Result<Vec<String>> {
+        let conn = self.read_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT subject_id FROM photos
+             WHERE subject_id IS NOT NULL AND +status = 'ready' AND preview_rel_path IS NOT NULL",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
+    /// Fast fallback thumbnail path for a subject when a Vision face avatar isn't cached yet.
+    pub fn get_subject_fallback_thumbnail_path(&self, subject_id: &str) -> Result<Option<PathBuf>> {
+        let conn = self.read_conn()?;
+        let rel: Option<String> = conn
+            .query_row(
+                "SELECT thumbnail_rel_path FROM photos
+                 WHERE subject_id = ?1 AND +status = 'ready' AND thumbnail_rel_path IS NOT NULL
+                 ORDER BY filename ASC
+                 LIMIT 1",
+                [subject_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(rel.map(|r| self.root.join(r)))
+    }
 }
 
 fn is_jpeg_path(path: &Path) -> bool {

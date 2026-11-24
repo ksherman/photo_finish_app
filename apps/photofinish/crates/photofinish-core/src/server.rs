@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
+use crate::db::subject_avatar_path;
 use crate::event::{EventBundle, EventSummary, PhotoRecord, SubjectRecord};
 use crate::orders::{CreateOrderRequest, ProductRecord};
 use crate::{Error, Result};
@@ -123,6 +124,7 @@ pub fn build_router(active_event: SharedActiveEvent) -> Router {
         .route("/api/orders/{order_number}", get(api_get_order))
         .route("/photos/thumbnail/{id}", get(serve_thumbnail))
         .route("/photos/preview/{id}", get(serve_preview))
+        .route("/photos/avatar/{subject_id}", get(serve_subject_avatar))
         .fallback(serve_kiosk_spa)
         .layer(CorsLayer::permissive())
         .with_state(active_event)
@@ -328,6 +330,55 @@ async fn serve_preview(
     AxumPath(photo_id): AxumPath<String>,
 ) -> Response {
     serve_derivative(active, &photo_id, true).await
+}
+
+async fn serve_subject_avatar(
+    State(active): State<SharedActiveEvent>,
+    AxumPath(subject_id): AxumPath<String>,
+) -> Response {
+    if subject_id.is_empty()
+        || subject_id.contains('/')
+        || subject_id.contains('\\')
+        || subject_id.contains("..")
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(bundle) = active.get() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+
+    // 1. Prefer cached Vision face/saliency square avatar
+    let avatar_path = subject_avatar_path(bundle.root(), &subject_id);
+    if let Ok(bytes) = tokio::fs::read(&avatar_path).await {
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "public, max-age=3600"),
+            ],
+            bytes,
+        )
+            .into_response();
+    }
+
+    // 2. Fallback to subject's first ready thumbnail (no-cache so browsers upgrade once Vision finishes)
+    let fallback_path = match bundle.get_subject_fallback_thumbnail_path(&subject_id) {
+        Ok(Some(p)) => p,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    match tokio::fs::read(&fallback_path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn serve_derivative(active: SharedActiveEvent, photo_id: &str, preview: bool) -> Response {

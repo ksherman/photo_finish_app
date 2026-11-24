@@ -212,15 +212,27 @@ watch(() => props.subjectId, fetchDetail);
             <span>Search</span>
           </button>
 
-          <div v-if="subject" class="min-w-0">
-            <h1 class="text-lg sm:text-xl font-extrabold text-slate-900 truncate">
-              {{ subject.displayName }}
-            </h1>
-            <p class="text-xs text-slate-500">
-              {{ photos.length }} photos
-              <span v-if="subject.groupLabel"> · {{ subject.groupLabel }}</span>
-              <span v-if="subject.teamName"> · {{ subject.teamName }}</span>
-            </p>
+          <div v-if="subject" class="flex items-center gap-3 min-w-0">
+            <div
+              v-if="photos.length > 0"
+              class="w-11 h-11 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0"
+            >
+              <img
+                :src="`/photos/avatar/${subject.id}`"
+                decoding="async"
+                class="w-full h-full object-cover object-top"
+              />
+            </div>
+            <div class="min-w-0">
+              <h1 class="text-lg sm:text-xl font-extrabold text-slate-900 truncate">
+                {{ subject.displayName }}
+              </h1>
+              <p class="text-xs text-slate-500">
+                {{ photos.length }} photos
+                <span v-if="subject.groupLabel"> · {{ subject.groupLabel }}</span>
+                <span v-if="subject.teamName"> · {{ subject.teamName }}</span>
+              </p>
+            </div>
           </div>
         </div>
 
