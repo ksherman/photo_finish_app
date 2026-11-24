@@ -1,36 +1,36 @@
 # PhotoFinish — Implementation Status
 
-**Last updated:** 2026-11-23  
-**Active codebase:** `apps/photofinish/` (Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum)  
-**Verified test suite:** `cargo test --workspace` (28/28 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
+**Last updated:** 2026-11-24  
+**Stack:** Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum (top-level repo root)  
+**Verified checks:** `cargo test --workspace` (28/28 passing), `cargo clippy --workspace --all-targets -- -D warnings` (0 warnings), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
 
 ---
 
-## Built & Working (`apps/photofinish/`)
+## Built & Working
 
 ### 1. Portable Storage & Safe Migrations (`crates/photofinish-core/src/db/`)
 - **Portable Event Bundle (`<event>/_photofinish/photofinish.db`):** SQLite WAL mode, relative-only photo/derivative paths, forward-only embedded migrations (`0001_event_initial.sql`, `0002_event_shipping.sql`), automatic pre-migration online backups (`_photofinish/backups/`), and `SchemaTooNew` mixed-version protection.
 - **Machine-Local App DB (`photofinish_app.db`):** Library bookmarks, machine settings, and hardware-locked USB card reader configs + persistent layout/groups (`0001_app_initial.sql`, `0002_app_reader_layout.sql`).
 
-### 2. Event Bundle Manager & Multi-Station Gathering (`EventsView.vue` + `event.rs` + `preset.rs`)
+### 2. Event Bundle Manager & Multi-Station Gathering (`src/views/EventsView.vue`, `crates/photofinish-core/src/event/`, `preset.rs`)
 - Create events with sport-agnostic presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, optional folder scaffolding, and remembered per-machine `station_code` default (`A` by default, auto-saved if changed on a secondary server).
 - Open existing event bundles or recursively **Gather** nested weekend event bundles from a shared parent / NAS directory (up to 6 levels deep, stopping immediately at bundle boundaries so photo folders are never walked).
 - Read-only **Consolidated Multi-Station Overview** across all gathered bundles (live station badges, photo/roster/order counts, combined paid revenue, duplicate order-number collision detection, `SchemaTooNew` indicators, and one-click consolidated CSV export).
 - **Auto-Watch (`watcher.rs` / macOS FSEvents) & Two-Way Reconcile:** Enabled by default whenever an event bundle is open — coalesces Finder drops, folder renames, and deleted folders with a 1.5s quiet debounce, reconciles only the affected subfolder(s), auto-prunes orphaned DB rows + cached `_photofinish/` thumbnails/previews (preserving order history via `ON DELETE SET NULL`), pauses automatically during internal Card Ingest & Rotation Renaming, and surfaces live `Auto-Watch` toggle + `+X new · Y removed` sync badges in `ServerStatusBar.vue`. Manual **Scan Folder** runs a full-event two-way reconcile to catch changes made while PhotoFinish was closed.
 
-### 3. Hardware Card Ingest (`IngestView.vue`, `ReaderDashboardCard.vue`, `ReaderSetupModal.vue`, `hardware/`)
+### 3. Hardware Card Ingest (`src/views/IngestView.vue`, `ReaderDashboardCard.vue`, `ReaderSetupModal.vue`, `crates/photofinish-core/src/hardware/`)
 - macOS `diskutil` + `ioreg` USB hardware serial discovery (with `sdxc-builtin` support, duplicate-serial `DeviceTreePath` disambiguation, and automatic exclusion of virtual disks / `.dmg` images like `Docker`).
 - Persistent **drag-and-drop reader groups & left-to-right ordering** (e.g., `Gym A: Floor → Beam`) + custom reader labels locked to hardware `reader_id` (slots remain pinned when cards are ejected).
 - Per-folder copy toggles, folder/file auto-rename, Enter-to-ingest for USB barcode scanners, non-blocking copy progress via Tauri Channels, chronological `ingest_batches` audit log, per-card `⏏ Eject`, `Auto-eject after ingest`, and `⏏ Eject All`.
 
-### 4. High-Speed Thumbnail, Preview & Apple Vision Portrait Engine (`imaging.rs`, `avatars.rs`, `vision_avatar.m`)
+### 4. High-Speed Thumbnail, Preview & Apple Vision Portrait Engine (`crates/photofinish-core/src/imaging/`, `avatars.rs`, `vision_avatar.m`)
 - macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (`1280px` preview → `320px` thumbnail) achieving **~170–180 photos/sec** on M4 Max (verified across 146,830 real 24MP meet photos with 0 errors), with an optimized pure-Rust SIMD fallback (`image` + `fast_image_resize`).
 - Dedicated worker pool + 64-photo batched SQLite commit flusher + live telemetry.
 - **Native macOS Apple Vision Portrait Avatars (`_photofinish/avatars/{subject_id}.jpg`):** Runs strictly on already-generated `1280px` previews via `VNDetectFaceCaptureQualityRequest` + `VNGenerateAttentionBasedSaliencyImageRequest` with foreground saliency & solo-face scoring (ignoring spectators and coach high-fives) to crop crisp `256×256` face + leotard square portraits (~100 ms/athlete on the Neural Engine). Auto-generates in the background when folders are matched, with a one-click `Generate Portraits` backfill button and graceful thumbnail fallback on `/photos/avatar/{subject_id}` for Roster & Folders and the Kiosk SPA.
 
-### 5. Roster Import & Rotation Folder Management (`RosterAndFoldersView.vue`, `roster.rs`, `event.rs`)
+### 5. Roster Import & Rotation Folder Management (`src/views/RosterAndFoldersView.vue`, `src/components/roster/`, `roster.rs`, `event/folders.rs`)
 - Multi-file `.txt` and `.csv` roster import with filename-inferred session/group labels, idempotent upsert, and instant automatic photo matching (verified 99.995% auto-match on a 146,830-photo meet).
-- **Live Card Naming Queue (`ingest_batches` bridge):** Finished cards show a direct `Name Folders →` button and appear in a shared live Card Queue strip across `Card Ingest` and `Roster & Folders` (showing actively downloading cards `%` alongside finished cards waiting to be named, scoped strictly to that card's `ingest_batch_id` with live-streaming thumbnails and a 1-click `Next Card →` handoff when cleared). Also includes an `Ingest Folder…` modal for local folder/thumb-drive drops and multi-card testing.
+- **Live Card Naming Queue (`ingest_batches` bridge):** Finished cards show a direct `Name Folders →` button and appear in `CardNamingQueueStrip.vue` across `Card Ingest` and `Roster & Folders` (showing actively downloading cards `%` alongside finished cards waiting to be named, scoped strictly to that card's `ingest_batch_id` with live-streaming thumbnails and a 1-click `Next Card →` handoff when cleared). Also includes an `Ingest Folder…` modal for local folder/thumb-drive drops and multi-card testing.
 - **Unassigned Only** and **All Folders (Fix Rotations)** browsing with multi-word location filtering.
 - Smart scope picker (`Same Group` inferred from sibling apparatuses → `Same Session` → `All Roster` for late/out-of-group athletes) with cross-apparatus reference thumbnails, click-to-zoom preview lightbox, and **in-place progressive narrowing** (roster stays strictly sorted by bib number without jumping around, while athletes already staged, matched in this rotation, or already photographed on the same apparatus/section earlier in the session grey out in place, with an optional `Hide matched` toggle).
 - **Swap-safe batch rotation renaming:** Stage multiple folder changes → Preview & Confirm modal (`Swapped` / `Renamed` / `Merged` badges) → atomic two-phase disk staging + two-phase SQLite transaction (zero photo mixing on cyclic shifts, collision-safe merges).
@@ -43,7 +43,7 @@
 - v3 Pricing Ladder Cart (`/cart`): Single Digital ($25) with automatic **3-photo tipping-point upgrade prompt** → Full Digital ($85) + Prints (5×7–16×20) + **+$10 Instant Dual USB-C/A** add-on, plus automatic **untaxed print shipping & handling** (`$3.00` for prints ≤ 8×10, `$10.00` for 11×14+, `$0` for digital/USB-only).
 - Checkout (`/checkout`) with required mailing address for print drop-shipping + Confirmation (`/order/:orderNumber`) with subtotal/S&H/tax breakdown and offline Square POS QR (`square-commerce-v1://`).
 
-### 7. Orders Desk & Native Instant USB-C/A Fulfillment (`OrdersView.vue`, `orders.rs`, `hardware/`)
+### 7. Orders Desk & Native Instant USB-C/A Fulfillment (`src/views/OrdersView.vue`, `src/components/orders/`, `orders.rs`, `event/usb.rs`, `hardware/`)
 - Auto-refreshing Order Desk (polls every 5s) with clickable KPI cards, queue filters, search, Square POS QR modal, payment reconciliation (`Square QR`, `Square Terminal`, `Cash`, `Check`, `Other`, `Refunded`), staff notes, and per-item fulfillment toggles.
 - Native external USB drive discovery with free-space checks, `DCIM/` camera-card safety warnings, `<Subject>/<Apparatus>/<filename>` plan preview, streaming copy with live `MB/s` progress bar, auto-fulfill USB items, and auto-eject (`diskutil eject`).
 - Per-event **Pricing & Tax** editor (order code, station code, sales tax rate, product prices/availability, add custom products — live on kiosks immediately).
@@ -66,6 +66,6 @@
 
 ---
 
-## Legacy Reference Prototypes (Archived in Repo)
+## Historical Prototypes
 
-- `server/` (Elixir/Phoenix 1.8 + Ash 3 + PostgreSQL 18 + Oban + `vix`) and `apps/ingest/` (standalone Tauri prototype) remain untouched as historical references and are superseded by `apps/photofinish/`.
+Earlier v1 prototypes (`server/` Elixir/Phoenix + Ash + PostgreSQL and `apps/ingest/` standalone Tauri ingest prototype) were removed after v2 consolidation and are preserved in git under the `archive/v1-prototypes` tag.

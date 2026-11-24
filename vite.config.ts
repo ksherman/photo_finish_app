@@ -26,7 +26,15 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**", "**/crates/**"],
+      ignored: [
+        "**/src-tauri/**",
+        "**/crates/**",
+        "**/docs/**",
+        "**/as-built/**",
+        "**/test-images/**",
+        "**/test-ingest/**",
+        "**/test-xcel/**",
+      ],
     },
   },
 }));

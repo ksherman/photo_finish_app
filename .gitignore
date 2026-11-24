@@ -1,10 +1,19 @@
+# Build & dependency outputs
+node_modules/
+dist/
+target/
+src-tauri/gen/
+crates/photofinish-core/kiosk-dist/*
+!crates/photofinish-core/kiosk-dist/.gitkeep
 
+# OS & editor files
 .DS_Store
+*.DS_Store
 .vscode/
+
+# Local test fixtures & reference archives
 as-built/
 order_form.png
 test-ingest/
 test-images/
 test-xcel/
-
-
