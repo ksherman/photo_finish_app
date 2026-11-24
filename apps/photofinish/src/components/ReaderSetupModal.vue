@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { useEventStore } from "@/stores/event";
@@ -23,26 +23,11 @@ const customLabel = ref("");
 const groupName = ref("");
 const destination = ref("");
 const photographer = ref("");
-const cameraBrand = ref("");
 const renamePrefix = ref("");
 const autoRename = ref(false);
 const requireSubfolder = ref(false);
 const fileRenamePrefix = ref("");
 const hasExistingConfig = ref(false);
-
-const cameraBrands = [
-  { label: "Sony (DCIM)", value: "sony", folderPath: "DCIM" },
-  { label: "Canon (DCIM)", value: "canon", folderPath: "DCIM" },
-  { label: "Nikon (DCIM)", value: "nikon", folderPath: "DCIM" },
-  { label: "Fujifilm (DCIM)", value: "fujifilm", folderPath: "DCIM" },
-  { label: "Panasonic (DCIM)", value: "panasonic", folderPath: "DCIM" },
-  { label: "Olympus (DCIM)", value: "olympus", folderPath: "DCIM" },
-  { label: "Card Root (No DCIM)", value: "root", folderPath: "" },
-];
-
-const selectedCameraBrand = computed(() =>
-  cameraBrands.find((b) => b.value === cameraBrand.value)
-);
 
 const previewFileCount = ref(0);
 const previewFolderCount = ref(0);
@@ -55,25 +40,25 @@ onMounted(() => {
     groupName.value = existing.groupName || "";
     destination.value = existing.destination;
     photographer.value = existing.photographer;
-    cameraBrand.value = existing.cameraBrand;
     renamePrefix.value = existing.renamePrefix || "";
     autoRename.value = existing.autoRename;
     requireSubfolder.value = existing.requireSubfolder;
     fileRenamePrefix.value = existing.fileRenamePrefix || "";
-    if (props.reader.volume_name !== "Offline") {
-      loadPreview(existing.cameraFolderPath);
-    }
   } else if (props.defaultGroup) {
     groupName.value = props.defaultGroup;
   }
+
+  if (props.reader.volume_name !== "Offline") {
+    loadPreview();
+  }
 });
 
-async function loadPreview(folderPath: string) {
+async function loadPreview() {
   try {
-    const basePath = folderPath
-      ? `${props.reader.mount_point}/${folderPath}`
-      : props.reader.mount_point;
-    const entries = await invoke<DirectoryEntry[]>("list_directory", { path: basePath });
+    const entries = await invoke<DirectoryEntry[]>("list_directory", {
+      path: props.reader.mount_point,
+      autoEnterDcim: true,
+    });
     const dirs = entries.filter((e) => e.is_directory);
     previewFolderCount.value = dirs.length;
     previewFileCount.value = dirs.reduce((sum, d) => sum + d.file_count, 0);
@@ -82,13 +67,6 @@ async function loadPreview(folderPath: string) {
     previewFolderCount.value = 0;
   }
 }
-
-watch(cameraBrand, (val) => {
-  const brand = cameraBrands.find((b) => b.value === val);
-  if (brand && props.reader.volume_name !== "Offline") {
-    loadPreview(brand.folderPath);
-  }
-});
 
 async function browseSubfolderInEvent() {
   const defaultPath = eventStore.activeEvent?.rootPath;
@@ -107,10 +85,7 @@ async function browseSubfolderInEvent() {
   }
 }
 
-const isValid = computed(() => Boolean(photographer.value.trim() && cameraBrand.value));
-
 async function save() {
-  if (!isValid.value || !selectedCameraBrand.value) return;
   const existing = ingestStore.getReaderConfig(props.reader.reader_id);
   const nextGroup = groupName.value.trim() || null;
 
@@ -132,8 +107,8 @@ async function save() {
     sortOrder,
     destination: destination.value.trim().replace(/^\/+|\/+$/g, ""),
     photographer: photographer.value.trim(),
-    cameraBrand: cameraBrand.value,
-    cameraFolderPath: selectedCameraBrand.value.folderPath,
+    cameraBrand: "auto",
+    cameraFolderPath: "",
     renamePrefix: renamePrefix.value.trim(),
     autoRename: autoRename.value,
     fileRenamePrefix: fileRenamePrefix.value.trim() || null,
@@ -233,36 +208,26 @@ async function removeThisReader() {
         </p>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">Photographer Initials *</label>
-          <input
-            v-model="photographer"
-            type="text"
-            placeholder="e.g., KDS"
-            class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">Camera Brand *</label>
-          <select
-            v-model="cameraBrand"
-            class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
-          >
-            <option value="">Select camera brand...</option>
-            <option v-for="b in cameraBrands" :key="b.value" :value="b.value">
-              {{ b.label }}
-            </option>
-          </select>
-        </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-700 mb-1">
+          Photographer Initials (Optional)
+        </label>
+        <input
+          v-model="photographer"
+          type="text"
+          placeholder="e.g., KDS"
+          class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+        />
+        <p class="text-xs text-slate-400 mt-1">
+          Saved on this reader config and stamped onto every ingested card batch &amp; photo.
+        </p>
       </div>
 
       <div
-        v-if="cameraBrand && (previewFileCount > 0 || previewFolderCount > 0)"
+        v-if="previewFileCount > 0 || previewFolderCount > 0"
         class="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-800"
       >
-        Found {{ previewFileCount }} photos in {{ previewFolderCount }} folders
+        Detected {{ previewFileCount.toLocaleString() }} photos in {{ previewFolderCount }} folder{{ previewFolderCount === 1 ? '' : 's' }} on card (auto-detects <code>DCIM/</code>).
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -321,8 +286,7 @@ async function removeThisReader() {
         </button>
         <button
           @click="save"
-          :disabled="!isValid"
-          class="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-400 font-medium"
+          class="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
         >
           Save Configuration
         </button>

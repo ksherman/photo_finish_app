@@ -232,6 +232,19 @@ where
     Ok((copied_files as usize, copied_bytes, elapsed_secs))
 }
 
+/// Resolves the photo folder root for a card mount or local source directory:
+/// automatically enters `DCIM/` (or `dcim/`) when present on a camera card,
+/// otherwise uses `path` directly.
+pub fn resolve_photo_source_dir(path: &Path) -> PathBuf {
+    for name in ["DCIM", "dcim"] {
+        let dcim = path.join(name);
+        if dcim.is_dir() {
+            return dcim;
+        }
+    }
+    path.to_path_buf()
+}
+
 pub fn list_directory(path: &Path) -> Result<Vec<DirectoryEntry>> {
     let mut entries = Vec::new();
     if let Ok(read_dir) = fs::read_dir(path) {
@@ -344,7 +357,8 @@ pub fn copy_files_into_event<F>(
 where
     F: FnMut(CopyProgressEvent),
 {
-    let source = &opts.source_path;
+    let resolved_source = resolve_photo_source_dir(&opts.source_path);
+    let source = &resolved_source;
     let clean_rel = opts.destination_rel_path.trim().trim_matches('/');
     let dest = if clean_rel.is_empty() {
         opts.event_root.clone()

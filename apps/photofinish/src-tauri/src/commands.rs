@@ -589,8 +589,16 @@ pub async fn discover_card_readers() -> Result<Vec<CardReaderInfo>, String> {
 }
 
 #[tauri::command]
-pub fn list_directory(path: String) -> Result<Vec<DirectoryEntry>, String> {
-    hardware::list_directory(&PathBuf::from(path)).map_err(|e| e.to_string())
+pub fn list_directory(
+    path: String,
+    auto_enter_dcim: Option<bool>,
+) -> Result<Vec<DirectoryEntry>, String> {
+    let target = if auto_enter_dcim.unwrap_or(false) {
+        hardware::resolve_photo_source_dir(&PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    };
+    hardware::list_directory(&target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

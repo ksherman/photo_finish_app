@@ -253,9 +253,7 @@ export const useIngestStore = defineStore("ingest", {
         lastResult: null,
       };
 
-      const sourcePath = config.cameraFolderPath
-        ? `${reader.mount_point}/${config.cameraFolderPath}`
-        : reader.mount_point;
+      const sourcePath = reader.mount_point;
 
       try {
         const startTime = performance.now();

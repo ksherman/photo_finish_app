@@ -86,11 +86,11 @@ function previewFolderName(name: string, prefix: string): string {
 
 async function loadFolderList() {
   if (!config.value || isOffline.value) return;
-  const basePath = config.value.cameraFolderPath
-    ? `${props.reader.mount_point}/${config.value.cameraFolderPath}`
-    : props.reader.mount_point;
   try {
-    const entries = await invoke<DirectoryEntry[]>("list_directory", { path: basePath });
+    const entries = await invoke<DirectoryEntry[]>("list_directory", {
+      path: props.reader.mount_point,
+      autoEnterDcim: true,
+    });
     folderEntries.value = entries.filter((e) => e.is_directory);
     const defaults: Record<string, boolean> = {};
     for (const entry of folderEntries.value) {
@@ -287,7 +287,7 @@ watch(
         <div class="grid grid-cols-2 gap-2 text-sm">
           <div>
             <span class="text-slate-500 block text-xs">Photographer</span>
-            <span class="font-medium text-slate-900">{{ config.photographer }}</span>
+            <span class="font-medium text-slate-900">{{ config.photographer || "—" }}</span>
           </div>
           <div v-if="!isOffline">
             <span class="text-slate-500 block text-xs">On Card</span>
