@@ -118,9 +118,21 @@ function bibNum(s: SubjectRecord): number {
   return Number.isNaN(n) ? Number.MAX_SAFE_INTEGER : n;
 }
 
+function sortSubjectsByNumber(list: SubjectRecord[]): SubjectRecord[] {
+  return [...list].sort((a, b) => {
+    const na = bibNum(a);
+    const nb = bibNum(b);
+    if (na !== nb) return na - nb;
+    return a.displayName.localeCompare(b.displayName, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
+}
+
 function rankAndFilterSubjects(list: SubjectRecord[], query: string): SubjectRecord[] {
   const raw = query.trim().toLowerCase();
-  if (!raw) return list;
+  if (!raw) return sortSubjectsByNumber(list);
 
   const matches: Array<{ subject: SubjectRecord; rank: number; bib: number }> = [];
   for (const s of list) {
@@ -328,12 +340,19 @@ const classifiedPickerSubjects = computed<PickerSubjectItem[]>(() => {
   });
 });
 
-const unmatchedPickerItems = computed(() =>
-  classifiedPickerSubjects.value.filter((item) => !item.dimmed)
+const visiblePickerItems = computed(() => {
+  if (!hideMatchedSubjects.value) {
+    return classifiedPickerSubjects.value;
+  }
+  return classifiedPickerSubjects.value.filter((item) => !item.dimmed);
+});
+
+const remainingCount = computed(() =>
+  classifiedPickerSubjects.value.reduce((n, item) => n + (item.dimmed ? 0 : 1), 0)
 );
 
-const dimmedPickerItems = computed(() =>
-  classifiedPickerSubjects.value.filter((item) => item.dimmed)
+const dimmedCount = computed(() =>
+  classifiedPickerSubjects.value.reduce((n, item) => n + (item.dimmed ? 1 : 0), 0)
 );
 
 function sanitizeFolderName(name: string): string {
@@ -1626,21 +1645,21 @@ watch(
                 </div>
 
                 <label
-                  v-if="dimmedPickerItems.length > 0"
+                  v-if="dimmedCount > 0"
                   class="flex items-center gap-1.5 text-slate-600 cursor-pointer select-none"
-                  title="Hide already-matched athletes completely instead of greying them out at the bottom"
+                  title="Hide already-matched athletes instead of greying them out in place"
                 >
                   <input v-model="hideMatchedSubjects" type="checkbox" class="rounded" />
-                  <span>Hide matched ({{ dimmedPickerItems.length }})</span>
+                  <span>Hide matched ({{ dimmedCount }})</span>
                 </label>
               </div>
 
               <!-- Live Remaining Counter -->
               <div class="flex items-center justify-between gap-2 text-xs text-slate-500">
                 <span>
-                  <strong class="text-slate-800">{{ unmatchedPickerItems.length }}</strong> remaining
-                  <template v-if="dimmedPickerItems.length > 0">
-                    · {{ dimmedPickerItems.length }} already matched{{ folderData.sectionLabel ? ` on ${folderData.sectionLabel}` : '' }}
+                  <strong class="text-slate-800">{{ remainingCount }}</strong> remaining
+                  <template v-if="dimmedCount > 0">
+                    · {{ dimmedCount }} already matched{{ folderData.sectionLabel ? ` on ${folderData.sectionLabel}` : '' }}
                   </template>
                 </span>
               </div>
@@ -1678,23 +1697,30 @@ watch(
             </div>
 
             <div class="divide-y divide-slate-100 overflow-y-auto flex-1">
-              <!-- Remaining (Unmatched) Athletes First — Full Crisp Contrast -->
+              <!-- Unified Numeric-Sorted Roster: Already-Matched Athletes Grey Out In Place (Never Jump Around!) -->
               <button
-                v-for="item in unmatchedPickerItems"
+                v-for="item in visiblePickerItems"
                 :key="item.subject.id"
                 @click="stageFolderTarget(item.subject.id)"
                 :disabled="!selectedFolder"
-                class="w-full px-3.5 py-2 text-left flex items-center justify-between gap-3 transition-colors"
+                class="w-full px-3.5 py-2 text-left flex items-center justify-between gap-3 transition-all"
                 :class="[
-                  selectedFolder ? 'hover:bg-indigo-50 cursor-pointer' : 'opacity-50 cursor-not-allowed',
+                  selectedFolder ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed',
                   selectedFolder && stagedMap[selectedFolder.folderPath] === item.subject.id
                     ? 'bg-indigo-50/90'
-                    : '',
+                    : item.dimmed
+                      ? 'bg-slate-50/80 opacity-45 hover:opacity-85 hover:bg-slate-100/80'
+                      : selectedFolder
+                        ? 'hover:bg-indigo-50'
+                        : '',
                 ]"
               >
                 <div class="flex items-center gap-3 min-w-0">
                   <!-- Cross-apparatus reference thumbnail (e.g. Floor photo while naming Beam!) -->
-                  <div class="w-9 h-12 rounded overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center">
+                  <div
+                    class="w-9 h-12 rounded overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center"
+                    :class="item.dimmed ? 'grayscale-[70%]' : ''"
+                  >
                     <img
                       v-if="folderData.subjectSamplePhotos[item.subject.id] && eventStore.lanStatus.running"
                       :src="`${thumbBaseUrl}/${folderData.subjectSamplePhotos[item.subject.id]}`"
@@ -1708,10 +1734,21 @@ watch(
 
                   <div class="min-w-0">
                     <div class="flex items-center gap-2">
-                      <span v-if="item.subject.number" class="font-mono text-xs font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded">
+                      <span
+                        v-if="item.subject.number"
+                        class="font-mono text-xs px-1.5 py-0.5 rounded"
+                        :class="
+                          item.dimmed
+                            ? 'font-medium text-slate-500 bg-slate-200/70 line-through decoration-slate-400'
+                            : 'font-semibold text-slate-700 bg-slate-100'
+                        "
+                      >
                         {{ item.subject.number }}
                       </span>
-                      <span class="text-sm font-medium text-slate-900 truncate">
+                      <span
+                        class="text-sm truncate"
+                        :class="item.dimmed ? 'font-normal text-slate-500' : 'font-medium text-slate-900'"
+                      >
                         {{ item.subject.firstName }} {{ item.subject.lastName || "" }}
                       </span>
                     </div>
@@ -1729,72 +1766,18 @@ watch(
                 </div>
               </button>
 
-              <!-- Already-Matched Athletes (Greyed Out & Sunk Below Remaining so Fewer Numbers Stay Bright!) -->
-              <template v-if="!hideMatchedSubjects && dimmedPickerItems.length > 0">
-                <div class="px-3.5 py-1.5 bg-slate-100/90 text-[11px] font-semibold uppercase tracking-wide text-slate-400 flex items-center justify-between">
-                  <span>
-                    Already Matched{{ folderData.sectionLabel ? ` on ${folderData.sectionLabel}` : '' }} ({{ dimmedPickerItems.length }})
-                  </span>
-                  <span class="normal-case font-normal">Still clickable if needed</span>
-                </div>
-
-                <button
-                  v-for="item in dimmedPickerItems"
-                  :key="item.subject.id"
-                  @click="stageFolderTarget(item.subject.id)"
-                  :disabled="!selectedFolder"
-                  class="w-full px-3.5 py-2 text-left flex items-center justify-between gap-3 bg-slate-50/70 opacity-45 hover:opacity-85 hover:bg-slate-100/80 transition-all"
-                  :class="selectedFolder ? 'cursor-pointer' : 'cursor-not-allowed'"
-                >
-                  <div class="flex items-center gap-3 min-w-0">
-                    <div class="w-9 h-12 rounded overflow-hidden bg-slate-100 border border-slate-200 flex-shrink-0 flex items-center justify-center grayscale-[65%]">
-                      <img
-                        v-if="folderData.subjectSamplePhotos[item.subject.id] && eventStore.lanStatus.running"
-                        :src="`${thumbBaseUrl}/${folderData.subjectSamplePhotos[item.subject.id]}`"
-                        loading="lazy"
-                        class="w-full h-full object-cover"
-                      />
-                      <span v-else class="text-[10px] text-slate-400 font-mono">
-                        {{ item.subject.number || "—" }}
-                      </span>
-                    </div>
-
-                    <div class="min-w-0">
-                      <div class="flex items-center gap-2">
-                        <span v-if="item.subject.number" class="font-mono text-xs font-medium text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded line-through decoration-slate-400">
-                          {{ item.subject.number }}
-                        </span>
-                        <span class="text-sm font-normal text-slate-500 truncate">
-                          {{ item.subject.firstName }} {{ item.subject.lastName || "" }}
-                        </span>
-                      </div>
-                      <div class="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
-                        <span v-if="item.subject.groupLabel">{{ item.subject.groupLabel }}</span>
-                        <span>· {{ item.subject.photoCount }} photos</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div v-if="item.badgeText" class="flex items-center gap-1.5 flex-shrink-0">
-                    <span class="px-2 py-0.5 text-[11px] rounded-full" :class="item.badgeClass">
-                      {{ item.badgeText }}
-                    </span>
-                  </div>
-                </button>
-              </template>
-
-              <div v-if="unmatchedPickerItems.length === 0 && (hideMatchedSubjects || dimmedPickerItems.length === 0)" class="p-8 text-center text-sm text-slate-500 space-y-2">
-                <div v-if="hideMatchedSubjects && dimmedPickerItems.length > 0">
-                  All {{ dimmedPickerItems.length }} matching {{ subjectLabel.toLowerCase() }}(s) in this scope are already matched.
+              <div v-if="visiblePickerItems.length === 0" class="p-8 text-center text-sm text-slate-500 space-y-2">
+                <div v-if="hideMatchedSubjects && dimmedCount > 0">
+                  All {{ dimmedCount }} matching {{ subjectLabel.toLowerCase() }}(s) in this scope are already matched.
                 </div>
                 <div v-else>No {{ subjectLabel.toLowerCase() }}s match this filter.</div>
                 <div class="flex justify-center gap-2">
                   <button
-                    v-if="hideMatchedSubjects && dimmedPickerItems.length > 0"
+                    v-if="hideMatchedSubjects && dimmedCount > 0"
                     @click="hideMatchedSubjects = false"
                     class="px-3 py-1 text-xs rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium"
                   >
-                    Show Matched ({{ dimmedPickerItems.length }})
+                    Show Matched ({{ dimmedCount }})
                   </button>
                   <button
                     v-if="pickerScope !== 'session' && folderData.detectedSessionGroup"

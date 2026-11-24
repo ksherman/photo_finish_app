@@ -1061,9 +1061,6 @@ impl EventBundle {
             if let Some(ref sec) = sec_opt {
                 section_label = Some(sec.clone());
                 for (other_parent, sid) in &assigned_folder_index {
-                    if other_parent == ctx_parent {
-                        continue;
-                    }
                     let other_segs: Vec<&str> = other_parent.split('/').collect();
                     let same_section = other_segs
                         .last()

@@ -228,7 +228,8 @@ export const useIngestStore = defineStore("ingest", {
         this.ingestBatches = await invoke<IngestBatchSummary[]>("list_ingest_batches", {
           limit,
         });
-      } catch {
+      } catch (err) {
+        console.warn("list_ingest_batches failed (restart tauri dev if Rust was updated):", err);
         this.ingestBatches = [];
       }
     },
