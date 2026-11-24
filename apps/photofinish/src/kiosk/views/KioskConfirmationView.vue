@@ -87,7 +87,7 @@ watch(() => props.orderNumber, loadOrder);
         </p>
       </div>
 
-      <!-- Compact Item & Tax Summary -->
+      <!-- Compact Item, Shipping & Tax Summary -->
       <div class="text-left border-t border-slate-200 pt-4 space-y-1.5 text-sm">
         <div v-for="item in order.items" :key="item.id" class="flex justify-between text-slate-600">
           <span class="truncate pr-3">
@@ -96,9 +96,28 @@ watch(() => props.orderNumber, loadOrder);
           </span>
           <span class="font-mono font-semibold text-slate-800">{{ formatCents(item.lineTotalCents) }}</span>
         </div>
-        <div class="flex justify-between text-slate-500 pt-2 border-t border-slate-100">
+        <div v-if="order.shippingCents > 0" class="flex justify-between text-slate-500 pt-2 border-t border-slate-100">
+          <span>Subtotal</span>
+          <span class="font-mono">{{ formatCents(order.subtotalCents) }}</span>
+        </div>
+        <div v-if="order.shippingCents > 0" class="flex justify-between text-slate-500">
+          <span>Shipping &amp; Handling <span class="text-xs text-slate-400">(not taxed)</span></span>
+          <span class="font-mono">{{ formatCents(order.shippingCents) }}</span>
+        </div>
+        <div
+          class="flex justify-between text-slate-500"
+          :class="order.shippingCents > 0 ? '' : 'pt-2 border-t border-slate-100'"
+        >
           <span>Tax ({{ (order.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
           <span class="font-mono">{{ formatCents(order.taxCents) }}</span>
+        </div>
+        <div
+          v-if="order.shippingAddress"
+          class="pt-2 mt-1 border-t border-slate-100 text-xs text-slate-500"
+        >
+          <span class="font-semibold text-slate-600">Mailing prints to:</span>
+          {{ order.shippingAddress.street }}<template v-if="order.shippingAddress.street2"> {{ order.shippingAddress.street2 }}</template>,
+          {{ order.shippingAddress.city }}, {{ order.shippingAddress.state }} {{ order.shippingAddress.zip }}
         </div>
       </div>
 

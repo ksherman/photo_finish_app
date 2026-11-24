@@ -36,6 +36,7 @@ const orderData = ref<OrderListResponse>({
     pendingFulfillmentCount: 0,
     grossPaidCents: 0,
     subtotalPaidCents: 0,
+    shippingPaidCents: 0,
     taxPaidCents: 0,
     pendingRevenueCents: 0,
   },
@@ -1224,6 +1225,10 @@ onUnmounted(() => {
                     <span>Subtotal</span>
                     <span class="font-mono">{{ formatCents(selectedOrder.subtotalCents) }}</span>
                   </div>
+                  <div v-if="selectedOrder.shippingCents > 0" class="flex justify-between text-slate-500">
+                    <span>Shipping (S&amp;H · untaxed)</span>
+                    <span class="font-mono">{{ formatCents(selectedOrder.shippingCents) }}</span>
+                  </div>
                   <div class="flex justify-between text-slate-500">
                     <span>Tax ({{ (selectedOrder.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
                     <span class="font-mono">{{ formatCents(selectedOrder.taxCents) }}</span>
@@ -1268,7 +1273,7 @@ onUnmounted(() => {
           <div>
             <h2 class="text-base font-bold text-slate-900">Event Order &amp; Tax Settings</h2>
             <p class="text-xs text-slate-500">
-              Controls order numbering prefix (<code>{{ orderCodeInput || 'EVT' }}-{{ stationCodeInput || 'A' }}0001</code>) and local sales tax rate for new kiosk orders.
+              Controls order numbering prefix (<code>{{ orderCodeInput || 'EVT' }}-{{ stationCodeInput || 'A' }}0001</code>) and local sales tax rate for new kiosk orders. Print orders automatically require a mailing address and add flat untaxed S&amp;H (<strong>$3.00</strong> up to 8×10, <strong>$10.00</strong> for 11×14+).
             </p>
           </div>
           <div class="flex flex-wrap items-end gap-3">

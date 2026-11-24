@@ -606,8 +606,9 @@ mod tests {
         let order: OrderRecord = serde_json::from_slice(&body).unwrap();
         assert_eq!(order.order_number, "TST-A0001");
         assert_eq!(order.subtotal_cents, 8500 + 1000 + 2800);
-        assert_eq!(order.tax_cents, 1046);
-        assert_eq!(order.total_cents, 13346);
+        assert_eq!(order.shipping_cents, 300); // 8x10 print -> $3.00 untaxed S&H
+        assert_eq!(order.tax_cents, 1046); // 8.5% strictly on $123.00 subtotal (not on shipping)
+        assert_eq!(order.total_cents, 13646);
         assert!(order.square_pos_url.starts_with("square-commerce-v1://payment/create?data="));
     }
 }

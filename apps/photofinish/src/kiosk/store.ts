@@ -13,6 +13,44 @@ import type {
 
 const CART_STORAGE_KEY = "photofinish_kiosk_cart_v1";
 
+/** Flat untaxed S&H for print orders up to 8×10 ($3.00). */
+export const SMALL_PRINT_SHIPPING_CENTS = 300;
+/** Flat untaxed S&H for print orders with any print 11×14 or larger ($10.00). */
+export const LARGE_PRINT_SHIPPING_CENTS = 1000;
+
+export function parseMaxPrintDimensionInches(text: string | null | undefined): number | null {
+  if (!text) return null;
+  const re = /(\d+)\s*[xX×]\s*(\d+)/g;
+  let best: number | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const a = parseInt(match[1], 10);
+    const b = parseInt(match[2], 10);
+    if (!Number.isNaN(a) && !Number.isNaN(b)) {
+      const maxEdge = Math.max(a, b);
+      best = best === null ? maxEdge : Math.max(best, maxEdge);
+    }
+  }
+  return best;
+}
+
+export function calculatePrintShippingCents(items: CartItem[]): number {
+  let hasPrint = false;
+  let hasLargePrint = false;
+  for (const item of items) {
+    if (item.productType !== "print") continue;
+    hasPrint = true;
+    const maxDim =
+      parseMaxPrintDimensionInches(item.productSize) ??
+      parseMaxPrintDimensionInches(item.productName);
+    if (maxDim !== null && maxDim >= 11) {
+      hasLargePrint = true;
+    }
+  }
+  if (!hasPrint) return 0;
+  return hasLargePrint ? LARGE_PRINT_SHIPPING_CENTS : SMALL_PRINT_SHIPPING_CENTS;
+}
+
 export function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
@@ -80,11 +118,22 @@ export const useKioskStore = defineStore("kiosk", {
     cartCount: (s) => s.cart.reduce((sum, item) => sum + item.quantity, 0),
     subtotalCents: (s) =>
       s.cart.reduce((sum, item) => sum + item.unitPriceCents * item.quantity, 0),
+    shippingCents: (s) => calculatePrintShippingCents(s.cart),
+    shippingTierLabel(): string {
+      if (this.shippingCents === LARGE_PRINT_SHIPPING_CENTS) {
+        return "Prints 11×14+";
+      }
+      if (this.shippingCents === SMALL_PRINT_SHIPPING_CENTS) {
+        return "Prints up to 8×10";
+      }
+      return "";
+    },
     taxCents(): number {
+      // Sales tax applies strictly to product subtotal — shipping & handling is untaxed.
       return Math.round((this.subtotalCents * this.taxRateBasisPoints) / 10_000);
     },
     totalCents(): number {
-      return this.subtotalCents + this.taxCents;
+      return this.subtotalCents + this.shippingCents + this.taxCents;
     },
     hasPrints: (s) => s.cart.some((i) => i.productType === "print"),
     hasDigital: (s) =>

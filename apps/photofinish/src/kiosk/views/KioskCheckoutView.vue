@@ -81,11 +81,18 @@ async function submit() {
       <!-- Summary Box -->
       <div class="bg-white rounded-2xl border border-slate-200 p-5 space-y-2">
         <div class="flex justify-between text-sm text-slate-600">
-          <span>{{ store.cartCount }} item(s)</span>
+          <span>Subtotal ({{ store.cartCount }} item{{ store.cartCount === 1 ? "" : "s" }})</span>
           <span class="font-mono">{{ formatCents(store.subtotalCents) }}</span>
         </div>
+        <div v-if="store.shippingCents > 0" class="flex justify-between text-sm text-slate-600">
+          <span>
+            Shipping &amp; Handling
+            <span class="text-xs text-slate-400">({{ store.shippingTierLabel }} · not taxed)</span>
+          </span>
+          <span class="font-mono">{{ formatCents(store.shippingCents) }}</span>
+        </div>
         <div class="flex justify-between text-sm text-slate-600">
-          <span>Tax</span>
+          <span>Tax ({{ (store.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
           <span class="font-mono">{{ formatCents(store.taxCents) }}</span>
         </div>
         <div class="border-t border-slate-200 pt-2 flex justify-between text-lg font-extrabold text-slate-900">
@@ -137,11 +144,15 @@ async function submit() {
           />
         </div>
 
-        <!-- Conditional Shipping Address for Direct Print Lab Drop-Ship -->
+        <!-- Conditional Mailing Address for Direct Print Lab Drop-Ship -->
         <div v-if="store.hasPrints" class="pt-4 border-t border-slate-200 space-y-3">
           <div>
-            <h2 class="text-base font-bold text-slate-900">Shipping Address (for Prints)</h2>
-            <p class="text-xs text-slate-500">Prints ship directly from our pro lab to your home.</p>
+            <h2 class="text-base font-bold text-slate-900">
+              Mailing Address <span class="text-red-500">*</span>
+            </h2>
+            <p class="text-xs text-slate-500">
+              Required for print orders — prints ship directly to your home ($3.00 S&amp;H up to 8×10, $10.00 for 11×14+).
+            </p>
           </div>
           <input
             v-model="street"

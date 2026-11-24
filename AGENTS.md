@@ -45,7 +45,7 @@
 
 ## 4. Ground-Truth Implementation Status
 
-*(Mirrors `docs/STATUS.md`, updated 2026-11-23. Test suite: **26/26** `photofinish-core` tests passing; release macOS `.app` / `.dmg` verified under `com.photofinish.desktop`.)*
+*(Mirrors `docs/STATUS.md`, updated 2026-11-23. Test suite: **28/28** `photofinish-core` tests passing; release macOS `.app` / `.dmg` verified under `com.photofinish.desktop`.)*
 
 ### Built & Working — `apps/photofinish/` (Active Unified App)
 - **Core (`crates/photofinish-core`):**
@@ -55,7 +55,7 @@
   - Hardware layer (`hardware/macos.rs`): `diskutil` + `ioreg` USB hardware serial discovery (with duplicate-serial `DeviceTreePath` disambiguation, virtual/disk-image exclusion for `.dmg`/`Docker`, and `diskutil eject`), external USB drive discovery (with free-space & `DCIM/` camera-card guard), non-blocking card copy with folder toggles & auto-rename, and streaming high-speed USB order copy.
   - Hybrid JPEG thumbnail (320px) + preview (1280px) pipeline: macOS native `ImageIO` hardware DCT shrink-on-load + CoreGraphics cascade (~180 photos/sec on M4 Max, verified on 146,830 real photos) with optimized pure-Rust SIMD fallback, dedicated worker pool, batched SQLite commits (64/txn), live throughput/ETA telemetry, plus **native macOS Apple Vision portrait avatar generation** (`avatars.rs` + `vision_avatar.m` → `256×256` face+leotard crops in `_photofinish/avatars/`, served on `/photos/avatar/{subject_id}` with automatic thumbnail fallback).
   - Multi-file roster import (`.txt` / `.csv` w/ filename-inferred groups, idempotent upsert, automatic photo matching), fast `+status = 'ready'` indexed folder browsing (`list_folders` w/ inferred Same Group, Same Session & cross-apparatus reference thumbnails), atomic two-phase swap-safe batch rotation renaming (`apply_folder_reassignments`), and 3-mode safe folder removal (`remove_folder`: `_photofinish/trash`, permanent delete, DB-only).
-  - Complete Order Desk engine (`orders.rs` + `event.rs`): live stats, payment reconciliation, per-item fulfillment, USB copy plan resolution (`<Subject>/<Apparatus>/<filename>`), per-event product catalog & tax/code updates, and RFC-4180 single/multi-event CSV export.
+  - Complete Order Desk engine (`orders.rs` + `event.rs`): live stats, payment reconciliation, per-item fulfillment, untaxed print S&H tiers (`$3` ≤ 8×10, `$10` 11×14+, stored via `0002_event_shipping.sql`), USB copy plan resolution (`<Subject>/<Apparatus>/<filename>`), per-event product catalog & tax/code updates, and RFC-4180 single/multi-event CSV export (including `order_shipping`).
   - Embedded `axum` 0.8 LAN kiosk HTTP server (`rust-embed` Vue 3 SPA + `/api/status`, `/api/kiosk/showcase` w/ O(k log N) rowid sampling, `/api/subjects` w/ numeric ranking, `/api/subjects/{id}` w/ sport-agnostic `section_label` grouping, `/api/products`, `POST /api/orders` w/ offline `square-commerce-v1://` QR payload, `/photos/thumbnail/{id}`, `/photos/preview/{id}`) with LAN IP detection.
 - **Kiosk Web SPA (`src/kiosk/` → embedded in `crates/photofinish-core/kiosk-dist/`):**
   - Touch-first Vue 3 + Tailwind v4 SPA served directly from the embedded Axum server on `:4000` (live disk-reload in debug mode, `rust-embed` in release builds), including custom favicons, Apple Touch Icons, and `manifest.webmanifest` for iPad standalone Home Screen mode.

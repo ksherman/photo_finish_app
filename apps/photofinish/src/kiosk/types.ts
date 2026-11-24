@@ -104,6 +104,7 @@ export interface KioskOrder {
   customerPhone: string | null;
   shippingAddress: ShippingAddress | null;
   subtotalCents: number;
+  shippingCents: number;
   taxRateBasisPoints: number;
   taxCents: number;
   totalCents: number;

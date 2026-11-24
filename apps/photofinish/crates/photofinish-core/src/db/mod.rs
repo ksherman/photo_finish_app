@@ -26,11 +26,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const EVENT_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "0001_event_initial",
-    sql: include_str!("migrations/0001_event_initial.sql"),
-}];
+pub const EVENT_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "0001_event_initial",
+        sql: include_str!("migrations/0001_event_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "0002_event_shipping",
+        sql: include_str!("migrations/0002_event_shipping.sql"),
+    },
+];
 
 pub const APP_MIGRATIONS: &[Migration] = &[
     Migration {
@@ -478,26 +485,31 @@ mod tests {
         let backup_path = backups_dir(dir.path());
 
         let mut conn = open_rw_connection(&db_path).unwrap();
+        let latest = EVENT_MIGRATIONS.last().unwrap().version;
         let v = run_migrations(&mut conn, EVENT_MIGRATIONS, Some(&backup_path), "photofinish")
             .unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, latest);
         // Fresh init should not create a backup
         assert!(!backup_path.exists());
 
-        // Simulate upgrading from v1 -> v2
-        let v2_migrations = [
-            EVENT_MIGRATIONS[0],
-            Migration {
-                version: 2,
-                name: "0002_test_add_col",
-                sql: "ALTER TABLE event_config ADD COLUMN custom_note TEXT;",
-            },
-        ];
-        let v2 = run_migrations(&mut conn, &v2_migrations, Some(&backup_path), "photofinish")
-            .unwrap();
-        assert_eq!(v2, 2);
+        // Simulate upgrading from latest -> latest + 1
+        let next_ver = latest + 1;
+        let mut future_migrations = EVENT_MIGRATIONS.to_vec();
+        future_migrations.push(Migration {
+            version: next_ver,
+            name: "9999_test_add_col",
+            sql: "ALTER TABLE event_config ADD COLUMN custom_note TEXT;",
+        });
+        let upgraded = run_migrations(
+            &mut conn,
+            &future_migrations,
+            Some(&backup_path),
+            "photofinish",
+        )
+        .unwrap();
+        assert_eq!(upgraded, next_ver);
 
-        // Pre-migration backup must exist and be readable at schema v1
+        // Pre-migration backup must exist and be readable at the previous schema version
         let backups: Vec<_> = fs::read_dir(&backup_path)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -507,17 +519,17 @@ mod tests {
         let backup_ver: i64 = backup_conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(backup_ver, 1);
+        assert_eq!(backup_ver, latest);
 
-        // Opening the v2 DB with an older app (only knowing v1) must fail safely
+        // Opening the future DB with an older app must fail safely
         let err = run_migrations(&mut conn, EVENT_MIGRATIONS, Some(&backup_path), "photofinish")
             .unwrap_err();
         assert!(matches!(
             err,
             Error::SchemaTooNew {
-                db_version: 2,
-                app_version: 1
-            }
+                db_version,
+                app_version
+            } if db_version == next_ver && app_version == latest
         ));
     }
 

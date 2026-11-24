@@ -2,14 +2,14 @@
 
 **Last updated:** 2026-11-23  
 **Active codebase:** `apps/photofinish/` (Unified Rust + Tauri 2 + Vue 3 + TypeScript + SQLite + Axum)  
-**Verified test suite:** `cargo test --workspace` (26/26 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
+**Verified test suite:** `cargo test --workspace` (28/28 passing), `pnpm build` (clean), `pnpm tauri build` (`com.photofinish.desktop`, `.app` / `.dmg` verified)
 
 ---
 
 ## Built & Working (`apps/photofinish/`)
 
 ### 1. Portable Storage & Safe Migrations (`crates/photofinish-core/src/db/`)
-- **Portable Event Bundle (`<event>/_photofinish/photofinish.db`):** SQLite WAL mode, relative-only photo/derivative paths, forward-only embedded migrations (`0001_event_initial.sql`), automatic pre-migration online backups (`_photofinish/backups/`), and `SchemaTooNew` mixed-version protection.
+- **Portable Event Bundle (`<event>/_photofinish/photofinish.db`):** SQLite WAL mode, relative-only photo/derivative paths, forward-only embedded migrations (`0001_event_initial.sql`, `0002_event_shipping.sql`), automatic pre-migration online backups (`_photofinish/backups/`), and `SchemaTooNew` mixed-version protection.
 - **Machine-Local App DB (`photofinish_app.db`):** Library bookmarks, machine settings, and hardware-locked USB card reader configs + persistent layout/groups (`0001_app_initial.sql`, `0002_app_reader_layout.sql`).
 
 ### 2. Event Bundle Manager & Multi-Station Gathering (`EventsView.vue` + `event.rs` + `preset.rs`)
@@ -40,8 +40,8 @@
 - Touch-first Vue 3 + Tailwind v4 SPA embedded in the release binary via `rust-embed` (with live disk reload in debug builds) + PWA `manifest.webmanifest` and Apple Touch Icons for iPad Home Screen kiosks.
 - Home screen with 3-row calm ambient photo showcase marquee (O(k log N) random `rowid` sampling) and 0ms client-side numeric-ranked search (`exact bib → bib prefix → name prefix → substring`).
 - Subject Gallery (`/subject/:id`) with sport-agnostic apparatus/section tabs (`All · Beam · Floor`), lazy thumbnail grid, and touch-swipe/keyboard preview lightbox with neighbor preloading.
-- v3 Pricing Ladder Cart (`/cart`): Single Digital ($25) with automatic **3-photo tipping-point upgrade prompt** → Full Digital ($85) + Prints (5×7–16×20) + **+$10 Instant Dual USB-C/A** add-on.
-- Checkout (`/checkout`) with conditional shipping address for print drop-shipping + Confirmation (`/order/:orderNumber`) with offline Square POS QR (`square-commerce-v1://`).
+- v3 Pricing Ladder Cart (`/cart`): Single Digital ($25) with automatic **3-photo tipping-point upgrade prompt** → Full Digital ($85) + Prints (5×7–16×20) + **+$10 Instant Dual USB-C/A** add-on, plus automatic **untaxed print shipping & handling** (`$3.00` for prints ≤ 8×10, `$10.00` for 11×14+, `$0` for digital/USB-only).
+- Checkout (`/checkout`) with required mailing address for print drop-shipping + Confirmation (`/order/:orderNumber`) with subtotal/S&H/tax breakdown and offline Square POS QR (`square-commerce-v1://`).
 
 ### 7. Orders Desk & Native Instant USB-C/A Fulfillment (`OrdersView.vue`, `orders.rs`, `hardware/`)
 - Auto-refreshing Order Desk (polls every 5s) with clickable KPI cards, queue filters, search, Square POS QR modal, payment reconciliation (`Square QR`, `Square Terminal`, `Cash`, `Check`, `Other`, `Refunded`), staff notes, and per-item fulfillment toggles.

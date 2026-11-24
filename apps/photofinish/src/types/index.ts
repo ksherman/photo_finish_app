@@ -397,6 +397,7 @@ export interface OrderRecord {
   customerPhone: string | null;
   shippingAddress: ShippingAddress | null;
   subtotalCents: number;
+  shippingCents: number;
   taxRateBasisPoints: number;
   taxCents: number;
   totalCents: number;
@@ -419,6 +420,7 @@ export interface OrderStats {
   pendingFulfillmentCount: number;
   grossPaidCents: number;
   subtotalPaidCents: number;
+  shippingPaidCents: number;
   taxPaidCents: number;
   pendingRevenueCents: number;
 }

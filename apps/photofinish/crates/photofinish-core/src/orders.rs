@@ -73,6 +73,94 @@ pub struct OrderItemRecord {
     pub fulfilled_at: Option<String>,
 }
 
+/// Flat S&H fee for print orders whose largest print is up to 8×10 ($3.00, untaxed).
+pub const SMALL_PRINT_SHIPPING_CENTS: i64 = 300;
+/// Flat S&H fee for print orders containing any print 11×14 or larger ($10.00, untaxed).
+pub const LARGE_PRINT_SHIPPING_CENTS: i64 = 1000;
+
+/// Extracts the largest integer edge (in inches) from a print size or name string
+/// such as `"5x7"`, `"8x10"`, `"11×14"`, or `"16x20 Poster Print"`.
+pub fn parse_max_print_dimension_inches(text: &str) -> Option<u32> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    let mut best: Option<u32> = None;
+
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let start1 = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            let first: u32 = match chars[start1..i].iter().collect::<String>().parse() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            let mut j = i;
+            while j < chars.len() && chars[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && matches!(chars[j], 'x' | 'X' | '×') {
+                j += 1;
+                while j < chars.len() && chars[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let start2 = j;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > start2 {
+                    if let Ok(second) = chars[start2..j].iter().collect::<String>().parse::<u32>() {
+                        let max_edge = first.max(second);
+                        best = Some(best.map_or(max_edge, |prev| prev.max(max_edge)));
+                        i = j;
+                        continue;
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    best
+}
+
+/// Calculates flat untaxed print shipping & handling for a list of products in an order:
+/// - No print items → `$0.00` (`0` cents)
+/// - Any print `11×14` or larger (max edge ≥ 11") → `$10.00` (`1000` cents)
+/// - Print orders with all prints ≤ `8×10` → `$3.00` (`300` cents)
+pub fn calculate_print_shipping_cents<'a, I>(products: I) -> i64
+where
+    I: IntoIterator<Item = &'a ProductRecord>,
+{
+    let mut has_print = false;
+    let mut has_large_print = false;
+
+    for prod in products {
+        if prod.product_type != "print" {
+            continue;
+        }
+        has_print = true;
+        let max_dim = prod
+            .size
+            .as_deref()
+            .and_then(parse_max_print_dimension_inches)
+            .or_else(|| parse_max_print_dimension_inches(&prod.name));
+        if max_dim.is_some_and(|d| d >= 11) {
+            has_large_print = true;
+        }
+    }
+
+    if !has_print {
+        0
+    } else if has_large_print {
+        LARGE_PRINT_SHIPPING_CENTS
+    } else {
+        SMALL_PRINT_SHIPPING_CENTS
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderStats {
@@ -84,6 +172,7 @@ pub struct OrderStats {
     pub pending_fulfillment_count: i64,
     pub gross_paid_cents: i64,
     pub subtotal_paid_cents: i64,
+    pub shipping_paid_cents: i64,
     pub tax_paid_cents: i64,
     pub pending_revenue_cents: i64,
 }
@@ -156,6 +245,7 @@ pub struct OrderRecord {
     pub customer_phone: Option<String>,
     pub shipping_address: Option<ShippingAddress>,
     pub subtotal_cents: i64,
+    pub shipping_cents: i64,
     pub tax_rate_basis_points: i64,
     pub tax_cents: i64,
     pub total_cents: i64,
@@ -279,8 +369,11 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
         )?;
 
     let order_number = format!("{}-{}{:04}", order_code, station_code, next_num);
+    let shipping_cents =
+        calculate_print_shipping_cents(resolved_items.iter().map(|(prod, _, _, _)| prod));
+    // Sales tax applies strictly to product subtotal — shipping & handling is NOT taxed.
     let tax_cents = ((subtotal_cents as f64) * (tax_rate_bps as f64) / 10_000.0).round() as i64;
-    let total_cents = subtotal_cents + tax_cents;
+    let total_cents = subtotal_cents + shipping_cents + tax_cents;
 
     let order_id = id::order_id();
     let now = Utc::now().to_rfc3339();
@@ -292,9 +385,9 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
     tx.execute(
         "INSERT INTO orders (
             id, order_number, station_code, customer_name, customer_email, customer_phone,
-            shipping_address_json, subtotal_cents, tax_rate_basis_points, tax_cents,
+            shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points, tax_cents,
             total_cents, payment_status, notes, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending', ?12, ?13, ?14)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending', ?13, ?14, ?15)",
         rusqlite::params![
             order_id,
             order_number,
@@ -304,6 +397,7 @@ pub fn place_order(conn: &mut Connection, req: CreateOrderRequest) -> Result<Ord
             customer_phone,
             shipping_json,
             subtotal_cents,
+            shipping_cents,
             tax_rate_bps,
             tax_cents,
             total_cents,
@@ -350,9 +444,9 @@ pub fn get_order_by_number(conn: &Connection, order_number: &str) -> Result<Opti
     let row = conn
         .query_row(
             "SELECT id, order_number, station_code, customer_name, customer_email, customer_phone,
-                    shipping_address_json, subtotal_cents, tax_rate_basis_points, tax_cents,
-                    total_cents, payment_status, payment_method, payment_reference, paid_at,
-                    notes, created_at
+                    shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
+                    tax_cents, total_cents, payment_status, payment_method, payment_reference,
+                    paid_at, notes, created_at
              FROM orders WHERE order_number = ?1",
             [order_number],
             extract_order_row,
@@ -369,9 +463,9 @@ pub fn get_order_by_id(conn: &Connection, order_id: &str) -> Result<Option<Order
     let row = conn
         .query_row(
             "SELECT id, order_number, station_code, customer_name, customer_email, customer_phone,
-                    shipping_address_json, subtotal_cents, tax_rate_basis_points, tax_cents,
-                    total_cents, payment_status, payment_method, payment_reference, paid_at,
-                    notes, created_at
+                    shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
+                    tax_cents, total_cents, payment_status, payment_method, payment_reference,
+                    paid_at, notes, created_at
              FROM orders WHERE id = ?1",
             [order_id],
             extract_order_row,
@@ -392,6 +486,7 @@ type RawOrderTuple = (
     Option<String>,
     Option<String>,
     Option<String>,
+    i64,
     i64,
     i64,
     i64,
@@ -423,6 +518,7 @@ fn extract_order_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawOrderTuple> {
         r.get(14)?,
         r.get(15)?,
         r.get(16)?,
+        r.get(17)?,
     ))
 }
 
@@ -472,6 +568,7 @@ fn hydrate_order(conn: &Connection, raw: RawOrderTuple) -> Result<OrderRecord> {
         customer_phone,
         shipping_json,
         subtotal_cents,
+        shipping_cents,
         tax_rate_basis_points,
         tax_cents,
         total_cents,
@@ -499,6 +596,7 @@ fn hydrate_order(conn: &Connection, raw: RawOrderTuple) -> Result<OrderRecord> {
         customer_phone,
         shipping_address,
         subtotal_cents,
+        shipping_cents,
         tax_rate_basis_points,
         tax_cents,
         total_cents,
@@ -516,9 +614,9 @@ fn hydrate_order(conn: &Connection, raw: RawOrderTuple) -> Result<OrderRecord> {
 pub fn list_orders(conn: &Connection) -> Result<OrderListResponse> {
     let mut stmt = conn.prepare(
         "SELECT id, order_number, station_code, customer_name, customer_email, customer_phone,
-                shipping_address_json, subtotal_cents, tax_rate_basis_points, tax_cents,
-                total_cents, payment_status, payment_method, payment_reference, paid_at,
-                notes, created_at
+                shipping_address_json, subtotal_cents, shipping_cents, tax_rate_basis_points,
+                tax_cents, total_cents, payment_status, payment_method, payment_reference,
+                paid_at, notes, created_at
          FROM orders
          ORDER BY created_at DESC",
     )?;
@@ -537,6 +635,7 @@ pub fn list_orders(conn: &Connection) -> Result<OrderListResponse> {
                 stats.paid_count += 1;
                 stats.gross_paid_cents += ord.total_cents;
                 stats.subtotal_paid_cents += ord.subtotal_cents;
+                stats.shipping_paid_cents += ord.shipping_cents;
                 stats.tax_paid_cents += ord.tax_cents;
             }
             "refunded" => {
@@ -819,7 +918,7 @@ pub fn update_event_order_settings(
 /// suitable for bookkeeping, lab fulfillment, and multi-venue season consolidation.
 pub fn format_orders_csv(event_orders: &[(String, Vec<OrderRecord>)]) -> String {
     let mut out = String::from(
-        "event_name,order_number,station_code,created_at,payment_status,payment_method,payment_reference,paid_at,customer_name,customer_email,customer_phone,shipping_address,item_type,item_name,item_size,subject,photo_filename,quantity,unit_price,line_total,fulfillment_status,order_subtotal,order_tax,order_total,notes\n",
+        "event_name,order_number,station_code,created_at,payment_status,payment_method,payment_reference,paid_at,customer_name,customer_email,customer_phone,shipping_address,item_type,item_name,item_size,subject,photo_filename,quantity,unit_price,line_total,fulfillment_status,order_subtotal,order_shipping,order_tax,order_total,notes\n",
     );
 
     for (event_name, orders) in event_orders {
@@ -869,6 +968,7 @@ pub fn format_orders_csv(event_orders: &[(String, Vec<OrderRecord>)]) -> String 
                     format_dollars(item.line_total_cents),
                     item.fulfillment_status.clone(),
                     format_dollars(ord.subtotal_cents),
+                    format_dollars(ord.shipping_cents),
                     format_dollars(ord.tax_cents),
                     format_dollars(ord.total_cents),
                     ord.notes.clone().unwrap_or_default(),
@@ -934,4 +1034,198 @@ pub fn build_square_pos_url(
     let payload_str = payload.to_string();
     let encoded = urlencoding::encode(&payload_str);
     format!("square-commerce-v1://payment/create?data={}", encoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{CreateEventParams, EventBundle};
+    use tempfile::tempdir;
+
+    fn sample_product(product_type: &str, name: &str, size: Option<&str>) -> ProductRecord {
+        ProductRecord {
+            id: "prd_test".into(),
+            product_type: product_type.into(),
+            name: name.into(),
+            size: size.map(str::to_string),
+            price_cents: 1000,
+            is_available: true,
+            display_order: 0,
+        }
+    }
+
+    #[test]
+    fn print_shipping_tiers_match_order_form_rules() {
+        assert_eq!(parse_max_print_dimension_inches("5x7"), Some(7));
+        assert_eq!(parse_max_print_dimension_inches("8x10"), Some(10));
+        assert_eq!(parse_max_print_dimension_inches("11×14"), Some(14));
+        assert_eq!(parse_max_print_dimension_inches("16x20 Poster Print"), Some(20));
+        assert_eq!(parse_max_print_dimension_inches("24 x 30"), Some(30));
+        assert_eq!(parse_max_print_dimension_inches("Digital Package"), None);
+
+        // Digital / USB only -> $0
+        let digital = sample_product("full_digital", "All Photos Digital", None);
+        let usb = sample_product("usb_addon", "Instant Dual USB", None);
+        assert_eq!(calculate_print_shipping_cents([&digital, &usb]), 0);
+
+        // Prints up to 8x10 -> $3.00 flat
+        let p57 = sample_product("print", "5x7 Lustre Print", Some("5x7"));
+        let p810 = sample_product("print", "8x10 Lustre Print", Some("8x10"));
+        assert_eq!(calculate_print_shipping_cents([&p57]), 300);
+        assert_eq!(calculate_print_shipping_cents([&p57, &p810, &digital]), 300);
+
+        // Any print 11x14 or larger -> $10.00 flat
+        let p1114 = sample_product("print", "11x14 Print", Some("11x14"));
+        let p1620 = sample_product("print", "16x20 Poster Print", Some("16x20"));
+        let p2430 = sample_product("print", "24×30 Collage", None);
+        assert_eq!(calculate_print_shipping_cents([&p1114]), 1000);
+        assert_eq!(calculate_print_shipping_cents([&p57, &p1620]), 1000);
+        assert_eq!(calculate_print_shipping_cents([&p2430]), 1000);
+
+        // Unsized custom print defaults to small tier ($3.00)
+        let custom_print = sample_product("print", "Custom Wallet Set", None);
+        assert_eq!(calculate_print_shipping_cents([&custom_print]), 300);
+    }
+
+    #[test]
+    fn print_orders_require_mailing_address_and_keep_shipping_untaxed() {
+        let dir = tempdir().unwrap();
+        let bundle = EventBundle::create(CreateEventParams {
+            root_path: dir.path().join("shipping-meet"),
+            name: "Shipping Test Meet".into(),
+            description: None,
+            preset_id: Some("gymnastics".into()),
+            subject_label: None,
+            folder_levels: None,
+            order_code: Some("SHP".into()),
+            station_code: Some("A".into()),
+            tax_rate_basis_points: Some(1000), // 10% makes tax math crystal clear
+            scaffold: None,
+        })
+        .unwrap();
+
+        let products = bundle.list_products(false).unwrap();
+        let p57 = products
+            .iter()
+            .find(|p| p.product_type == "print" && p.size.as_deref() == Some("5x7"))
+            .unwrap();
+        let p1114 = products
+            .iter()
+            .find(|p| p.product_type == "print" && p.size.as_deref() == Some("11x14"))
+            .unwrap();
+
+        // Missing shipping address must fail for print orders
+        let missing_addr_err = bundle
+            .place_order(CreateOrderRequest {
+                customer_name: "Parent No Address".into(),
+                customer_email: None,
+                customer_phone: None,
+                shipping_address: None,
+                notes: None,
+                items: vec![CreateOrderItemInput {
+                    product_id: p57.id.clone(),
+                    subject_id: None,
+                    photo_id: None,
+                    quantity: 1,
+                }],
+            })
+            .unwrap_err();
+        assert!(missing_addr_err.to_string().contains("Shipping address"));
+
+        let addr = ShippingAddress {
+            street: "965 W Highland Ave".into(),
+            street2: None,
+            city: "Elgin".into(),
+            state: "IL".into(),
+            zip: "60123".into(),
+        };
+
+        // Small print order: 2x 5x7 ($36.00) + $3.00 untaxed S&H + $3.60 tax (10% of $36 only) = $42.60
+        let small_order = bundle
+            .place_order(CreateOrderRequest {
+                customer_name: "Small Print Parent".into(),
+                customer_email: Some("small@example.com".into()),
+                customer_phone: None,
+                shipping_address: Some(addr.clone()),
+                notes: None,
+                items: vec![CreateOrderItemInput {
+                    product_id: p57.id.clone(),
+                    subject_id: None,
+                    photo_id: None,
+                    quantity: 2,
+                }],
+            })
+            .unwrap();
+        assert_eq!(small_order.subtotal_cents, 3600);
+        assert_eq!(small_order.shipping_cents, 300);
+        assert_eq!(small_order.tax_cents, 360); // strictly 10% of 3600, NOT 3900
+        assert_eq!(small_order.total_cents, 4260);
+
+        // Large print order: 5x7 ($18) + 11x14 ($40) = $58.00 + $10.00 untaxed S&H + $5.80 tax = $73.80
+        let large_order = bundle
+            .place_order(CreateOrderRequest {
+                customer_name: "Large Print Parent".into(),
+                customer_email: Some("large@example.com".into()),
+                customer_phone: None,
+                shipping_address: Some(addr),
+                notes: None,
+                items: vec![
+                    CreateOrderItemInput {
+                        product_id: p57.id.clone(),
+                        subject_id: None,
+                        photo_id: None,
+                        quantity: 1,
+                    },
+                    CreateOrderItemInput {
+                        product_id: p1114.id.clone(),
+                        subject_id: None,
+                        photo_id: None,
+                        quantity: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(large_order.subtotal_cents, 5800);
+        assert_eq!(large_order.shipping_cents, 1000);
+        assert_eq!(large_order.tax_cents, 580); // strictly 10% of 5800, NOT 6800
+        assert_eq!(large_order.total_cents, 7380);
+        // Square POS URL must encode the exact total including untaxed shipping
+        assert!(large_order.square_pos_url.contains("7380"));
+
+        // Mark both paid and verify OrderStats reconciles subtotal + shipping + tax == gross
+        bundle
+            .update_order_payment(&UpdatePaymentRequest {
+                order_id: small_order.id.clone(),
+                payment_status: "paid".into(),
+                payment_method: Some("square_qr".into()),
+                payment_reference: None,
+                notes: None,
+            })
+            .unwrap();
+        bundle
+            .update_order_payment(&UpdatePaymentRequest {
+                order_id: large_order.id.clone(),
+                payment_status: "paid".into(),
+                payment_method: Some("square_qr".into()),
+                payment_reference: None,
+                notes: None,
+            })
+            .unwrap();
+
+        let listed = bundle.list_orders().unwrap();
+        assert_eq!(listed.stats.subtotal_paid_cents, 3600 + 5800);
+        assert_eq!(listed.stats.shipping_paid_cents, 300 + 1000);
+        assert_eq!(listed.stats.tax_paid_cents, 360 + 580);
+        assert_eq!(
+            listed.stats.gross_paid_cents,
+            listed.stats.subtotal_paid_cents
+                + listed.stats.shipping_paid_cents
+                + listed.stats.tax_paid_cents
+        );
+
+        let csv = format_orders_csv(&[("Shipping Test Meet".into(), listed.orders)]);
+        assert!(csv.contains("order_subtotal,order_shipping,order_tax,order_total"));
+        assert!(csv.contains(",36.00,3.00,3.60,42.60,"));
+        assert!(csv.contains(",58.00,10.00,5.80,73.80,"));
+    }
 }

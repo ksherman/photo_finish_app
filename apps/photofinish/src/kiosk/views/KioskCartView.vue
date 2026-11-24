@@ -179,6 +179,13 @@ const store = useKioskStore();
             <span>Subtotal</span>
             <span class="font-mono">{{ formatCents(store.subtotalCents) }}</span>
           </div>
+          <div v-if="store.shippingCents > 0" class="flex justify-between text-sm text-slate-600">
+            <span>
+              Shipping &amp; Handling
+              <span class="text-xs text-slate-400">({{ store.shippingTierLabel }} · not taxed)</span>
+            </span>
+            <span class="font-mono">{{ formatCents(store.shippingCents) }}</span>
+          </div>
           <div class="flex justify-between text-sm text-slate-600">
             <span>Tax ({{ (store.taxRateBasisPoints / 100).toFixed(2) }}%)</span>
             <span class="font-mono">{{ formatCents(store.taxCents) }}</span>
