@@ -13,8 +13,7 @@
 - **Machine-Local App DB (`photofinish_app.db`):** Library bookmarks, machine settings, and hardware-locked USB card reader configs + persistent layout/groups (`0001_app_initial.sql`, `0002_app_reader_layout.sql`).
 
 ### 2. Event Bundle Manager & Multi-Station Gathering (`EventsView.vue` + `event.rs` + `preset.rs`)
-- **Per-machine Station Identity (`default_station_code`):** Configure each meet Mac's station letter (`A`/`B`/`C`/`D`/custom) once in `photofinish_app.db` so new event bundles automatically stamp collision-free order numbers across concurrent stations.
-- Create events with sport-agnostic presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, and optional folder scaffolding.
+- Create events with sport-agnostic presets (`gymnastics`, `dance`, `simple`, `custom`), customizable `subject_label`, optional folder scaffolding, and remembered per-machine `station_code` default (`A` by default, auto-saved if changed on a secondary server).
 - Open existing event bundles or recursively **Gather** nested weekend event bundles from a shared parent / NAS directory (up to 6 levels deep, stopping immediately at bundle boundaries so photo folders are never walked).
 - Read-only **Consolidated Multi-Station Overview** across all gathered bundles (live station badges, photo/roster/order counts, combined paid revenue, duplicate order-number collision detection, `SchemaTooNew` indicators, and one-click consolidated CSV export).
 - Always-visible **LAN Server Status Bar** (`ServerStatusBar.vue`) with photo counts, live thumbnail throughput (`photos/sec`) + ETA, manual safety-net Scan, and Start/Stop LAN Kiosk controls.

@@ -25,7 +25,6 @@ const sessionsPerArea = ref(4);
 const sessionPrefix = ref("Session");
 const enableScaffold = ref(true);
 
-const customStationInput = ref(eventStore.machineStationCode || "A");
 const isRefreshingLibrary = ref(false);
 const isGathering = ref(false);
 const isExportingAll = ref(false);
@@ -34,12 +33,9 @@ const errorMessage = ref<string | null>(null);
 const bannerMessage = ref<string | null>(null);
 const gatheredResult = ref<EventSummary[] | null>(null);
 
-const presetStations = ["A", "B", "C", "D"];
-
 watch(
   () => eventStore.machineStationCode,
   (code) => {
-    customStationInput.value = code;
     if (!showCreate.value) {
       stationCode.value = code;
     }
@@ -61,17 +57,6 @@ function formatCents(cents: number): string {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(cents);
   return `${sign}$${(abs / 100).toFixed(2)}`;
-}
-
-async function selectMachineStation(code: string) {
-  errorMessage.value = null;
-  try {
-    await eventStore.setMachineStationCode(code);
-    stationCode.value = eventStore.machineStationCode;
-    bannerMessage.value = `This Mac is now configured as Station ${eventStore.machineStationCode}. New event bundles will default to Station ${eventStore.machineStationCode}.`;
-  } catch (err) {
-    errorMessage.value = String(err);
-  }
 }
 
 async function refreshLibraryStatus() {
@@ -135,6 +120,8 @@ async function handleCreate() {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  const chosenStation = stationCode.value.trim().toUpperCase() || eventStore.machineStationCode || "A";
+
   try {
     await eventStore.createEvent({
       rootPath,
@@ -143,7 +130,7 @@ async function handleCreate() {
       subjectLabel: subjectLabel.value.trim() || undefined,
       folderLevels: folderLevels.length > 0 ? folderLevels : undefined,
       orderCode: orderCode.value.trim() || undefined,
-      stationCode: stationCode.value.trim() || eventStore.machineStationCode || "A",
+      stationCode: chosenStation,
       scaffold: enableScaffold.value
         ? {
             num_areas: numAreas.value,
@@ -153,6 +140,9 @@ async function handleCreate() {
           }
         : undefined,
     });
+    if (chosenStation !== eventStore.machineStationCode) {
+      await eventStore.setMachineStationCode(chosenStation);
+    }
     showCreate.value = false;
     name.value = "";
     emit("opened");
@@ -275,55 +265,6 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Machine Station Identity Bar -->
-    <div class="bg-white rounded-xl border border-slate-200 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-3 min-w-0">
-        <span class="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-slate-900 text-white font-mono text-sm font-bold shrink-0">
-          {{ eventStore.machineStationCode }}
-        </span>
-        <div class="min-w-0">
-          <div class="text-sm font-semibold text-slate-800">
-            This Mac: Server Station <span class="font-mono">{{ eventStore.machineStationCode }}</span>
-          </div>
-          <p class="text-xs text-slate-500">
-            Set a unique letter per meet Mac (A, B, C, D) so orders from concurrent stations never collide when gathered on Sunday night.
-          </p>
-        </div>
-      </div>
-
-      <div class="flex items-center gap-1.5 flex-wrap">
-        <button
-          v-for="code in presetStations"
-          :key="code"
-          @click="selectMachineStation(code)"
-          class="px-2.5 py-1 text-xs font-mono font-semibold rounded-md border transition-colors"
-          :class="
-            eventStore.machineStationCode === code
-              ? 'bg-slate-900 text-white border-slate-900'
-              : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-          "
-        >
-          {{ code }}
-        </button>
-        <form @submit.prevent="selectMachineStation(customStationInput)" class="flex items-center gap-1 ml-1">
-          <input
-            v-model="customStationInput"
-            type="text"
-            maxlength="4"
-            placeholder="Custom"
-            class="w-16 border border-slate-300 rounded-md px-2 py-1 text-xs font-mono uppercase"
-          />
-          <button
-            type="submit"
-            :disabled="!customStationInput.trim() || customStationInput.trim().toUpperCase() === eventStore.machineStationCode"
-            class="px-2.5 py-1 text-xs font-medium rounded-md border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-          >
-            Set
-          </button>
-        </form>
-      </div>
-    </div>
-
     <div v-if="errorMessage" class="p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 flex items-center justify-between gap-4">
       <span>{{ errorMessage }}</span>
       <button @click="errorMessage = null" class="text-red-500 font-bold">&times;</button>
@@ -353,7 +294,7 @@ onMounted(() => {
         Multiple online bundles share the same order number(s):
         <span class="font-mono font-semibold">{{ duplicateOrderNumbers.slice(0, 8).join(", ") }}</span>
         <span v-if="duplicateOrderNumbers.length > 8"> (+{{ duplicateOrderNumbers.length - 8 }} more)</span>.
-        This happens if two Macs used the same Order Prefix and Station Code. Make sure each Mac uses its own Station Code above.
+        If running a second server for the same meet, set a distinct Station Code (e.g. B) in Create Event or Orders → Pricing &amp; Tax.
       </p>
     </div>
 
@@ -565,7 +506,7 @@ onMounted(() => {
                 v-if="entry.orderCode && entry.stationCode"
                 class="px-2 py-0.5 text-[11px] font-mono rounded-full bg-slate-100 text-slate-700 border border-slate-200 font-semibold"
               >
-                {{ entry.orderCode }} · Station {{ entry.stationCode }}
+                {{ entry.orderCode }}-{{ entry.stationCode }}
               </span>
               <span
                 v-if="eventStore.activeEvent?.rootPath === entry.rootPath"
